@@ -1,6 +1,6 @@
 # Work plan
 
-Status: research and design in progress, 2026-10-27.
+Status: research reports and design draft reviewed; user design approval and runtime experiment pending, 2026-10-27.
 
 ## Source of requirements
 
@@ -10,9 +10,9 @@ Public product behavior is captured in DESIGN.md; do not publish private referen
 
 ## 1. Research and design
 
-- [ ] Review Chromium integration report, especially native window embedding, extension popups, and split pairs.
-- [ ] Review Arc import and blocker report.
-- [ ] Consolidate and review DESIGN.md, distinguishing proposals from agreed requirements.
+- [x] Review Chromium integration report, especially native window embedding, extension popups, and split pairs.
+- [x] Review Arc import and blocker report.
+- [x] Consolidate and review DESIGN.md, distinguishing proposals from agreed requirements.
 - [ ] Approve the concrete design and feasibility experiment before an implementation plan.
 
 ## 2. Bounded engine feasibility experiment
