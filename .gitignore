@@ -25,3 +25,6 @@ spikes/**/downloads/
 spikes/**/.venv/
 __pycache__/
 *.pyc
+
+# Local runtime diagnostics
+*.log
