@@ -1,0 +1,113 @@
+[
+  {
+    "event": "installed",
+    "mainThread": true,
+    "pid": 71815,
+    "probe": "bato-native-composition"
+  },
+  {
+    "accessoryCount": 1,
+    "contentClass": "BridgedContentView",
+    "contentHeight": 564,
+    "contentWidth": 800,
+    "event": "accessory-attached",
+    "probe": "bato-native-composition",
+    "windowClass": "CefNSWindow"
+  },
+  {
+    "class": "BridgedContentView",
+    "depth": 0,
+    "event": "view",
+    "height": 564,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "ViewsCompositorSuperview",
+    "depth": 1,
+    "event": "view",
+    "height": 564,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "WebContentsViewCocoa",
+    "depth": 1,
+    "event": "view",
+    "height": 516,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "RenderWidgetHostViewCocoa",
+    "depth": 2,
+    "event": "view",
+    "height": 516,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "count": 1,
+    "event": "native-action",
+    "inWindow": true,
+    "probe": "bato-native-composition"
+  },
+  {
+    "accepted": true,
+    "event": "native-focus",
+    "firstResponderClass": "NSTextView",
+    "probe": "bato-native-composition"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "TUINSWindow"
+  },
+  {
+    "event": "resize",
+    "probe": "bato-native-composition",
+    "widthAfter": 832,
+    "widthBefore": 800
+  },
+  {
+    "event": "accessory-state",
+    "frameHeight": 36,
+    "frameWidth": 800,
+    "hidden": false,
+    "probe": "bato-native-composition",
+    "viewInWindow": true,
+    "visibleRectHeight": 36,
+    "visibleRectWidth": 800
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "count": 2,
+    "event": "native-action",
+    "inWindow": true,
+    "probe": "bato-native-composition"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  }
+]

@@ -1,0 +1,242 @@
+[
+  {
+    "event": "installed",
+    "mainThread": true,
+    "pid": 54596,
+    "probe": "bato-native-composition"
+  },
+  {
+    "accessoryCount": 1,
+    "contentClass": "BridgedContentView",
+    "contentHeight": 564,
+    "contentWidth": 800,
+    "event": "accessory-attached",
+    "probe": "bato-native-composition",
+    "windowClass": "CefNSWindow"
+  },
+  {
+    "class": "BridgedContentView",
+    "depth": 0,
+    "event": "view",
+    "height": 564,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "ViewsCompositorSuperview",
+    "depth": 1,
+    "event": "view",
+    "height": 564,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "WebContentsViewCocoa",
+    "depth": 1,
+    "event": "view",
+    "height": 516,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "class": "RenderWidgetHostViewCocoa",
+    "depth": 2,
+    "event": "view",
+    "height": 516,
+    "probe": "bato-native-composition",
+    "width": 800
+  },
+  {
+    "accessoryCount": 2,
+    "contentClass": "BridgedContentView",
+    "contentHeight": 1005,
+    "contentWidth": 1200,
+    "event": "accessory-attached",
+    "probe": "bato-native-composition",
+    "windowClass": "BrowserNativeWidgetWindow"
+  },
+  {
+    "class": "BridgedContentView",
+    "depth": 0,
+    "event": "view",
+    "height": 1005,
+    "probe": "bato-native-composition",
+    "width": 1200
+  },
+  {
+    "class": "ViewsCompositorSuperview",
+    "depth": 1,
+    "event": "view",
+    "height": 1005,
+    "probe": "bato-native-composition",
+    "width": 1200
+  },
+  {
+    "class": "WebContentsViewCocoa",
+    "depth": 1,
+    "event": "view",
+    "height": 918,
+    "probe": "bato-native-composition",
+    "width": 1200
+  },
+  {
+    "class": "RenderWidgetHostViewCocoa",
+    "depth": 2,
+    "event": "view",
+    "height": 918,
+    "probe": "bato-native-composition",
+    "width": 1200
+  },
+  {
+    "count": 1,
+    "event": "native-action",
+    "inWindow": true,
+    "probe": "bato-native-composition"
+  },
+  {
+    "accepted": true,
+    "event": "native-focus",
+    "firstResponderClass": "NSTextView",
+    "probe": "bato-native-composition"
+  },
+  {
+    "event": "resize",
+    "probe": "bato-native-composition",
+    "widthAfter": 832,
+    "widthBefore": 800
+  },
+  {
+    "event": "accessory-state",
+    "hidden": false,
+    "probe": "bato-native-composition",
+    "viewInWindow": true,
+    "visibleRectHeight": 632,
+    "visibleRectWidth": 800
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "TUINSWindow"
+  },
+  {
+    "count": 1,
+    "event": "native-action",
+    "inWindow": true,
+    "probe": "bato-native-composition"
+  },
+  {
+    "accepted": true,
+    "event": "native-focus",
+    "firstResponderClass": "NSTextView",
+    "probe": "bato-native-composition"
+  },
+  {
+    "event": "resize",
+    "probe": "bato-native-composition",
+    "widthAfter": 1232,
+    "widthBefore": 1200
+  },
+  {
+    "event": "accessory-state",
+    "hidden": false,
+    "probe": "bato-native-composition",
+    "viewInWindow": true,
+    "visibleRectHeight": 1005,
+    "visibleRectWidth": 1200
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NativeWidgetMacNSWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  },
+  {
+    "event": "window-close",
+    "probe": "bato-native-composition",
+    "windowClass": "NSLocalWindowSharingWindow"
+  }
+]
