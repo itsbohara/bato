@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bato split controller</title>
+<style>body{font:16px system-ui;margin:24px;min-width:440px;max-width:900px}button{padding:10px;margin:4px}pre{white-space:pre-wrap;background:#eee;padding:16px}</style>
+<h1>Disposable native split test</h1>
+<p>Controls create and close only this page's two test tabs on 127.0.0.1:18765. Use a disposable Profile.</p>
+<button id="windows">List window IDs and types</button>
+<button id="popup">Use unique Views popup</button>
+<button id="own">Use controller window</button>
+<button id="inspect">Inspect capabilities</button>
+<button id="create">Create two test tabs</button>
+<button id="move">Move controlled tabs into selected target</button>
+<button id="pair">Pair existing test tabs</button>
+<button id="left">Activate left</button>
+<button id="right">Activate right</button>
+<button id="unpair">Separate pair</button>
+<button id="close">Close test tabs</button>
+<button id="restore">Restore saved pair</button>
+<pre id="output" aria-live="polite"></pre>
+<script src="controller.js"></script>

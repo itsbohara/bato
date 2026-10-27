@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Bato disposable split controller",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvOa6wP+uK7CW77vPAIoPoZSaqYyHVaVuGtj5wzSUQP2+GfbHJYPzZrF/DtlTqjIu6cq08pUIHGlqsvuuYYCf8TNVMsInIdkfc6FBKQ84fajoE4TodNDlIwXAxH8qs9TCmUOysWIXzj4P/kEWIXkHDRMR257+xixTBeej8apV3bF6FSK1DG6+eC8FvDZDqDWqfhCwV5Gm+l5Lyy1WAj5Oi++RMzCQ6HB5QxPRLvxTdt/G3mlTj28hY8X1+tpKjb8uva+EPLkr6JUpEMoJtqTWBXVyUE1RtlLq71fe9hI/VH1a6W2UT/KrkJKpQQ3lLRbsKNfEsbC3nnsKPT5HaCiFLQIDAQAB",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "Split controller",
+    "default_popup": "controller.html"
+  },
+  "options_ui": {
+    "page": "controller.html",
+    "open_in_tab": true
+  }
+}
