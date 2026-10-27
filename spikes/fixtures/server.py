@@ -34,13 +34,13 @@ class LoopbackServer(ThreadingHTTPServer):
         self.server_port = self.server_address[1]
 
 
-def make_server(port=8765):
+def make_server(port=18765):
     return LoopbackServer(("127.0.0.1", port), partial(Handler, directory=str(ROOT)))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=18765)
     args = parser.parse_args()
     with make_server(args.port) as server:
         print(f"Bato fixtures: http://127.0.0.1:{server.server_port}/", flush=True)

@@ -32,3 +32,5 @@ python3 spikes/cef-baseline/launch.py --built --sample cefsimple --native --prof
 ```
 
 Add the same developer `--extension` paths as needed, and coordinate with the UI owner before closing/relaunching the current spike. This launches Chrome-owned native browser chrome; it is not a Swift-owned Bato window. The patch changes sample Profile plumbing only. CEF’s license for upstream sample material is preserved in [CEF-LICENSE.txt](CEF-LICENSE.txt).
+
+For new fixture runs, the default origin is `http://127.0.0.1:18765/`. The network observer accepts that origin as its optional argument: `node spikes/cef-baseline/network-capture.mjs http://127.0.0.1:18765/`. Historical runtime evidence used 8765 and is retained unchanged.

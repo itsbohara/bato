@@ -11,3 +11,7 @@ document.querySelector('#save-marker').onclick = () => {
 };
 document.querySelector('#read-marker').onclick = readMarker;
 readMarker();
+
+const alternateOrigin = new URL(location.href);
+alternateOrigin.hostname = 'localhost';
+document.querySelector('#alternate-origin').href = alternateOrigin.href;
