@@ -1,0 +1,19 @@
+# macOS and build output
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Browser data, local secrets, private captures
+.env
+.env.*
+!.env.example
+profiles/
+user-data/
+private/
+bato-references/
+*.crx
+*.dmg
+*.zip
