@@ -1,6 +1,6 @@
 # Work plan
 
-Status: design and feasibility experiment approved by the user on 2026-10-27. Runtime feasibility work is in progress.
+Status: design and feasibility experiment approved by the user on 2026-10-27. Initial runtime feasibility checkpoints are recorded in FEASIBILITY-RESULTS.md; the production integration gate remains open.
 
 ## Source of requirements
 
@@ -27,7 +27,15 @@ A failure must be reported as a blocker; do not replace required behavior with a
 - Extension fixtures: controlled login, filtering, and dapp pages plus a synthetic MV3 capability probe; pin real extension targets and document install paths.
 - Native composition: test the Swift/AppKit window boundary against the chosen runtime, native keyboard/focus behavior, and split/Peek constraints.
 
-Integration acceptance: reproduce launches, review logs, distinguish synthetic API results from real extension acceptance, and publish a passed/failed/untested matrix. A browser executable alone does not pass the foundation gate.
+Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILITY-RESULTS.md). Sample builds, Bitwarden store persistence, narrow AdGuard/MetaMask behavior, Profile markers, native accessory controls, and native Chrome split targeting have been exercised. Full extension acceptance remains open. A browser executable alone does not pass the foundation gate.
+
+### Next bounded engineering tasks
+
+1. Replace diagnostic injection with an explicit Swift/Objective-C++ lifecycle bridge to the Chrome-native runtime. Reserve native sidebar/command-bar geometry without reparenting compositor internals. Resolve the native-window accessory overlap and shutdown behavior.
+2. Control native Chromium split membership through supported CEF commands/version-checked tab APIs; prove divider resizing, saved-pair restore, and focused-pane behavior. Do not build two Alloy panes merely because the CEF BrowserView count is limited.
+3. Exercise Bitwarden autofill with a disposable test vault and controlled HTTPS fixture; exercise MetaMask with an unfunded disposable wallet. Keep real secrets out of artifacts.
+4. Extend Profile tests to multiple contexts/workspaces, more storage types, extension state, and clean restart with one consistent application identity. Investigate the cross-sample cookie observation before making broad persistence claims.
+5. Select the foundation only after reviewing these results; then begin application slices below.
 
 ## 3. Personal alpha implementation (after gate)
 

@@ -4,7 +4,7 @@ A native macOS browser with an Arc-inspired interface, built with Swift and Chro
 
 ## Status
 
-Pre-implementation research and design. No browser build or extension compatibility has been demonstrated yet. Apple Silicon is the initial target.
+Feasibility implementation is in progress on Apple Silicon. The stock CEF sample builds and runs; real extension installation, selected filtering/provider behavior, and a Swift/AppKit diagnostic have been exercised. The Bato application and complete extension compatibility are not yet demonstrated. See the [evidence matrix](FEASIBILITY-RESULTS.md).
 
 ## Direction
 
@@ -23,6 +23,8 @@ Chromium integration remains undecided. Extension behavior and native embedding 
 - [Chromium feasibility](CHROMIUM-FEASIBILITY.md)
 - [Arc import and blocking](IMPORT-AND-BLOCKING.md)
 - [Work plan](TASK.md)
+- [Run the feasibility harness](spikes/cef-baseline/README.md)
+- [Controlled test fixtures](spikes/fixtures/README.md)
 
 ## Development
 

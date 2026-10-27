@@ -16,4 +16,4 @@ Never commit real browser profiles, cookies, tokens, wallet material, personal t
 
 ## Current gate
 
-Complete design review and establish a viable Chromium/native-window/extension path before implementing the application. Use TASK.md for current acceptance gates. Do not download a full Chromium checkout without checking available disk space and an explicit need.
+The user approved the design and experiment on 2026-10-27; do not re-request that approval. Establish the remaining Chromium/native-window/extension path before implementing the application. The native Chromium split is distinct from multiple CEF BrowserViews; see the runtime evidence before inferring unsupported behavior. Use TASK.md for current acceptance gates. Do not download a full Chromium checkout without checking available disk space and an explicit need.
