@@ -30,4 +30,4 @@ Development uses focused subagents, with integration and verification coordinate
 
 ## License
 
-The repository is public. An open-source license is being selected; no license has been granted yet. Dependencies will retain their own licenses and notices.
+Bato is licensed under the [MIT License](LICENSE). Dependencies retain their own licenses and notices.
