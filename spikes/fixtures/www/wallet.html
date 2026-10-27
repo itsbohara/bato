@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato MetaMask compatibility fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>MetaMask compatibility fixture</h1>
+<p class="warning">Use a newly created disposable wallet with no assets. Never enter seed phrases on this page. Requests below run only when you press the corresponding button. This fixture never requests a transaction, token approval, chain change, or typed-data signature.</p>
+<label>Discovered provider <select id="providers"></select></label>
+<button id="inspect">Inspect existing permission</button><button id="connect">Request account access</button>
+<button id="disconnect">Revoke account permission</button><button id="sign">Request fixed test message signature</button>
+<p>Fixed message: <code>Bato compatibility test only; no transaction or authorization.</code></p>
+<pre id="result" role="status">Waiting for providers. No permission request has been sent.</pre>
+<p>Reject a request first, then retry and approve with the disposable account. Compare the prompt origin/account with this page. Test the toolbar popup separately.</p>
+</main><script src="wallet.js"></script></html>

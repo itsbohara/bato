@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato deterministic blocker fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>AdGuard controlled blocking</h1>
+<p>The local test script and cosmetic target are harmless. Default public lists are not expected to block them. Add the documented explicit user rules for a deterministic test.</p>
+<div id="bato-cosmetic-ad" class="test-ad">Cosmetic target: should disappear only when the cosmetic test rule is active.</div>
+<p id="network-probe">Network target script has not executed.</p>
+<p id="control-probe">Control script has not executed.</p>
+<p>Inspect Network as well as these messages: missing execution alone could indicate a script error. The control script must execute in every condition. Disable each blocker independently and reload to compare.</p>
+</main><script src="control.js"></script><script src="ads/network-probe.js"></script></html>

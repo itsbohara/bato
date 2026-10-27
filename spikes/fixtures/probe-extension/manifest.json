@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Bato synthetic MV3 capability probe",
+  "description": "Diagnostic only. Does not establish Bitwarden, AdGuard, or MetaMask compatibility.",
+  "version": "0.1.0",
+  "permissions": ["storage"],
+  "background": {"service_worker": "worker.js"},
+  "action": {"default_title": "Bato MV3 probe", "default_popup": "popup.html"},
+  "content_scripts": [{
+    "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}

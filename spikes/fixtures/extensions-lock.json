@@ -1,0 +1,149 @@
+{
+  "observed_date": "2026-10-27",
+  "status": "downloaded and integrity checked; installation and behavior require separate evidence",
+  "extensions": [
+    {
+      "name": "Bitwarden",
+      "release": "https://github.com/bitwarden/clients/releases/tag/browser-v2026.10.0",
+      "asset": "dist-chrome-2026.10.0.zip",
+      "download_url": "https://github.com/bitwarden/clients/releases/download/browser-v2026.10.0/dist-chrome-2026.10.0.zip",
+      "sha256": "7b9ec650b87dd8975e87a0e0bdd0c1f1a0fcf5b0a8da5ae759ec14cdffaad35d",
+      "verified_against": "GitHub release asset digest",
+      "manifest": {
+        "manifest_version": 3,
+        "version": "2026.10.0",
+        "permissions": [
+          "activeTab",
+          "alarms",
+          "clipboardRead",
+          "clipboardWrite",
+          "contextMenus",
+          "idle",
+          "offscreen",
+          "scripting",
+          "sidePanel",
+          "storage",
+          "tabs",
+          "unlimitedStorage",
+          "webNavigation",
+          "webRequest",
+          "webRequestAuthProvider",
+          "notifications"
+        ],
+        "optional_permissions": [
+          "nativeMessaging",
+          "privacy"
+        ],
+        "host_permissions": [
+          "https://*/*",
+          "http://*/*"
+        ],
+        "background": {
+          "service_worker": "background.js"
+        },
+        "action": {
+          "default_icon": {
+            "19": "images/icon19.png",
+            "38": "images/icon38.png"
+          },
+          "default_title": "Bitwarden",
+          "default_popup": "popup/index.html"
+        }
+      }
+    },
+    {
+      "name": "AdGuard AdBlocker",
+      "release": "https://github.com/AdguardTeam/AdguardBrowserExtension/releases/tag/v5.5.3.3",
+      "asset": "chrome-mv3.zip",
+      "download_url": "https://github.com/AdguardTeam/AdguardBrowserExtension/releases/download/v5.5.3.3/chrome-mv3.zip",
+      "sha256": "628b5da9749cf6b4730cf8ffe28b6afdb2b3e029c1acd918c73d7c4b2e90986e",
+      "verified_against": "GitHub release asset digest",
+      "manifest": {
+        "manifest_version": 3,
+        "version": "5.5.3.3",
+        "permissions": [
+          "tabs",
+          "webRequest",
+          "webNavigation",
+          "storage",
+          "unlimitedStorage",
+          "contextMenus",
+          "cookies",
+          "declarativeNetRequest",
+          "declarativeNetRequestFeedback",
+          "scripting",
+          "userScripts"
+        ],
+        "optional_permissions": [
+          "privacy"
+        ],
+        "host_permissions": [
+          "<all_urls>"
+        ],
+        "background": {
+          "service_worker": "pages/background.js"
+        },
+        "action": {
+          "default_icon": {
+            "19": "assets/icons/on-19.png",
+            "38": "assets/icons/on-38.png"
+          },
+          "default_title": "__MSG_name__",
+          "default_popup": "pages/popup.html"
+        }
+      }
+    },
+    {
+      "name": "MetaMask",
+      "release": "https://github.com/MetaMask/metamask-extension/releases/tag/v13.54.0",
+      "asset": "metamask-chrome-13.54.0.zip",
+      "download_url": "https://github.com/MetaMask/metamask-extension/releases/download/v13.54.0/metamask-chrome-13.54.0.zip",
+      "sha256": "14f73006fc9b0b185b645fcd96f52e23fba5cc1d71d3a091b6dfb04f83fdfe2b",
+      "verified_against": "GitHub release asset digest",
+      "manifest": {
+        "manifest_version": 3,
+        "version": "13.54.0.0",
+        "permissions": [
+          "activeTab",
+          "alarms",
+          "notifications",
+          "scripting",
+          "storage",
+          "unlimitedStorage",
+          "webRequest",
+          "offscreen",
+          "identity",
+          "sidePanel",
+          "cookies"
+        ],
+        "optional_permissions": [
+          "clipboardRead"
+        ],
+        "host_permissions": [
+          "http://localhost:8545/",
+          "file://*/*",
+          "http://*/*",
+          "https://*/*",
+          "ws://*/*",
+          "wss://*/*"
+        ],
+        "background": {
+          "service_worker": "service-worker.js"
+        },
+        "action": {
+          "default_icon": {
+            "16": "images/icon-16.png",
+            "19": "images/icon-19.png",
+            "32": "images/icon-32.png",
+            "38": "images/icon-38.png",
+            "64": "images/icon-64.png",
+            "128": "images/icon-128.png",
+            "512": "images/icon-512.png"
+          },
+          "default_title": "MetaMask",
+          "default_popup": "popup-init.html"
+        }
+      }
+    }
+  ]
+}

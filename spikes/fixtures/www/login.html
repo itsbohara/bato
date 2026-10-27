@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato dummy login</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>Bitwarden dummy login</h1>
+<p>Create a disposable vault entry for this exact origin with username <code>bato-test@example.invalid</code> and password <code>BatoDummyOnly-42!</code>. Never use a real credential.</p>
+<form id="login" autocomplete="on">
+<label>Username <input name="username" id="username" type="text" autocomplete="username" required></label>
+<label>Password <input name="password" id="password" type="password" autocomplete="current-password" required></label>
+<button type="submit">Check dummy values locally</button><button type="reset">Clear fields</button>
+</form><output id="result">No submission yet.</output>
+<p>Submission compares dummy values in page memory and prevents navigation. Values are never sent or logged.</p>
+</main><script src="login.js"></script></html>

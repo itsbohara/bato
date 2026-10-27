@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato compatibility fixtures</title><link rel="stylesheet" href="style.css">
+<main><h1>Bato compatibility fixtures</h1>
+<p>Use disposable profiles and test-only accounts. These pages do not send credentials or wallet data to a server.</p>
+<nav><a href="login.html">Bitwarden dummy login</a><a href="blocking.html">AdGuard network and cosmetic controls</a><a href="wallet.html">MetaMask provider and explicit prompts</a></nav>
+<h2>Profile / synthetic extension check</h2>
+<p id="extension-probe">Synthetic content script: not observed.</p>
+<label>Non-secret Profile marker <input id="marker" autocomplete="off" placeholder="e.g. profile-a"></label>
+<button id="save-marker">Save marker</button><button id="read-marker">Read marker</button>
+<output id="profile-result"></output>
+<p>Set a different marker in another Profile; restart and compare. This checks localStorage and a test cookie only, not every browser storage mechanism.</p>
+<p><a href="http://localhost:8765/">Alternate localhost origin</a> (default port only). Separate origin permission behavior can be tested there.</p>
+</main><script src="profile.js"></script></html>
