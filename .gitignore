@@ -17,3 +17,11 @@ bato-references/
 *.crx
 *.dmg
 *.zip
+
+# Engine spike artifacts and disposable state
+.cache/
+spikes/**/out/
+spikes/**/downloads/
+spikes/**/.venv/
+__pycache__/
+*.pyc

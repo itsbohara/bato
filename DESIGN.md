@@ -1,8 +1,8 @@
 # Bato — personal-alpha design
 
-Date: 2026-10-27. Status: review draft. No application implementation or compatibility validation is claimed by this document.
+Date: 2026-10-27. Status: approved by the user on 2026-10-27; feasibility work authorized. No application implementation or compatibility validation is claimed by this document.
 
-Source of product decisions: the local ideastorm planning checkout, under `/Users/itsbohara/code/ideastorm/concepts/bato/` (`README.md`, `HANDOFF.md`, and `references.md`). These private-workspace references are not part of this public repository; confirmed product behavior is captured below. **Confirmed** means the user has decided it. **Proposed** means an engineering or product recommendation requiring design review, not an additional user commitment.
+Source of product decisions: the local ideastorm planning checkout, under `/Users/itsbohara/code/ideastorm/concepts/bato/` (`README.md`, `HANDOFF.md`, and `references.md`). These private-workspace references are not part of this public repository; confirmed product behavior is captured below. **Confirmed** means the user has decided it. **Proposed** labels below identify recommendations in the original draft. The user approved this draft and its proposed defaults/experiment on 2026-10-27. Approval authorizes the work; it does not demonstrate engine or extension compatibility.
 
 ## Goal and scope
 
@@ -72,7 +72,7 @@ Persist ordering, saved URLs, active workspace, split relationships, archive sta
 | Minimum macOS | Initially build/test on the mini’s installed OS; establish the supported deployment floor after selecting the engine/SDK. | Do not make an unsupported compatibility promise. |
 | Blocker controls | Keep the confirmed per-site control; add a global Settings switch and managed filter updates. | Make failures diagnosable and blocking maintainable. Update verification and failure policy depend on the selected engine. |
 
-These defaults should be approved together as part of the full design; they are not grounds to repeat already answered product questions individually.
+The user approved these defaults together with the design on 2026-10-27. Do not repeat already answered product questions individually.
 
 ## Extension and blocker behavior
 
@@ -115,7 +115,7 @@ Diagnostics should record versions, operation type, and sanitized errors. Full U
 
 ## Review and delivery gates
 
-1. **Design review:** approve this draft’s proposed behavior and architecture experiment. Keep confirmed requirements fixed unless the user changes them.
+1. **Design review — complete:** the user approved this draft’s proposed behavior and architecture experiment on 2026-10-27. Keep requirements fixed unless the user changes them.
 2. **Feasibility:** native embedding and the three required extensions meet the explicit gates above; Profile isolation and persistence pass. Record limitations with evidence.
 3. **Foundation selection:** choose the Chromium integration and blocker with maintenance, license, binary size, storage, and update constraints understood. Name the owner of Chromium security refreshes before broader distribution.
 4. **Application implementation:** use the application repository at [itsbohara/bato](https://github.com/itsbohara/bato), locally `/Users/itsbohara/code/project-bato/bato`, then deliver incremental usable browser behavior with focused subagents and integrated verification. The application is MIT-licensed; dependencies retain their own terms.
