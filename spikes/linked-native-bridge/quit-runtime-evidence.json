@@ -1,0 +1,93 @@
+{
+  "observed_date": "2026-10-27",
+  "engine": {
+    "cef": "156.0.14+g4fa4ab5",
+    "chromium": "156.0.8078.48"
+  },
+  "scope": "Prebuilt-engine linked sample runtime only; no engine rebuild",
+  "host": "linked cefsimple native normal Chrome window with Swift companion",
+  "profile": "existing dedicated disposable profile-split-restore; mock Keychain on every launch",
+  "flags": [
+    "--use-native",
+    "--use-mock-keychain",
+    "--force-renderer-accessibility",
+    "--bato-focus-native-controls",
+    "--load-extension=<repo>/spikes/split-controller",
+    "--url=chrome://extensions"
+  ],
+  "debug_listener": false,
+  "ui_sequence": [
+    "Native Focus browser",
+    "chrome://extensions controller Details > Extension options",
+    "Restore saved pair",
+    "Separate pair",
+    "Pair existing test tabs",
+    "Close test tabs",
+    "Window > Bato bridge experiment",
+    "Quit application (distinct from Close all browsers)"
+  ],
+  "controller_observations": {
+    "window_id": 343657941,
+    "window_type": "normal",
+    "created_tab_ids": [
+      343657956,
+      343657957
+    ],
+    "pair_labels_observed": true,
+    "separated_labels_observed": true,
+    "repaired_labels_observed": true,
+    "controlled_tabs_closed": true
+  },
+  "quit_observations": {
+    "command_enabled": true,
+    "command_dispatched_completion_logged": false,
+    "sample_browser_counts": [
+      {
+        "phase": "created",
+        "count": 1
+      },
+      {
+        "phase": "created",
+        "count": 2
+      },
+      {
+        "phase": "created",
+        "count": 3
+      },
+      {
+        "phase": "created",
+        "count": 4
+      },
+      {
+        "phase": "closed",
+        "count": 3
+      },
+      {
+        "phase": "closed",
+        "count": 2
+      }
+    ],
+    "uncaught_exception": {
+      "name": "NSInvalidArgumentException",
+      "reason": "-[AppController tryToTerminateApplication:]: unrecognized selector sent to instance [address omitted]",
+      "sample_stack_frame": "-[SimpleApplication terminate:]"
+    },
+    "message_loop_exit_logged": false,
+    "cef_shutdown_complete_logged": false,
+    "process_absent": true,
+    "result": "Failed: process terminated following uncaught exception, not graceful shutdown"
+  },
+  "cleanup": {
+    "owned_process_remaining": false,
+    "forced_stop_needed": false,
+    "fixture_server_untouched": true,
+    "keychain_or_credentials_prompt_observed": false
+  },
+  "limits": [
+    "Does not establish intermittent earlier close-all hang fixed",
+    "Does not establish native application-menu/Cmd+Q handling",
+    "No production Keychain acceptance",
+    "No real vault/wallet/credentials or private browser data used",
+    "Exception instance address omitted; raw disposable log stays outside Git"
+  ]
+}
