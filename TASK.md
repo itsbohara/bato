@@ -31,11 +31,17 @@ Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILIT
 
 ### Next bounded engineering tasks
 
-1. Replace diagnostic injection with an explicit Swift/Objective-C++ lifecycle bridge to the Chrome-native runtime. Reserve native sidebar/command-bar geometry without reparenting compositor internals. Resolve the native-window accessory overlap and shutdown behavior.
-2. Control native Chromium split membership through supported CEF commands/version-checked tab APIs; prove divider resizing, saved-pair restore, and focused-pane behavior. Do not build two Alloy panes merely because the CEF BrowserView count is limited.
+1. Extend the explicit linked Swift/Objective-C++ experiment into one supported host combining native input/accessibility, reserved geometry, splits and extension UI. Linked attachment/action/split-command dispatch and mock-Profile shutdown passed; reserved Views geometry passed visually, but native input remains open. See spikes/linked-native-bridge/RESULTS.md and spikes/native-composition/ENGINE-SEAM.md. Resolve production Keychain/signing behavior separately from the test-only mock provider.
+2. Integrate the demonstrated normal-window split control and clean-restart URL reconstruction into the eventual native host. Prove divider resizing and real-extension focused-pane behavior; controller URL storage is not Bato saved pins. Investigate the first extension-controller close-all hang despite later clean exits. Do not build two Alloy panes merely because the CEF BrowserView count is limited.
 3. Exercise Bitwarden autofill with a disposable test vault and controlled HTTPS fixture; exercise MetaMask with an unfunded disposable wallet. Keep real secrets out of artifacts.
 4. Extend Profile tests to multiple contexts/workspaces, more storage types, extension state, and clean restart with one consistent application identity. Investigate the cross-sample cookie observation before making broad persistence claims.
 5. Select the foundation only after reviewing these results; then begin application slices below.
+
+The exact pinned extension API creates visible splits in normal Chrome windows. It redirects requested tab creation away from a populated Views popup and rejects moves back into it. Do not treat that test as a path combining Swift sidebar geometry with native split support. Engine-facing layout/type changes need an independently built framework and acceptance; the current prebuilt engine does not expose those seams.
+
+## Authorized source-build workspace
+
+The user selected the external SSD's personal folder on 2026-10-28. Dedicated engine artifacts, tools, caches and temporary files belong under `/Volumes/Mahesh/personal/bato-build`. The application Git checkout remains here. Initial checks found writable APFS, approximately167GiB free and16GiB host RAM. Prepare a single ARM64 developer component configuration, preserve a20GiB free-space reserve and avoid distribution/multiple-configuration builds. Keep the exact existing CEF/Chromium pins. The reservation patch is a source-build experiment; neither a successful checkout nor its dry-run selects a production foundation.
 
 ## 3. Personal alpha implementation (after gate)
 

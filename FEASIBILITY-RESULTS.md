@@ -1,6 +1,6 @@
 # Feasibility results
 
-Date: 2026-10-27. The user approved the design and bounded experiment. This records observed diagnostic behavior, not a complete Bato application or a selected production foundation.
+Dates: 2026-10-27–28. The user approved the design and bounded experiment. This records observed diagnostic behavior, not a complete Bato application or a selected production foundation.
 
 ## Environment and pinned engine
 
@@ -29,6 +29,12 @@ Apple Silicon Mac mini, macOS 27.0.1, Xcode 26.3 (17C529), CMake. The experiment
 | Profile cookie/localStorage restart and isolation | Passed narrowly | A marker survived restart; B initially had neither A marker nor A extensions; distinct B marker did not replace A. Does not prove every storage type or Bato workspaces. |
 | Swift/AppKit native composition | Partial diagnostic pass | Clean accessory row in Views-hosted cefclient; combined native Chrome split + Bitwarden popup worked, but accessory overlapped toolbar there. Native sidebar and production layout not passed. |
 | Two-page split | Passed display and synthetic action targeting | Native Chromium split displayed independent pages; action popup selected distinct focused tab IDs/paths. Divider drag, saved-pair restore, and real vault/wallet per-pane acceptance remain unverified. |
+| Explicit linked Swift/Objective-C++ bridge | Passed narrowly | Native Chrome window attachment, actual native action/text input, supported split-command dispatch, shared-window tab tracking, detach and completed CEF shutdown passed in a disposable mock-Keychain Profile. Companion panel is a diagnostic, not Bato's sidebar. |
+| Reserved Views geometry | Passed visually; input open | Public CEF layout reserved260px left/44px top; Swift controls and page rendered without overlap and closed cleanly. Native controls were absent from observed accessibility tree; real input remains unverified. |
+| Public extension split-control API | Passed in normal Chrome window | Actual `tabs.createSplit` produced two visible fixture pages. Requested Views-popup tab creation redirected to a normal window; moving tabs back was rejected. No Views split pass. |
+| Split separation and saved-URL reconstruction | Passed narrowly in normal Chrome | Controller separated/re-paired tabs and reconstructed a visible pair with fresh IDs across a confirmed clean restart. Fixed fixture URLs in extension storage only; Bato saved pins and divider ratios are unimplemented. One earlier close-all run hung and required an owned-process stop. |
+| Application quit with controller extension | Initial sample path failed; revised build pending UI | Native `IDC_EXIT` exposed an invalid sample delegate cast and crashed. The sample now closes through its explicit handler and compiles; this correction has not yet passed runtime verification. |
+| Multiple shared/isolated request contexts | Compiled; runtime pending | Dedicated three-window probe and explicit storage fixture are built. No runtime sharing, storage or restart pass follows from compilation. |
 | Peek and complete focus/popup lifecycle | Untested | Requires production composition boundary. |
 
 ## Important interpretation
@@ -40,7 +46,8 @@ The first native accessory attempt overlapped Chrome’s toolbar. Explicit sizin
 ## Checks still required before foundation selection
 
 - A supported native Swift sidebar, command bar, and lifecycle integration without reparenting compositor internals.
-- Divider resizing, saved split restoration, real-extension behavior on both panes, and cross-origin popup/permission association. Synthetic focused-tab association passed in the native split.
+- A single host combining native input/accessibility, reserved geometry, native splits and extension UI. Normal Chrome lacks a public content-reservation API; the tested Views popup cannot receive the required second tab through public extension creation/move APIs.
+- Divider resizing, Bato saved-pair integration, real-extension behavior on both panes, and cross-origin popup/permission association. Synthetic focused-tab association and normal-window controller URL reconstruction passed; neither establishes Bato's saved-pin behavior.
 - Actual Bitwarden test-vault autofill on a controlled HTTPS fixture.
 - MetaMask disposable-wallet connection, rejection/approval, and explicit test-message signing.
 - Shared request-context behavior across Bato workspaces plus broader storage/extension isolation.
@@ -51,4 +58,14 @@ The first native accessory attempt overlapped Chrome’s toolbar. Explicit sizin
 
 The coordinator reran four Python HTTP fixture tests, the Node mocked-wallet request-gating test, and the synthetic popup privacy/targeting test; all passed. These verify test fixtures only. No real vault, funded wallet, production secret, or private browsing data was used.
 
+The new storage fixture's explicit-operation, namespaced-store, mock sharing/isolation, session-scope, partial-failure and output-sanitization tests also passed. The [request-context probe](spikes/profile-contexts/README.md) compiles against the pinned framework; its real storage checks await UI execution.
+
 The [split investigation](spikes/native-composition/SPLIT-INVESTIGATION.md) corrects the early BrowserView-count inference with versioned runtime evidence. Switching between cefclient and cefsimple preserved the localStorage marker but did not preserve the observed test cookie; cross-sample cookie continuity is not a pass. Sample Quit/lifecycle behavior also needs investigation.
+
+## Linked bridge follow-up
+
+The [linked bridge results](spikes/linked-native-bridge/RESULTS.md) replace generic injection with explicit CEF creation/focus/close callbacks for the experiment. Native full-Chrome and reserved Views runs both completed `CefShutdown` after real window closes. Initial blank-page/watchdog failures also occurred in an exact stock rebuild; a process sample showed a Keychain-decryption wait. The same failing executable rendered and closed using Chromium's test-only `--use-mock-keychain` flag with a fresh disposable Profile. This isolates development tests; production Keychain access, stable signing identity and encrypted storage remain unpassed. Do not apply that flag to personal Profiles.
+
+The [split-control report](spikes/native-composition/SPLIT-CONTROL.md) records actual normal-window API success, clean-restart URL reconstruction and Views target rejection. One initial extension-controller close-all run detached the bridge browsers but did not leave the event loop; two subsequent runs completed shutdown. General extension-loaded quit remains a gate rather than a universal pass. The [boundary audit](spikes/native-composition/BRIDGE-BOUNDARY.md) and [engine seam proposal](spikes/native-composition/ENGINE-SEAM.md) map the remaining integration work. A [one-file reservation patch sketch](spikes/engine-reservation/README.md) passes pinned-source/hash and patch dry-run checks, but is uncompiled. No production foundation or engine fork has been selected.
+
+The separate [application-quit test](spikes/linked-native-bridge/QUIT-PATH.md) exposed a concrete sample integration bug: native Chrome's actual `AppController` delegate did not implement the method assumed by the sample's termination override. The revised override calls the known sample handler directly. Compilation passed; the Mac was locked when UI verification was attempted, so the fix remains unverified at runtime.
