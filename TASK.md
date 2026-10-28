@@ -39,6 +39,8 @@ Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILIT
 
 The exact pinned extension API creates visible splits in normal Chrome windows. It redirects requested tab creation away from a populated Views popup and rejects moves back into it. Do not treat that test as a path combining Swift sidebar geometry with native split support. Engine-facing layout/type changes need an independently built framework and acceptance; the current prebuilt engine does not expose those seams.
 
+The [native input audit](spikes/native-composition/NATIVE-INPUT-AUDIT.md) identifies Chromium's custom content-view hit-testing/accessibility policies in both host modes. Arbitrary Swift child attachment is insufficient; evaluate an explicit engine-owned `NativeViewHost` with an application-owned adapter before considering global content-view overrides. This is source-backed research, not a demonstrated native-host solution.
+
 ## Authorized source-build workspace
 
 The user selected the external SSD's personal folder on 2026-10-28. Dedicated engine artifacts, tools, caches and temporary files belong under `/Volumes/Mahesh/personal/bato-build`. The application Git checkout remains here. Initial checks found writable APFS, approximately167GiB free and16GiB host RAM. Prepare a single ARM64 developer component configuration, preserve a20GiB free-space reserve and avoid distribution/multiple-configuration builds. Keep the exact existing CEF/Chromium pins. The reservation patch is a source-build experiment; neither a successful checkout nor its dry-run selects a production foundation.
