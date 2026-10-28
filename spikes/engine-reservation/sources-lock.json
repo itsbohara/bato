@@ -1,0 +1,30 @@
+{
+  "chromium_version": "156.0.8078.48",
+  "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+  "files": [
+    {
+      "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
+      "url": "https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.48/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc?format=TEXT",
+      "sha256_decoded": "608453bf6a67f0f6eea0fb5d08b80d6177a7ec8983b54b2934fcd899f8574b60",
+      "bytes_decoded": 11905
+    },
+    {
+      "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h",
+      "url": "https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.48/chrome/browser/ui/views/frame/layout/browser_view_layout_params.h?format=TEXT",
+      "sha256_decoded": "c02bc1b87af90cf619551eb6b6960f6c26320b85b70524612b1e887b00754b59",
+      "bytes_decoded": 6548
+    },
+    {
+      "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_params.cc",
+      "url": "https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.48/chrome/browser/ui/views/frame/layout/browser_view_layout_params.cc?format=TEXT",
+      "sha256_decoded": "4f177335bc4382dbce35728b9f2064eccb121c116a0839e509de7b737e545017",
+      "bytes_decoded": 3465
+    },
+    {
+      "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_impl.cc",
+      "url": "https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.48/chrome/browser/ui/views/frame/layout/browser_view_layout_impl.cc?format=TEXT",
+      "sha256_decoded": "2090c4b7b913c03017334d4d44cd8a41c73d1b6acee1020c7ec0df3391c56ccc",
+      "bytes_decoded": 14983
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -7,2 +7,3 @@
+ #include "base/callback_list.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+@@ -29,2 +30,3 @@
+ #include "chrome/common/pref_names.h"
++#include "ui/gfx/geometry/insets.h"
+ #include "ui/gfx/geometry/rect.h"
+@@ -116,4 +118,19 @@
+ #endif
+-    return params.InLocalCoordinates(
++    auto local_params = params.InLocalCoordinates(
+         use_browser_bounds ? browser_bounds : params.visual_client_area);
++#if BUILDFLAG(IS_MAC)
++    // Bato source-build experiment only. Keep Chrome's complete child layout
++    // (toolbar, origin UI, extension anchors and split subtree) under its own
++    // layout manager. This is not an AppKit hosting contract.
++    const auto window_state = GetBrowserWindowState();
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++            "bato-native-reservation") &&
++        browser_view_->browser()->GetType() ==
++            BrowserWindowInterface::Type::TYPE_NORMAL &&
++        (window_state == WindowState::kNormal ||
++         window_state == WindowState::kMaximized)) {
++      local_params.Inset(gfx::Insets::TLBR(44, 260, 0, 0));
++    }
++#endif
++    return local_params;
+   }
