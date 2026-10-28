@@ -24,7 +24,7 @@ class FixtureServerTests(unittest.TestCase):
 
     def test_loopback_binding_and_fixture_resources(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
-        for path in ["/", "/login.html", "/wallet.html", "/blocking.html", "/wallet.js", "/ads/network-probe.js", "/control.js"]:
+        for path in ["/", "/login.html", "/wallet.html", "/blocking.html", "/wallet.js", "/storage.html", "/storage.js", "/ads/network-probe.js", "/control.js"]:
             with self.subTest(path=path), urlopen(self.base + path) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers["Cache-Control"], "no-store")

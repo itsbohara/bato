@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato storage fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1 id="heading">Controlled storage fixture</h1>
+<p>Use only a dedicated disposable Profile. These controls access fixed Bato test keys; no storage is read or written at page load.</p>
+<label>Synthetic marker <input id="marker" value="bato-shared-a" autocomplete="off" spellcheck="false" maxlength="45"></label>
+<p>Markers must start with <code>bato-</code>, followed by 1–40 lowercase letters, digits, underscores or hyphens. Never enter a credential.</p>
+<button id="write" type="button">Write marker</button><button id="read" type="button">Read marker</button>
+<output id="result" aria-live="polite">No storage operation requested.</output>
+<p>localStorage, the named persistent cookie, IndexedDB and CacheStorage should agree between contexts that share storage. sessionStorage is reported separately because it belongs to a tab. A write can partly succeed; inspect each result. A timeout does not cancel an operation already started.</p>
+<p>CacheStorage uses a synthetic same-origin key without fetching it. No service worker, permission request, authentication or form submission is used.</p>
+</main><script src="storage.js"></script></html>
