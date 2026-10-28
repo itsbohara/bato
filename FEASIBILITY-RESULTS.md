@@ -4,7 +4,7 @@ Dates: 2026-10-27–28. The user approved the design and bounded experiment. Thi
 
 ## Environment and pinned engine
 
-Apple Silicon Mac mini, macOS 27.0.1, Xcode 26.3 (17C529), CMake. The experiment uses CEF `156.0.14+g4fa4ab5`, Chromium `156.0.8078.48`, and the official arm64 binary distribution. Both the prebuilt stock client and a locally compiled stock `cefclient` ran. No Chromium source checkout/build was performed.
+Apple Silicon Mac mini, macOS 27.0.1, Xcode 26.3 (17C529), CMake. The runtime experiments use CEF `156.0.14+g4fa4ab5`, Chromium `156.0.8078.48`, and the official arm64 binary distribution. Both the prebuilt stock client and a locally compiled stock `cefclient` ran. The separately authorized SSD source checkout has now completed successfully at those exact revisions; engine compilation has not started.
 
 [Baseline report](spikes/cef-baseline/RESULTS.md) records archive hashes, sample build flags, launches, and local evidence locations. [Extension lock](spikes/fixtures/extensions-lock.json) pins official developer packages and their verified release-asset digests. Profiles, downloaded extensions, logs, and engine binaries stay outside Git under `$HOME/.cache/bato`.
 
