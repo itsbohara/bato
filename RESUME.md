@@ -1,6 +1,6 @@
 # Resume Bato
 
-Checkpoint: 2026-10-28. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
+Checkpoint: 2026-10-28, prepared at the user's request before compacting this session. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
 ## Working locations
 
@@ -32,11 +32,17 @@ The distinct native `IDC_EXIT` test crashed because stock SimpleApplication term
 - `spikes/profile-contexts/` compiles a three-native-window sharing/isolation probe. A1/A2 request shared storage; B isolated. `python3 spikes/profile-contexts/run.py` uses its fixed dedicated mock-Profile root. Actual contexts/storage/restart checks are pending.
 - New fixture `/storage.html?label=A1|A2|B` exercises explicit namespaced localStorage, CookieStore, IndexedDB, CacheStorage and tab-scoped sessionStorage. HTTP tests and Node fixture tests pass. It is served by the existing static server without restarting it.
 - `spikes/engine-reservation/` contains a one-file opt-in Chromium layout patch sketch plus exact source hashes. Hash checks and patch dry-run pass; uncompiled and not a native hosting contract.
-- SSD bootstrap has only small pinned official tooling/docs under its bootstrap/ folder. `spikes/engine-build/` scaffolding is being prepared; inspect its status before launching expensive checkout/build. No full Chromium checkout/build has started at this checkpoint.
+- The guarded SSD pipeline is committed at af58afa. Nine process/provenance tests and independent review passed. **Chromium/CEF checkout is now running** via `python3 spikes/engine-build/engine.py checkout --execute`; unified exec session50111, initial owned childPID22181. Check current run-state/PID before any action: `/Volumes/Mahesh/personal/bato-build/logs/run-state.json`, log `logs/checkout.log`. Never start a duplicate command or rebuild/update tooling while it runs. Only small pinned CEF/depot_tools clones existed at launch; compilation has not started. After successful checkout marker: configure, patch, then build via the guarded stages, reviewing real results at each step.
 - **Mac UI is locked.** Computer control reported automatic unlock failed; the user was asked to unlock manually. Do not bypass the lock or claim UI tests complete. CLI source/build work can continue.
 
 ## Process and source-control state
 
 No owned sample browser/debug listener remains. The root-owned synthetic fixture server is still on127.0.0.1:18765. Leave the unrelated existing service on8765 untouched. Engine samples/cache remain under `~/.cache/bato`; preserve them for repeatable tests.
 
-New reviewed commits include split-control probe7145275, reservation/boundary researchcd45acb, storage fixtures74b4ecf, linked native bridge6bcc8f1 and context probea12f614. Remaining report/checkpoint and SSD build-scaffold changes may still be uncommitted; inspect Git status and agent status before integration. Do not repeat builds or overwrite a running executable. No production foundation, complete Bato application, engine fork or release has been selected.
+New reviewed commits include split-control probe7145275, reservation/boundary researchcd45acb, storage fixtures74b4ecf, linked native bridge6bcc8f1 and context probea12f614. Additional pushed checkpoint1d93b03 and guarded pipeline commitaf58afa preserve reviewed work. The latest running-checkout checkpoint/report edits may remain uncommitted; inspect Git status and agent status before integration. Do not repeat builds or overwrite a running executable. No production foundation, complete Bato application, engine fork or release has been selected.
+
+## First action after compaction
+
+Inspect `python3 spikes/engine-build/engine.py status`, the SSD checkout log, the recorded PID and `checkout-complete.json`. At the last check, owned child22181 was alive, and gclient was still working on the shallow main `src` fetch. Compilation has not started. The root command's unified exec session is50111; resume/poll it if still available. All delegated agents finished; the guarded CLI command is the only ongoing engineering process besides the fixture server.
+
+If checkout is still active, continue monitoring the existing command. If it finished successfully, verify its completion marker before configure/patch/build. If it stopped or has no completion marker, inspect the actual failure and preserve partial files: never rerun/adopt an incomplete checkout as though dependencies and hooks had completed. The source pipeline's nine guard/provenance tests and independent final review passed before launch. User permission for the SSD is already established. GUI tests await manual unlock; no unlock bypass is authorized or needed for CLI work.
