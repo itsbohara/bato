@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "cef_branch": "8078",
+  "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+  "cef_url": "https://github.com/chromiumembedded/cef.git",
+  "chromium_revision": "refs/tags/156.0.8078.48",
+  "depot_tools_url": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+  "depot_tools_revision": "8ce91cb0b1b3d28c8a74d84b724a3897e6d8a284",
+  "automate_url": "https://raw.githubusercontent.com/chromiumembedded/cef/4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f/tools/automate/automate-git.py",
+  "automate_sha256": "94d3ddd1e0d35482132f45dc101a593c9371b6eb2d8ff4af6cfe2734d2e48c6a",
+  "configuration": "Debug_GN_arm64",
+  "gn_defines": "is_component_build=true symbol_level=0 use_system_xcode=true use_remoteexec=false",
+  "initial_free_bytes": 150000000000,
+  "reserve_bytes": 21474836480,
+  "chromium_url": "https://chromium.googlesource.com/chromium/src.git",
+  "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+  "siso_version": "git_revision:c574896b272b40aac6e44c228ee0b471ea7e3d7d",
+  "chromium_deps_sha256": "3535b3175635f9984c82a3f0c2a8e70f0ed2cfdb2a352f40446c9fddf2490703",
+  "sample_path": "tests/cefsimple/cefsimple_mac.mm",
+  "sample_original_sha256": "e4c18d6d002ef30d14e448147bf6fb4e5079c9e110c85129a47b68dede88e781",
+  "sample_patched_sha256": "5e394c277c076a00011e0d53085cd7f34e96109c7804c795c771e40eee6d86af"
+}

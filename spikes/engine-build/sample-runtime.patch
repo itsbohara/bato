@@ -1,0 +1,33 @@
+--- a/tests/cefsimple/cefsimple_mac.mm
++++ b/tests/cefsimple/cefsimple_mac.mm
+@@ -81,3 +81,6 @@
+-  SimpleAppDelegate* delegate =
+-      static_cast<SimpleAppDelegate*>([NSApp delegate]);
+-  [delegate tryToTerminateApplication:self];
++  // Chrome style may install AppController as NSApp.delegate. Do not cast
++  // that runtime delegate to the sample delegate or send a private selector.
++  SimpleHandler* handler = SimpleHandler::GetInstance();
++  if (handler && !handler->IsClosing()) {
++    handler->CloseAllBrowsers(false);
++  }
+@@ -158,0 +162,17 @@
++    // Bato source-build sample: dedicated synthetic Profiles and mock key
++    // provider only. Never fall back to default or personal browser storage.
++    if (!command_line->HasSwitch("use-mock-keychain") ||
++        !command_line->HasSwitch("cache-path")) {
++      fprintf(stderr, "Bato engine sample requires an explicit mock test Profile\n");
++      return 1;
++    }
++    const std::string supplied_path =
++        command_line->GetSwitchValue("cache-path").ToString();
++    NSString* profile = [NSString stringWithUTF8String:supplied_path.c_str()];
++    profile = profile.stringByStandardizingPath.stringByResolvingSymlinksInPath;
++    if (![profile hasPrefix:@"/Volumes/Mahesh/personal/bato-build/runtime/profiles/"] ||
++        ![[NSFileManager defaultManager] fileExistsAtPath:
++            @"/Volumes/Mahesh/personal/bato-build/.bato-engine-workspace.json"]) {
++      fprintf(stderr, "Bato engine sample refuses storage outside its SSD test namespace\n");
++      return 1;
++    }
+@@ -159,0 +180,2 @@
++    CefString(&settings.root_cache_path) = profile.UTF8String;
++    CefString(&settings.cache_path) = profile.UTF8String;
