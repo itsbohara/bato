@@ -140,6 +140,48 @@ class ReserveGuardTest(unittest.TestCase):
 
 
 class ProvenanceTest(unittest.TestCase):
+    def test_bootstrap_command_and_scoped_environment(self):
+        root = Path('/Volumes/Mahesh/personal/bato-build')
+        command, cwd = engine.stage_command('bootstrap', root)
+        self.assertEqual(command, ['/bin/bash', '-e', '-c',
+                                  'source "$1/bootstrap_python3"; bootstrap_python3',
+                                  'bato-bootstrap', str(root / 'depot_tools')])
+        self.assertEqual(cwd, root / 'depot_tools')
+        with mock.patch.dict(os.environ, {'DEPOT_TOOLS_UPDATE': '1', 'CIPD_CACHE_DIR': '/other-cache',
+                                         'GN_ARGUMENTS': '--args=unsafe', 'HOME': '/original-home'}):
+            env = engine.environment(root)
+            self.assertEqual(env['DEPOT_TOOLS_UPDATE'], '0')
+            self.assertEqual(env['CIPD_CACHE_DIR'], str(root / 'cache/cipd'))
+            self.assertEqual(env['TMPDIR'], str(root / 'tmp') + '/')
+            self.assertEqual(env['HOME'], '/original-home')
+            self.assertNotIn('GN_ARGUMENTS', env)
+            self.assertEqual(os.environ['DEPOT_TOOLS_UPDATE'], '1')
+            self.assertEqual(os.environ['CIPD_CACHE_DIR'], '/other-cache')
+
+    def test_bootstrap_provenance_failure_never_launches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / engine.MARKER).write_text(json.dumps(engine.LOCK))
+            with mock.patch.object(sys, 'argv', ['engine.py', 'bootstrap', '--root', str(root), '--execute']), \
+                    mock.patch.object(engine, 'preflight'), \
+                    mock.patch.object(engine, 'verify_source', side_effect=RuntimeError('dirty pinned tooling')), \
+                    mock.patch.object(engine, 'guarded_run') as run:
+                with self.assertRaisesRegex(RuntimeError, 'dirty pinned tooling'):
+                    engine.main()
+                run.assert_not_called()
+
+    def test_bootstrap_preview_does_not_launch_or_require_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / engine.MARKER).write_text(json.dumps(engine.LOCK))
+            with mock.patch.object(sys, 'argv', ['engine.py', 'bootstrap', '--root', str(root)]), \
+                    mock.patch.object(engine, 'preflight'), \
+                    mock.patch.object(engine, 'verify_source') as verify, \
+                    mock.patch.object(engine, 'guarded_run') as run:
+                engine.main()
+                verify.assert_called_once_with(root)
+                run.assert_not_called()
+
     def test_modified_automate_script_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

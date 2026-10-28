@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Explicit, guarded CEF developer-build stages on Bato's external SSD.
 
-prepare fetches only small tooling/CEF checkouts. checkout/configure/patch/build
+prepare fetches only small tooling/CEF checkouts. bootstrap/checkout/configure/patch/build
 print their command until --execute is supplied. No cleanup or force flags.
 """
 import argparse
@@ -279,6 +279,13 @@ def source_paths(root):
 
 def stage_command(phase, root):
     source, cef = source_paths(root)
+    if phase == 'bootstrap':
+        # Initialize only the Python shim required by gn. Unlike the broad
+        # ensure_bootstrap script, this does not also bootstrap gsutil/pylint.
+        # -e prevents the function's final cd from hiding a CIPD failure.
+        return ['/bin/bash', '-e', '-c',
+                'source "$1/bootstrap_python3"; bootstrap_python3',
+                'bato-bootstrap', str(root / 'depot_tools')], root / 'depot_tools'
     if phase == 'checkout':
         return [sys.executable, str(root / 'bootstrap/automate-git.py'),
                 '--download-dir=' + str(root / 'source'),
@@ -354,9 +361,9 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGHUP, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=['preflight', 'prepare', 'checkout', 'configure', 'patch', 'build', 'status'])
+    parser.add_argument('phase', choices=['preflight', 'prepare', 'bootstrap', 'checkout', 'configure', 'patch', 'build', 'status'])
     parser.add_argument('--root', type=Path, default=DEFAULT_ROOT)
-    parser.add_argument('--execute', action='store_true', help='Execute expensive checkout/configure/patch/build stage')
+    parser.add_argument('--execute', action='store_true', help='Execute bootstrap/checkout/configure/patch/build stage')
     args = parser.parse_args()
     root = args.root.absolute()
     if args.phase == 'preflight':
@@ -379,9 +386,9 @@ def main():
             prepare(root)
             return
         verify_source(root)
-        if args.phase != 'checkout':
+        if args.phase not in ('checkout', 'bootstrap'):
             require_checkout(root)
-        elif source_paths(root)[0].exists():
+        elif args.phase == 'checkout' and source_paths(root)[0].exists():
             # automate's no-history mode can skip sync/hooks for an existing
             # partial src tree even when chrome/VERSION is already present.
             require_checkout(root)
@@ -414,6 +421,16 @@ def main():
                     raise RuntimeError('Generated build configuration differs: ' + expected)
         guarded_run(command, cwd, environment(root), root / ('logs/' + args.phase + '.log'),
                     root, LOCK['reserve_bytes'])
+        if args.phase == 'bootstrap':
+            check_repo(root / 'depot_tools', LOCK['depot_tools_revision'], LOCK['depot_tools_url'])
+            depot = root / 'depot_tools'
+            marker = depot / 'python3_bin_reldir.txt'
+            if not marker.is_file():
+                raise RuntimeError('Python bootstrap exited without its interpreter marker')
+            relative = Path(marker.read_text().strip())
+            interpreter = (depot / relative / 'python3').resolve()
+            if relative.is_absolute() or not interpreter.is_relative_to(depot.resolve()) or not os.access(interpreter, os.X_OK):
+                raise RuntimeError('Python bootstrap interpreter is missing or outside pinned tooling')
         if args.phase == 'checkout':
             verify_source(root)
             if not (root / 'source/chromium/.gclient_entries').is_file() or not source_paths(root)[1].is_dir():

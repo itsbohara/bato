@@ -2,7 +2,7 @@
 
 The user authorized `/Volumes/Mahesh/personal` for Bato engine work on 2026-10-28. This scaffold uses only its dedicated `bato-build/` child. The application repository stays at its existing location; unrelated Personal-folder files are not inspected or changed.
 
-**Setup only so far: no Chromium source checkout, framework compilation or native-reservation runtime result.** The coordinator must explicitly start the expensive stages after review. The current prebuilt-engine experiments are independent.
+**Checkout completed on 2026-10-28:** the pinned automate command exited0 and its completion marker was verified. Configuration applied116 upstream CEF patches (one platform patch skipped), then stopped because depot_tools’ separate Python shim was not initialized. The explicit bootstrap repair completed without updating tooling. Configuration retry generated36640 targets from5030 files, both local patches applied, and the two-job ARM64 component compilation is now running. No completed engine build or native-reservation runtime result exists. The current prebuilt-engine experiments are independent.
 
 ## Exact configuration
 
@@ -28,6 +28,10 @@ Run from the application repository:
 python3 spikes/engine-build/engine.py preflight
 python3 spikes/engine-build/engine.py prepare
 
+# Initialize gn’s pinned Python interpreter without updating depot_tools Git.
+python3 spikes/engine-build/engine.py bootstrap
+python3 spikes/engine-build/engine.py bootstrap --execute
+
 # Print the exact expensive command, then explicitly execute it when reviewed.
 python3 spikes/engine-build/engine.py checkout
 python3 spikes/engine-build/engine.py checkout --execute
@@ -40,6 +44,8 @@ python3 spikes/engine-build/engine.py status
 ```
 
 `checkout` runs the pinned official automate script with the exact CEF/Chromium refs, `--no-chromium-history`, `--no-build`, `--no-distrib`, and update suppression for already pinned CEF/depot_tools. **No-build still fetches Chromium dependencies and runs Chromium hooks.** It is a large stage, not a metadata check. No force-clean, reset or clean flag is added. The official initial sync may replace its generated initial `src/out` directory; this wrapper refuses checkout updates when tracked local source changes exist. After applying the Bato patch, use configure/build directly instead of rerunning checkout.
+
+`bootstrap` invokes only the pinned `bootstrap_python3` function with Bash failure propagation. Its tracked manifest and resolved package versions install the interpreter inside SSD depot_tools and create `python3_bin_reldir.txt`. It does not update the tooling repository or run the broader `ensure_bootstrap` gsutil/pylint initialization. It uses the same preflight, provenance checks, workspace lock, scoped caches and process-group/disk-reserve guard as expensive stages, with preview unless `--execute` is supplied. Afterward it checks tooling provenance again and refuses a missing or non-executable interpreter, or a marker resolving outside depot_tools. No global environment setting is changed.
 
 `configure` runs pinned CEF's `gclient_hook.py`, which generates CEF wrappers, applies upstream CEF patches and creates GN files. `patch` then checks/applies the [reservation sketch](../engine-reservation/README.md) against the resulting source, treating an already applied identical patch as success. Upstream CEF patches may change its target: a failed apply is a review point, never a reason to force or silently adapt it. `build` validates the generated ARM64 Debug/component/symbol settings and both patches, then invokes `autoninja -j 2` for `cefsimple` only.
 
@@ -63,4 +69,4 @@ No browser is launched by these stages, and no Profile, Keychain, extension or p
 python3 -m unittest discover -s spikes/engine-build -p 'test_*.py'
 ```
 
-Nine tests passed. They start disposable Python processes, force a simulated low-space transition, stop a TERM-ignoring descendant even when its leader has already exited, preserve an unrelated process/file and record a completed normal run. Initial state-write/print failures also stop the child while preserving the original error. Provenance tests reject changed bootstrap source and dirty pinned tooling, and ensure a partial tree containing a valid VERSION never invokes automate. Preflight passes against the actual mounted SSD. No test starts Chromium checkout or compilation.
+Twelve tests passed. Bootstrap tests verify the pinned command, scoped environment without global mutation, preview behavior and refusal to launch after a provenance failure. They start disposable Python processes, force a simulated low-space transition, stop a TERM-ignoring descendant even when its leader has already exited, preserve an unrelated process/file and record a completed normal run. Initial state-write/print failures also stop the child while preserving the original error. Provenance tests reject changed bootstrap source and dirty pinned tooling, and ensure a partial tree containing a valid VERSION never invokes automate. Preflight passes against the actual mounted SSD. No test starts Chromium checkout or compilation.
