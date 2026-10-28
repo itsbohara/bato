@@ -77,3 +77,29 @@ The [disposable controller extension](../split-controller/README.md) implements 
 6. Independently test divider drag and resulting geometry. Do not infer divider persistence from pair membership.
 
 Only after those pass, design an authenticated native transport tied to the correct Profile/window and a durable controller-extension install/update path. Existing `--load-extension` loading is temporary developer machinery; Bitwarden's demonstrated Web Store persistence does not prove persistence or privileges for a Bato controller extension. Native sidebar geometry, lifecycle, real vault/wallet targeting and extension permissions remain separate foundation gates.
+
+## Normal-window reconstruction runtime result
+
+The delegated coordinator test used the linked `cefsimple --use-native` executable, this controller extension, and a newly created disposable `profile-split-restore`. Both launches used the same executable identity/Profile and `--use-mock-keychain`; no debug listener was enabled. The mock encryption-key provider is test-only, not production Keychain acceptance.
+
+Through native computer use, management Details → Extension options opened the full-page controller in a normal Chrome window. Both split methods were functions. Creating the fixture pair returned tabs `343657744`/`343657745` in the requested normal window `343657741`. Pairing yielded shared split ID `1617381372`; activating left showed the dummy login and wallet fixture together. Separating reported `splitViewId: -1` for both. Pairing again worked, then Close test tabs removed both controlled entries.
+
+The first Close all browsers action logged detachment of remaining linked browsers and `linked-detached`, but the process remained without message-loop/shutdown completion. Cmd+Q had also not closed the process earlier. After a bounded wait, only that owned process was stopped with SIGTERM. Therefore the following result is **reconstruction after a forced stop**, not a clean-restart acceptance pass; no cause for the first shutdown failure is established.
+
+After relaunch with the same identity/Profile/flags, opening the controller and pressing Restore saved pair recreated the fixed URLs in fresh tabs `343657818`/`343657819`, normal window `343657800`, with shared split ID `651031505`. Native AX and a screenshot confirmed both fixture pages visible again. This demonstrates durable ordered-URL storage and explicit pair reconstruction with new runtime IDs. It does not demonstrate Bato's pin model, arbitrary URLs, session restoration, split-ratio persistence, or real extensions.
+
+The reconstructed test tabs were closed. The final native Close all browsers action **did** finish cleanly: the log contained `cef-message-loop-exited` and `cef-shutdown-complete`, and its owned process was absent. No browser process or debug listener from this delegated test was left running; the coordinator's fixture server was untouched.
+
+One divider drag produced no confirmed width change, so resizing remains unverified. No source fix was attempted during the runtime test. See [sanitized evidence](../split-controller/runtime-evidence.json) for the exact narrow observations. This normal-window result does not alter the earlier populated Views-popup creation/move limitation.
+
+A third bounded run then tested the **clean second→third shutdown boundary** using the unchanged executable identity, disposable Profile, mock-Keychain and developer-extension flags. No new Create/save operation occurred: Restore saved pair alone created fresh tabs `343657885`/`343657886` in normal window `343657874`, with shared split ID `963640437`. Native AX and screenshot again showed the login and wallet fixture together. Thus ordered fixed-URL pair reconstruction also passed across a demonstrated clean shutdown, while the first forced-stop result remains recorded separately.
+
+After closing the third run's controlled tabs, native Close all browsers again logged message-loop exit and completed CEF shutdown; its owned process was absent. This adds one narrow clean-restart acceptance case, not general lifecycle reliability or production Profile/Keychain acceptance. The fixture remained untouched and divider resizing was not retried.
+
+## Distinct application-quit follow-up
+
+A later prebuilt-engine-only run exercised the new native **Quit application** control separately from Close all browsers. With the same dedicated disposable mock-Keychain Profile and controller extension, the operator restored the pair, separated it, paired again, and closed its controlled tabs before selecting Quit application in the Swift companion.
+
+The command availability log reported `enabled: true`, but execution terminated with an uncaught `NSInvalidArgumentException`: `-[AppController tryToTerminateApplication:]: unrecognized selector sent to instance` (instance address omitted). The sample stack included `-[SimpleApplication terminate:]`. Sample browser-list diagnostics had counted four creations, then two closures from pair cleanup, leaving count2 before the quit request. There was no completed command-dispatch log, message-loop exit or completed CEF shutdown. The process disappeared as a crash result, not graceful completion. This new application-quit failure does not erase the earlier clean close-all/reconstruction cases or resolve the first intermittent hang.
+
+See [sanitized quit evidence](../linked-native-bridge/quit-runtime-evidence.json). No Keychain/credential prompt appeared, no engine build or code edit occurred in this test, the owned process was gone afterward, and the fixture server was left running.

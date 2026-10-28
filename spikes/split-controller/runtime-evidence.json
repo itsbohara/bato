@@ -1,0 +1,116 @@
+{
+  "observed_date": "2026-10-27",
+  "engine": {
+    "cef": "156.0.14+g4fa4ab5",
+    "chromium": "156.0.8078.48"
+  },
+  "host": "linked cefsimple --use-native, normal Chrome window",
+  "profile": "fresh disposable profile-split-restore; same application identity for both runs",
+  "flags": [
+    "--use-native",
+    "--use-mock-keychain",
+    "--force-renderer-accessibility",
+    "--load-extension=<repo>/spikes/split-controller"
+  ],
+  "debug_listener": false,
+  "extension": {
+    "id": "cobnhdbbicillijggklemifjachneafl",
+    "version": "0.1.0",
+    "entry": "chrome://extensions > Details > Extension options",
+    "methods": {
+      "createSplit": "function",
+      "unsplit": "function"
+    }
+  },
+  "saved_pair": [
+    "http://127.0.0.1:18765/login.html",
+    "http://127.0.0.1:18765/wallet.html"
+  ],
+  "initial": {
+    "window_id": 343657741,
+    "window_type": "normal",
+    "tab_ids": [
+      343657744,
+      343657745
+    ],
+    "split_id": 1617381372,
+    "visually_verified_two_pages": true,
+    "unsplit_membership": [
+      -1,
+      -1
+    ],
+    "re_pair_succeeded": true,
+    "controlled_tabs_closed_before_restart": true
+  },
+  "restart_boundary": {
+    "clean_shutdown": false,
+    "observed": [
+      "Close all browsers detached remaining linked browsers",
+      "No message-loop-exited/shutdown-complete observed; process remained",
+      "Coordinator-owned process explicitly SIGTERM stopped before restart"
+    ],
+    "limitation": "Saved-URL reconstruction after forced stop, not a clean-restart acceptance pass"
+  },
+  "restored": {
+    "window_id": 343657800,
+    "window_type": "normal",
+    "tab_ids": [
+      343657818,
+      343657819
+    ],
+    "split_id": 651031505,
+    "fresh_ids": true,
+    "same_split_id_for_both_tabs": true,
+    "visually_verified_two_pages": true,
+    "restored_via": "explicit Restore saved pair button; recreated URLs from extension local storage, not Chrome session restore"
+  },
+  "final_cleanup": {
+    "controlled_tabs_closed": true,
+    "close_all_browsers_clicked": true,
+    "logged_events": [
+      "linked-detached",
+      "cef-message-loop-exited",
+      "cef-shutdown-complete"
+    ],
+    "process_absent": true,
+    "fixture_server_untouched": true
+  },
+  "divider": {
+    "single_drag_attempt": "No confirmed geometry change",
+    "result": "unverified"
+  },
+  "limits": [
+    "Normal Chrome runtime only; no Views popup split pass",
+    "Mock Keychain changes test encryption provider; no production Keychain claim",
+    "Developer extension loaded on both starts; no extension installation/persistence acceptance",
+    "Only hardcoded loopback URLs persisted",
+    "No real vault, wallet, provider, autofill, signing, or per-pane extension acceptance"
+  ],
+  "clean_restart_followup": {
+    "preceding_shutdown": "Second run completed cef-message-loop-exited and cef-shutdown-complete; process absent before third launch",
+    "same_application_identity_and_profile": true,
+    "window_id": 343657874,
+    "window_type": "normal",
+    "tab_ids": [
+      343657885,
+      343657886
+    ],
+    "split_id": 963640437,
+    "fresh_ids": true,
+    "same_split_id_for_both_tabs": true,
+    "visually_verified_two_pages": true,
+    "restored_via": "explicit Restore saved pair after clean second-run shutdown; no new save or Create button",
+    "result": "narrow clean-restart saved-URL pair reconstruction passed",
+    "final_cleanup": {
+      "controlled_tabs_closed": true,
+      "close_all_browsers_clicked": true,
+      "logged_events": [
+        "linked-detached",
+        "cef-message-loop-exited",
+        "cef-shutdown-complete"
+      ],
+      "process_absent": true,
+      "fixture_server_untouched": true
+    }
+  }
+}
