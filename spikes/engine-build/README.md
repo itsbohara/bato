@@ -63,6 +63,10 @@ The coordinator also verified that global Git `cache.cachepath` is unset on this
 
 No browser is launched by these stages, and no Profile, Keychain, extension or private artifact is copied to the SSD. Later runtime checks must use dedicated synthetic Profiles and the same mock-Keychain policy on every restart. Engine build success alone would not pass the native hosting/extension foundation gate.
 
+Read [process lifecycle](PROCESS-LIFECYCLE.md) before stopping the current build: Siso deliberately uses separate helper/action groups, and the wrapper independently verifies only its initial group. After a disk/error/cancel stop, explicitly inspect owned worker survivors before accepting cleanup or launching another stage.
+
+After successful compilation, [runtime handoff](RUNTIME.md) describes the read-only artifact/dependency checker and fixed control/reservation launch previews. The checker cannot launch the sample and refuses an active build. Actual source-built runtime acceptance remains pending.
+
 ## Verification
 
 ```sh
