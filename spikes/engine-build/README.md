@@ -80,3 +80,7 @@ python3 -m unittest discover -s spikes/engine-build -p 'test_*.py'
 ```
 
 Fourteen guard tests and twelve runtime-checker tests passed. Bootstrap tests verify the pinned command, scoped environment without global mutation, preview behavior and refusal to launch after a provenance failure. They start disposable Python processes, force a simulated low-space transition, stop a TERM-ignoring descendant even when its leader has already exited, preserve an unrelated process/file and record a completed normal run. Initial state-write/print failures also stop the child while preserving the original error. Provenance tests reject changed bootstrap source and dirty pinned tooling, and ensure a partial tree containing a valid VERSION never invokes automate. Preflight passes against the actual mounted SSD. No test starts Chromium checkout or compilation.
+
+## Opt-in native Quit follow-up
+
+The patch/build stages now require the separately hash-locked [Quit experiment](../engine-quit/README.md), including its seven embedded CEF files and two Chromium startup/cancellation files. Both patch roots are checked before applying either; mixed/unknown states are refused. The original checkout lock remains unchanged. V3 compiled in90.83s and passed bounded runtime acceptance in [Quit results](../engine-quit/RESULTS.md).31 engine-build tests and two exact-patch tests passed. Do not rerun upstream configure over these changes.

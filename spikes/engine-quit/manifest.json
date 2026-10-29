@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+  "patch_sha256": "09f81071feecbde2fb0b843325aa991104d082afc57841feef236caf524ebcf5",
+  "files": [
+    {
+      "path": "libcef/browser/chrome/browser_util.h",
+      "original_sha256": "18e95710a1dfda7c161b83f1ca71e6a102c5e757f03a4c2eee8ee7f345b797cb",
+      "patched_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106"
+    },
+    {
+      "path": "libcef/browser/chrome/chrome_browser_delegate.cc",
+      "original_sha256": "4a09c7dc145005615c8cd99f489317381693fd377e8890999b135aa407614cec",
+      "patched_sha256": "5dec5cd77127a497b9bc3b9f29726966afa6bb0d36513b0a7f0b1baee0f14410"
+    },
+    {
+      "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
+      "original_sha256": "48cc0eb3a33b6db664a2f8fa392ae8811bdefcf4a8e349f0904c17585132a754",
+      "patched_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4"
+    },
+    {
+      "path": "libcef/browser/chrome/chrome_browser_host_impl.cc",
+      "original_sha256": "1cbbff30d85f59a345498444e20f4e6836d6388f700dc4ddcf3003fc00d50612",
+      "patched_sha256": "b0dd92a9c3af1d6250062a360df3b40a56caae039f615a9ce9ab2536c28f9a85"
+    },
+    {
+      "path": "tests/cefsimple/simple_handler.h",
+      "original_sha256": "1d4109147aee4c7c2c693141eb3fd462a83f51f556b5312584153f1a231273e3",
+      "patched_sha256": "904ddc8965cb3dbef7763c437cf128acc14812466785530a5c9acb363d7f60b1"
+    },
+    {
+      "path": "tests/cefsimple/simple_handler.cc",
+      "original_sha256": "c37a49e1f8388f6cdd192144f2df46923060225aeff33ba9b90cb560afa2b075",
+      "patched_sha256": "85159e40770d0f4f3307647f961a2cf1e827a60054a8ef90324e6717842a1f2f"
+    },
+    {
+      "path": "tests/cefsimple/cefsimple_mac.mm",
+      "original_sha256": "5e394c277c076a00011e0d53085cd7f34e96109c7804c795c771e40eee6d86af",
+      "patched_sha256": "bae6c935e237922a603172bb397241a92eb8e09dd184932c235369c2566b22a8"
+    }
+  ]
+}

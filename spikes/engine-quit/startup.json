@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+  "patch_sha256": "584f67eeda71ab437972f326ec4be74f2dac827c48f52e125db6d0735fa1a58f",
+  "files": [
+    {
+      "path": "chrome/browser/chrome_browser_main_mac.mm",
+      "original_sha256": "e454da1088c00a2791135a58220ab3718b0232a586f58403d633a6642f67f20b",
+      "patched_sha256": "58f02edd0bab5dea131816fb94170f2059fedd7daca2e68502fe4d849454c97c"
+    },
+    {
+      "path": "chrome/browser/chrome_browser_application_mac.mm",
+      "original_sha256": "e6c181cdd0cbddbc8ef55826a841a7cd0465bb7c90a91d2df7e4cdfc3e5085d2",
+      "patched_sha256": "56e2ff1f420080cbd7867f7ddd95f1faeda89c2ba60894e5249961b4aa160169"
+    }
+  ]
+}

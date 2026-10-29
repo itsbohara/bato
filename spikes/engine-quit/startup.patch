@@ -1,0 +1,57 @@
+--- a/chrome/browser/chrome_browser_main_mac.mm
++++ b/chrome/browser/chrome_browser_main_mac.mm
+@@ -156,5 +156,11 @@
+   }
+ 
+-#if !BUILDFLAG(ENABLE_CEF)
++#if BUILDFLAG(ENABLE_CEF)
++  // Default CEF embedders own their menu/delegate. This bounded experiment
++  // opts in to Chrome's complete normal startup instead of late quit bootstrap.
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++    return content::RESULT_CODE_NORMAL_EXIT;
++  }
++#endif
+   // Create the app delegate by requesting the shared AppController.
+   CHECK_EQ(nil, NSApp.delegate);
+@@ -167,5 +173,4 @@
+                         /*is_rtl=*/base::i18n::IsRTL());
+   [app_controller mainMenuCreated];
+-#endif  // BUILDFLAG(ENABLE_CEF)
+ 
+   return content::RESULT_CODE_NORMAL_EXIT;
+@@ -186,6 +191,9 @@
+ 
+ void ChromeBrowserMainPartsMac::DidEndMainMessageLoop() {
+-#if !BUILDFLAG(ENABLE_CEF)
++#if BUILDFLAG(ENABLE_CEF)
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++    return;
++  }
++#endif
+   [AppController.sharedController didEndMainMessageLoop];
+-#endif
+ }
+--- a/chrome/browser/chrome_browser_application_mac.mm
++++ b/chrome/browser/chrome_browser_application_mac.mm
+@@ -16,4 +16,5 @@
+ #include "base/strings/sys_string_conversions.h"
+ #include "base/trace_event/trace_event.h"
++#include "cef/libcef/features/features.h"
+ #import "chrome/browser/app_controller_mac.h"
+ #import "chrome/browser/mac/exception_processor.h"
+@@ -51,4 +52,15 @@
+ 
+ void CancelTerminate() {
++#if BUILDFLAG(ENABLE_CEF)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++    // The CEF sample has its own NSApplication subclass. Keep cancellation
++    // inside the framework rather than sending BrowserCrApplication's private
++    // selector to that subclass. Startup installed the normal AppController.
++    if ([NSApp.delegate isKindOfClass:[AppController class]]) {
++      [AppController.sharedController stopTryingToTerminateApplication];
++    }
++    return;
++  }
++#endif
+   [NSApp cancelTerminate:nil];
+ }

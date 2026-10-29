@@ -2,7 +2,6 @@
 """Read-only post-build checks and launch preview; never launches the sample."""
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -49,9 +48,8 @@ def require_configuration(output):
 
 def require_patches(root):
     engine.require_helper_packaging(root)
-    source, cef = engine.source_paths(root)
-    if hashlib.sha256((cef / engine.LOCK['sample_path']).read_bytes()).hexdigest() != engine.LOCK['sample_patched_sha256']:
-        raise RuntimeError('Dedicated mock-Profile/sample termination guard changed or missing')
+    engine.require_quit_patch(root)
+    source, _ = engine.source_paths(root)
     patch = engine.HERE.parent / 'engine-reservation/native-reservation.patch'
     if subprocess.run(['git', 'apply', '--reverse', '--check', str(patch)], cwd=source,
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:

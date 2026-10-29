@@ -1,5 +1,7 @@
 # Feasibility results
 
+Latest source-engine update (2026-10-29): [Quit V3](spikes/engine-quit/RESULTS.md) passed client veto, real beforeunload Cancel and repeated application-menu Leave with a synthetic extension/native split open, followed by actual CEF shutdown and natural exit0. This is an opt-in source experiment; earlier prebuilt failures, keyboard/no-window and broader lifecycle limits remain. Native Swift input/accessibility in the same host is still open.
+
 Dates: 2026-10-27–29. The user approved the design and bounded experiment. This records observed diagnostic behavior, not a complete Bato application or a selected production foundation.
 
 ## Environment and pinned engine

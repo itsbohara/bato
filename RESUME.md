@@ -2,6 +2,14 @@
 
 Checkpoint: 2026-10-29, after successful source compilation and unlocked runtime tests. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
+## Latest checkpoint: source-engine Quit V3 passed
+
+Read `spikes/engine-quit/RESULTS.md` and runtime-evidence.json first. The flagged source experiment now passes client veto, actual armed beforeunload Cancel (same process/page, counter2→3), repeated standard application-menu Quit → Leave, real loop return, CEF shutdown and natural exit0 with the synthetic controller and native split pair open. Earlier failures below remain retained evidence. Command-Q sent once produced no visible request; keyboard warning/hold behavior remains unresolved. No-window/download/active-app/system-shutdown and production behavior are unpassed.
+
+V3 restores normal AppController startup/cleanup under the experiment flag and handles cancellation inside the framework. Hash-locked patches cover seven CEF and two Chromium files. Incremental build90.83s;31 engine-build tests +2 patch tests +fixture test pass. Downloaded source currently has V3 applied and the successful binary matches it. Never rerun checkout/configure over these patches. Mock Profile `quit-mock-v3` contains test data and must be preserved, with the same provider on every restart. Raw log SSD `logs/quit-v3.log`; no owned browser/build remains. Fixture server127.0.0.1:18765 was restarted during this session.
+
+Next: review/implement `spikes/native-composition/NATIVE-SLOT-PLAN.md` as a bounded framework adapter; input/accessibility with native Chrome split and extension UI remains the foundation gate. No production foundation selected.
+
 ## Working locations
 
 Application Git checkout: `/Users/itsbohara/code/project-bato/bato`, public `https://github.com/itsbohara/bato`. The parent folder is not Git. Concept/private memory remains in `/Users/itsbohara/code/ideastorm`; never publish private reference captures or browser data.

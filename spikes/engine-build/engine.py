@@ -22,6 +22,7 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 LOCK = json.loads((HERE / 'lock.json').read_text())
 HELPER_PACKAGING = json.loads((HERE / 'helper-packaging.json').read_text())
+QUIT_DIR = HERE.parent / 'engine-quit'
 DEFAULT_ROOT = Path('/Volumes/Mahesh/personal/bato-build')
 MARKER = '.bato-engine-workspace.json'
 CHECKOUT_MARKER = 'checkout-complete.json'
@@ -356,6 +357,72 @@ def patch_helper_packaging(root):
     require_helper_packaging(root)
 
 
+def quit_patch_entries(root):
+    manifest = json.loads((QUIT_DIR / 'manifest.json').read_text())
+    patch = QUIT_DIR / 'quit.patch'
+    if (manifest.get('schema') != 1 or manifest.get('cef_revision') != LOCK['cef_revision'] or
+            hashlib.sha256(patch.read_bytes()).hexdigest() != manifest.get('patch_sha256')):
+        raise RuntimeError('Quit patch provenance differs from the reviewed manifest')
+    cef = source_paths(root)[1].resolve()
+    entries = manifest.get('files', [])
+    paths = [entry['path'] for entry in entries]
+    if not paths or len(paths) != len(set(paths)) or LOCK['sample_path'] not in paths:
+        raise RuntimeError('Quit manifest must include unique targets and the guarded sample')
+    for entry in entries:
+        relative = Path(entry['path'])
+        if relative.is_absolute() or '..' in relative.parts or not (cef / relative).resolve().is_relative_to(cef):
+            raise RuntimeError('Quit patch target escapes embedded CEF')
+    sample = next(entry for entry in entries if entry['path'] == LOCK['sample_path'])
+    if sample['original_sha256'] != LOCK['sample_patched_sha256']:
+        raise RuntimeError('Quit patch does not start from the existing sample runtime guard')
+    return cef, entries, patch
+
+
+def require_quit_patch(root):
+    cef, entries, _ = quit_patch_entries(root)
+    source, startup, _ = quit_startup_entries(root)
+    if any(hashlib.sha256((cef / entry['path']).read_bytes()).hexdigest() != entry['patched_sha256']
+           for entry in entries) or any(hashlib.sha256((source / entry['path']).read_bytes()).hexdigest() != entry['patched_sha256'] for entry in startup):
+        raise RuntimeError('Native Quit experiment patch missing or changed; run/review patch stage')
+
+
+def quit_startup_entries(root):
+    manifest = json.loads((QUIT_DIR / 'startup.json').read_text())
+    patch = QUIT_DIR / 'startup.patch'
+    allowed = {'chrome/browser/chrome_browser_main_mac.mm',
+               'chrome/browser/chrome_browser_application_mac.mm'}
+    entries = manifest.get('files', [])
+    paths = [entry['path'] for entry in entries]
+    if (manifest.get('schema') != 1 or manifest.get('chromium_commit') != LOCK['chromium_commit'] or
+            set(paths) != allowed or len(paths) != len(allowed) or
+            hashlib.sha256(patch.read_bytes()).hexdigest() != manifest.get('patch_sha256')):
+        raise RuntimeError('Quit startup patch provenance differs from the reviewed manifest')
+    source = source_paths(root)[0].resolve()
+    for entry in entries:
+        if not (source / entry['path']).resolve().is_relative_to(source):
+            raise RuntimeError('Quit startup target escapes Chromium source')
+    return source, entries, patch
+
+
+def patch_quit(root):
+    cef, entries, patch = quit_patch_entries(root)
+    source, startup, startup_patch = quit_startup_entries(root)
+    digests = [hashlib.sha256((cef / entry['path']).read_bytes()).hexdigest() for entry in entries]
+    startup_digests = [hashlib.sha256((source / entry['path']).read_bytes()).hexdigest() for entry in startup]
+    if (all(digest == entry['patched_sha256'] for digest, entry in zip(digests, entries)) and
+            all(digest == entry['patched_sha256'] for digest, entry in zip(startup_digests, startup))):
+        print('Native Quit experiment patch already applied')
+        return
+    if (not all(digest == entry['original_sha256'] for digest, entry in zip(digests, entries)) or
+            not all(digest == entry['original_sha256'] for digest, entry in zip(startup_digests, startup))):
+        raise RuntimeError('Quit targets differ or are partially patched; preserving files for inspection')
+    subprocess.run(['git', 'apply', '--check', str(patch)], cwd=cef, check=True)
+    subprocess.run(['git', 'apply', '--check', str(startup_patch)], cwd=source, check=True)
+    subprocess.run(['git', 'apply', str(patch)], cwd=cef, check=True)
+    subprocess.run(['git', 'apply', str(startup_patch)], cwd=source, check=True)
+    require_quit_patch(root)
+
+
 def patch_source(root, execute):
     source, cef = source_paths(root)
     patch = HERE.parent / 'engine-reservation/native-reservation.patch'
@@ -374,6 +441,11 @@ def patch_source(root, execute):
         digest = hashlib.sha256(sample.read_bytes()).hexdigest()
         if digest == LOCK['sample_patched_sha256']:
             print('Dedicated test-Profile/termination guard already applied')
+        elif (QUIT_DIR / 'manifest.json').is_file() and digest == next(
+                entry['patched_sha256'] for entry in quit_patch_entries(root)[1]
+                if entry['path'] == LOCK['sample_path']):
+            require_quit_patch(root)
+            print('Quit sample retains the reviewed runtime guard')
         elif digest == LOCK['sample_original_sha256']:
             sample_patch = HERE / 'sample-runtime.patch'
             subprocess.run(['git', 'apply', '--unidiff-zero', '--check', str(sample_patch)],
@@ -385,6 +457,7 @@ def patch_source(root, execute):
         else:
             raise RuntimeError('Embedded sample source differs; refusing runtime guard patch')
         patch_helper_packaging(root)
+        patch_quit(root)
 
 
 def main():
@@ -439,9 +512,7 @@ def main():
             verify_automate(root)
         if args.phase == 'build':
             require_helper_packaging(root)
-            sample = source_paths(root)[1] / LOCK['sample_path']
-            if hashlib.sha256(sample.read_bytes()).hexdigest() != LOCK['sample_patched_sha256']:
-                raise RuntimeError('Dedicated test-Profile/runtime guard is missing; run patch stage')
+            require_quit_patch(root)
             reservation = HERE.parent / 'engine-reservation/native-reservation.patch'
             if subprocess.run(['git', 'apply', '--reverse', '--check', str(reservation)],
                               cwd=source_paths(root)[0], stdout=subprocess.DEVNULL,

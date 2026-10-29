@@ -1,0 +1,388 @@
+--- a/libcef/browser/chrome/browser_util.h
++++ b/libcef/browser/chrome/browser_util.h
+@@ -8,7 +8,14 @@
+
+ #include "base/check.h"
++#include "build/build_config.h"
+ #include "chrome/browser/ui/browser.h"
+
+ namespace cef {
++
++#if BUILDFLAG(IS_MAC)
++// Opt-in Bato experiment. Enter the normal macOS Chrome quit lifecycle inside
++// the framework; clients continue using the supported Chrome command API.
++void RequestNativeApplicationQuit();
++#endif
+
+ // BrowserWindowInterface is always implemented by Browser on desktop
+--- a/libcef/browser/chrome/chrome_browser_delegate.cc
++++ b/libcef/browser/chrome/chrome_browser_delegate.cc
+@@ -6,4 +6,7 @@
+
+ #include <memory>
++
++#include "base/command_line.h"
++#include "build/build_config.h"
+
+ #include "cef/libcef/browser/browser_contents_delegate.h"
+@@ -21,4 +24,5 @@
+ #include "cef/libcef/browser/views/window_impl.h"
+ #include "cef/libcef/common/app_manager.h"
++#include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -301,10 +305,23 @@
+     if (auto client = browser->GetClient()) {
+       if (auto handler = client->GetCommandHandler()) {
+-        return handler->OnChromeCommand(
+-            browser.get(), command_id,
+-            static_cast<cef_window_open_disposition_t>(disposition));
++        if (handler->OnChromeCommand(
++                browser.get(), command_id,
++                static_cast<cef_window_open_disposition_t>(disposition))) {
++          return true;
++        }
+       }
+     }
+   }
++#if BUILDFLAG(IS_MAC)
++  // Command support/enabled checks have already run in Chrome's controller.
++  // Preserve the client handler's opportunity to consume the command first.
++  if (command_id == IDC_EXIT &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++    cef::RequestNativeApplicationQuit();
++    // A cancelled or unavailable request is still handled. Never fall through
++    // to NSApp terminate: and re-enter the sample's termination override.
++    return true;
++  }
++#endif
+   return false;
+ }
+--- a/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
++++ b/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
+@@ -5,4 +5,11 @@
+
+ #include "cef/libcef/browser/chrome/chrome_content_browser_client_cef.h"
++
++#include <cstdio>
++
++#include "cef/libcef/browser/chrome/browser_util.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "chrome/browser/app_controller_mac.h"
++#include "chrome/browser/lifetime/browser_shutdown.h"
+
+ #include "cef/libcef/browser/chrome/chrome_web_contents_view_delegate_cef.h"
+@@ -14,2 +21,31 @@
+   return std::make_unique<ChromeWebContentsViewDelegateCef>(web_contents);
+ }
++
++namespace cef {
++
++void RequestNativeApplicationQuit() {
++  CEF_REQUIRE_UIT();
++  if (!NSApp || ![NSApp.delegate isKindOfClass:[AppController class]]) {
++    fprintf(stderr, "{\"event\":\"native-quit-controller-unavailable\"}\n");
++    return;
++  }
++
++  AppController* controller = AppController.sharedController;
++  const bool startup_complete = controller.startupComplete;
++  fprintf(stderr,
++          "{\"event\":\"native-quit-controller-readiness\",\"startupComplete\":%s}\n",
++          startup_complete ? "true" : "false");
++  if (!startup_complete) {
++    fprintf(stderr, "{\"event\":\"native-quit-controller-startup-incomplete\"}\n");
++    return;
++  }
++  fprintf(stderr, "{\"event\":\"native-quit-controller-requested\"}\n");
++  // Framework-internal integration only. Preserve confirmation, downloads,
++  // active-app vetoes, beforeunload cancellation and controller keepalive flow.
++  [controller tryToTerminateApplication];
++  fprintf(stderr,
++          "{\"event\":\"native-quit-controller-returned\",\"tryingToQuit\":%s}\n",
++          browser_shutdown::IsTryingToQuit() ? "true" : "false");
++}
++
++}  // namespace cef
+--- a/libcef/browser/chrome/chrome_browser_host_impl.cc
++++ b/libcef/browser/chrome/chrome_browser_host_impl.cc
+@@ -5,8 +5,13 @@
+ #include "cef/libcef/browser/chrome/chrome_browser_host_impl.h"
+
++#include <cstdio>
++
++#include "base/command_line.h"
+ #include "base/logging.h"
++#include "build/build_config.h"
+ #include "base/notimplemented.h"
+ #include "cef/libcef/browser/browser_platform_delegate.h"
+ #include "cef/libcef/browser/chrome/browser_platform_delegate_chrome.h"
++#include "cef/libcef/browser/chrome/browser_delegate.h"
+ #include "cef/libcef/browser/chrome/browser_util.h"
+ #include "cef/libcef/browser/chrome/views/chrome_browser_view.h"
+@@ -15,4 +20,5 @@
+ #include "cef/libcef/browser/views/browser_view_impl.h"
+ #include "cef/libcef/common/net/url_util.h"
++#include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_commands.h"
+@@ -339,4 +345,26 @@
+   }
+
++#if BUILDFLAG(IS_MAC)
++  if (command_id == IDC_EXIT &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++    // Action-backed commands can bypass Chrome's legacy CEF delegate hook.
++    // Preserve the controller's support/enabled/active-tab guards explicitly.
++    if (!browser_ || !chrome::SupportsCommand(browser_, command_id) ||
++        !chrome::IsCommandEnabled(browser_, command_id) ||
++        browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab) {
++      fprintf(stderr, "{\"event\":\"native-quit-host-guard-refused\"}\n");
++      return;
++    }
++    fprintf(stderr, "{\"event\":\"native-quit-host-dispatch\"}\n");
++    auto* delegate = browser_->cef_delegate();
++    if (!delegate ||
++        !delegate->HandleCommand(
++            command_id, static_cast<WindowOpenDisposition>(disposition))) {
++      fprintf(stderr, "{\"event\":\"native-quit-host-unhandled\"}\n");
++    }
++    // Fail closed: never enter the ActionManager/NSApp terminate recursion.
++    return;
++  }
++#endif
+   if (browser_) {
+     chrome::ExecuteCommandWithDisposition(
+--- a/tests/cefsimple/simple_handler.h
++++ b/tests/cefsimple/simple_handler.h
+@@ -11,4 +11,5 @@
+
+ class SimpleHandler : public CefClient,
++                      public CefCommandHandler,
+                       public CefDisplayHandler,
+                       public CefLifeSpanHandler,
+@@ -22,7 +23,13 @@
+
+   // CefClient methods:
++  CefRefPtr<CefCommandHandler> GetCommandHandler() override;
+   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
++
++  // CefCommandHandler methods (opt-in diagnostic only).
++  bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
++                       int command_id,
++                       cef_window_open_disposition_t disposition) override;
+
+   // CefDisplayHandler methods:
+@@ -47,4 +54,7 @@
+   void CloseAllBrowsers(bool force_close);
+
++  // UI-thread-only diagnostic using the public CEF Chrome command boundary.
++  void RequestApplicationQuit();
++
+   bool IsClosing() const { return is_closing_; }
+
+@@ -63,4 +73,6 @@
+
+   bool is_closing_ = false;
++  bool quit_vetoed_ = false;
++  bool quit_request_in_progress_ = false;
+
+   // Include the default reference counting implementation.
+--- a/tests/cefsimple/simple_handler.cc
++++ b/tests/cefsimple/simple_handler.cc
+@@ -5,4 +5,5 @@
+ #include "tests/cefsimple/simple_handler.h"
+
++#include <cstdio>
+ #include <sstream>
+ #include <string>
+@@ -10,4 +11,6 @@
+ #include "include/base/cef_callback.h"
+ #include "include/cef_app.h"
++#include "include/cef_command_line.h"
++#include "include/cef_id_mappers.h"
+ #include "include/cef_parser.h"
+ #include "include/views/cef_browser_view.h"
+@@ -20,4 +23,8 @@
+ SimpleHandler* g_instance = nullptr;
+
++bool NativeQuitExperimentEnabled() {
++  return CefCommandLine::GetGlobalCommandLine()->HasSwitch("bato-native-quit");
++}
++
+ // Returns a data: URI with the specified contents.
+ std::string GetDataURI(const std::string& data, const std::string& mime_type) {
+@@ -44,4 +51,57 @@
+ }
+
++CefRefPtr<CefCommandHandler> SimpleHandler::GetCommandHandler() {
++  return NativeQuitExperimentEnabled() ? this : nullptr;
++}
++
++bool SimpleHandler::OnChromeCommand(
++    CefRefPtr<CefBrowser> browser,
++    int command_id,
++    cef_window_open_disposition_t disposition) {
++  CEF_REQUIRE_UI_THREAD();
++  if (!NativeQuitExperimentEnabled() ||
++      command_id != cef_id_for_command_id_name("IDC_EXIT")) {
++    return false;
++  }
++  const bool veto =
++      !quit_vetoed_ && CefCommandLine::GetGlobalCommandLine()->HasSwitch(
++                           "bato-veto-first-quit");
++  if (veto) {
++    quit_vetoed_ = true;
++  }
++  fprintf(stderr, "{\"event\":\"sample-client-quit-command\",\"veto\":%s}\n",
++          veto ? "true" : "false");
++  return veto;
++}
++
++void SimpleHandler::RequestApplicationQuit() {
++  CEF_REQUIRE_UI_THREAD();
++  if (!NativeQuitExperimentEnabled() || is_alloy_style_) {
++    return;
++  }
++  if (quit_request_in_progress_) {
++    fprintf(stderr, "{\"event\":\"sample-native-quit-reentrant-refused\"}\n");
++    return;
++  }
++  // A synchronous command can close browsers and release their client refs.
++  CefRefPtr<SimpleHandler> keep_alive(this);
++  quit_request_in_progress_ = true;
++  struct ScopedRequestReset {
++    bool& active;
++    ~ScopedRequestReset() { active = false; }
++  } reset{quit_request_in_progress_};
++  const int command = cef_id_for_command_id_name("IDC_EXIT");
++  for (const auto& browser : browser_list_) {
++    auto host = browser->GetHost();
++    if (command >= 0 && host->CanExecuteChromeCommand(command)) {
++      fprintf(stderr, "{\"event\":\"sample-native-quit-requested\"}\n");
++      host->ExecuteChromeCommand(command, CEF_WOD_CURRENT_TAB);
++      return;
++    }
++  }
++  // No force-exit or private-selector fallback when no live target exists.
++  fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
++}
++
+ void SimpleHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
+                                   const CefString& title) {
+@@ -69,4 +129,9 @@
+   // Add to the list of existing browsers.
+   browser_list_.push_back(browser);
++  if (NativeQuitExperimentEnabled()) {
++    fprintf(stderr,
++            "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
++            browser_list_.size());
++  }
+ }
+
+@@ -99,6 +164,14 @@
+   }
+
++  if (NativeQuitExperimentEnabled()) {
++    fprintf(stderr,
++            "{\"event\":\"sample-browser-count\",\"phase\":\"closed\",\"count\":%zu}\n",
++            browser_list_.size());
++  }
+   if (browser_list_.empty()) {
+     // All browser windows have closed. Quit the application message loop.
++    if (NativeQuitExperimentEnabled()) {
++      fprintf(stderr, "{\"event\":\"sample-quit-message-loop-requested\"}\n");
++    }
+     CefQuitMessageLoop();
+   }
+--- a/tests/cefsimple/cefsimple_mac.mm
++++ b/tests/cefsimple/cefsimple_mac.mm
+@@ -17,4 +17,5 @@
+
+ - (void)createApplication:(id)object;
++- (void)batoQuitApplication:(id)sender;
+ - (void)tryToTerminateApplication:(NSApplication*)app;
+ @end
+@@ -82,6 +83,10 @@
+   // that runtime delegate to the sample delegate or send a private selector.
+   SimpleHandler* handler = SimpleHandler::GetInstance();
+-  if (handler && !handler->IsClosing()) {
+-    handler->CloseAllBrowsers(false);
++  if (handler) {
++    if (CefCommandLine::GetGlobalCommandLine()->HasSwitch("bato-native-quit")) {
++      handler->RequestApplicationQuit();
++    } else if (!handler->IsClosing()) {
++      handler->CloseAllBrowsers(false);
++    }
+   }
+   // Return, don't exit. The application is responsible for exiting on its own.
+@@ -93,10 +98,33 @@
+ // Create the application on the UI thread.
+ - (void)createApplication:(id)object {
+-  [[NSBundle mainBundle] loadNibNamed:@"MainMenu"
+-                                owner:NSApp
+-                      topLevelObjects:nil];
+-
+-  // Set the delegate for application events.
+-  [[NSApplication sharedApplication] setDelegate:self];
++  if (!CefCommandLine::GetGlobalCommandLine()->HasSwitch("bato-native-quit")) {
++    [[NSBundle mainBundle] loadNibNamed:@"MainMenu"
++                                  owner:NSApp
++                        topLevelObjects:nil];
++    // Default sample mode owns its delegate and menu. The opted-in experiment
++    // preserves Chrome's controller and normal menu created during startup.
++    [[NSApplication sharedApplication] setDelegate:self];
++  }
++  if (CefCommandLine::GetGlobalCommandLine()->HasSwitch("bato-native-quit")) {
++    NSMenu* file_menu = [[NSApp.mainMenu itemWithTitle:@"File"] submenu];
++    if (file_menu) {
++      NSMenuItem* item = [[NSMenuItem alloc]
++          initWithTitle:@"Bato Quit application"
++                 action:@selector(batoQuitApplication:)
++          keyEquivalent:@""];
++      item.target = self;
++      [file_menu addItem:item];
++#if !__has_feature(objc_arc)
++      [item release];
++#endif
++      fprintf(stderr, "{\"event\":\"sample-native-quit-menu-ready\"}\n");
++    }
++  }
++}
++
++- (void)batoQuitApplication:(id)sender {
++  if (SimpleHandler* handler = SimpleHandler::GetInstance()) {
++    handler->RequestApplicationQuit();
++  }
+ }
+
+@@ -202,6 +230,9 @@
+     // Create the application delegate.
+     SimpleAppDelegate* delegate = [[SimpleAppDelegate alloc] init];
+-    // Set as the delegate for application events.
+-    NSApp.delegate = delegate;
++    // Retain this sample object as the diagnostic menu target. Only default
++    // sample mode installs it as the application's delegate.
++    if (!command_line->HasSwitch("bato-native-quit")) {
++      NSApp.delegate = delegate;
++    }
+
+     [delegate performSelectorOnMainThread:@selector(createApplication:)
+@@ -211,8 +242,15 @@
+     // Run the CEF message loop. This will block until CefQuitMessageLoop() is
+     // called.
++    const bool native_quit_experiment = command_line->HasSwitch("bato-native-quit");
+     CefRunMessageLoop();
++    if (native_quit_experiment) {
++      fprintf(stderr, "{\"event\":\"cef-message-loop-exited\"}\n");
++    }
+
+     // Shut down CEF.
+     CefShutdown();
++    if (native_quit_experiment) {
++      fprintf(stderr, "{\"event\":\"cef-shutdown-complete\"}\n");
++    }
+
+     // Release the delegate.
