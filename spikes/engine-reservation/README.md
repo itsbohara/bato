@@ -1,6 +1,6 @@
 # Native reservation source-build experiment
 
-**Reviewable patch sketch; not compiled or run.** It does not select CEF/fork ownership or establish native hosting/input. This directory changes no current engine or baseline sample.
+**Source-build experiment with a narrow visual runtime pass.** The guarded component build and repaired control/reservation runs are recorded in [engine results](../engine-build/RESULTS.md). Reserved margins were visible at normal/zoomed sizes and returned after fullscreen; edge fidelity, minimum sizes, splits and native hosting/input remain open. No production foundation was selected.
 
 ## Concrete change
 
@@ -43,7 +43,7 @@ Coordinator/subagent verification: all four hashes matched and the unified diff 
 
 ## Next source-build experiment
 
-Only after a separately provisioned matching CEF/Chromium build environment is available, apply this patch to its Chromium `src` root and build a matching CEF framework. Do not apply it to the current prebuilt framework or assume recompiling cefsimple changes the engine. No checkout or framework build has been performed or requested by this artifact.
+A matching developer component build now exists on the authorized SSD; use its guarded stages and preserve the existing patches rather than repeating checkout. Future engine revisions still require a separately verified matching build. Do not apply it to the current prebuilt framework or assume recompiling cefsimple changes the engine. The initial dry-run artifact did not itself perform a checkout/build; the later authorized source experiment is documented separately.
 
 Use the existing linked sample against that framework with a fresh disposable Profile, no extensions initially, and explicit test-only mock keychain. First compare switch absent/present with no Swift surfaces attached. Record actual BrowserView/client/toolbar/page rectangles on a large normal window, then resize and maximize. A correct gap with clipped controls is a failure.
 

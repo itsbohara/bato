@@ -1,5 +1,7 @@
 # Engine-facing seam proposal
 
+Status update, 2026-10-29: the historical capacity restriction below was superseded by the user's explicit SSD authorization. A matching source build now succeeds, with narrow reserved-layout visual results in [engine results](../engine-build/RESULTS.md). The [native input audit](NATIVE-INPUT-AUDIT.md) identifies a separate hosting contract still required. No production foundation is selected.
+
 Date: 2026-10-27. Proposal only. Engine: CEF `156.0.14+g4fa4ab5+chromium-156.0.8078.48`; CEF revision `4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f`. Chromium links below use the exact `156.0.8078.48` tag, which was retrievable during this audit. No engine checkout, patch, or build was performed. This does not select a production foundation or a fork.
 
 ## Decision boundary

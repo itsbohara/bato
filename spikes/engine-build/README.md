@@ -2,7 +2,7 @@
 
 The user authorized `/Volumes/Mahesh/personal` for Bato engine work on 2026-10-28. This scaffold uses only its dedicated `bato-build/` child. The application repository stays at its existing location; unrelated Personal-folder files are not inspected or changed.
 
-**Checkout completed on 2026-10-28:** the pinned automate command exited0 and its completion marker was verified. Configuration applied116 upstream CEF patches (one platform patch skipped), then stopped because depot_tools’ separate Python shim was not initialized. The explicit bootstrap repair completed without updating tooling. Configuration retry generated36640 targets from5030 files, both local patches applied, and the two-job ARM64 component compilation is now running. No completed engine build or native-reservation runtime result exists. The current prebuilt-engine experiments are independent.
+**Build and initial runtime completed:** the full ARM64 component build succeeded in5h38m14s. Its first control launch failed on omitted Aperitif helper bundles. The hash-guarded packaging correction rebuilt incrementally in15.76s;526 ARM64 images then passed inspection. Both repaired control and reserved-layout runs rendered the fixture and exited0 through native window closes. Reservation also survived native window zoom and a fullscreen round trip visually. Read [results and remaining limits](RESULTS.md), including the retained failure and fullscreen edge observation. This does not establish a Swift-native host or production foundation.
 
 ## Exact configuration
 
@@ -51,6 +51,12 @@ python3 spikes/engine-build/engine.py status
 
 The same patch stage applies [`sample-runtime.patch`](sample-runtime.patch) **only to embedded `src/cef`**, leaving the pinned tooling checkout unchanged. Exact before/after SHA256 values protect its zero-context diff. It maps explicit `--cache-path` into CEF settings as the baseline guard does, requires `--use-mock-keychain`, canonicalizes the path and refuses anything outside `/Volumes/Mahesh/personal/bato-build/runtime/profiles/` or a missing workspace marker. It also routes sample termination to the known CEF handler rather than assuming Chromium's current application delegate implements the sample selector. Build refuses a missing/changed guard. Its apply/hash and syntax-only Objective-C++ checks passed against pinned headers; the full GN build and runtime are still untested. No launch command is provided before that build succeeds.
 
+## Developer helper packaging
+
+[`helper-packaging.patch`](helper-packaging.patch) extends CEF's helper bundle list with Chromium's three `content_mac_aperitif_helpers` names. Developer field trials enable that path, while the pinned CEF sample originally bundled only the four legacy helper names. The new total is seven. The patch preserves the existing sandbox-first CEF helper entrypoint, matching Content Shell's packaging approach; it does not claim Chrome's pure-C Apéritif preinitializer implementation. The CEF Alerts override still requests the legacy Alerts helper.
+
+The separate [`helper-packaging.json`](helper-packaging.json) pins the original/patched embedded `BUILD.gn` and patch hashes without changing `lock.json` or the successful checkout digest. `patch --execute` validates/apply-checks this change alongside the existing patches; `build` refuses absent/changed packaging, then normal GN regeneration produces the additional helper targets for `cefsimple`. Do not rerun the configure hook over local patches, manually rename helpers, suppress the observed DCHECK or disable sandboxing. [Runtime handoff](RUNTIME.md) records failure interpretation and corrected artifact checks. The incremental repaired build and narrow control/reservation runtime results are now recorded in [RESULTS.md](RESULTS.md).
+
 ## Guard and preservation
 
 The root must be the canonical authorized path on the mounted APFS volume, on a different device from the internal root filesystem. The script checks a workspace marker, exact tooling revisions and source version. It does not modify the user's HOME, shell startup files, global PATH or system configuration. Child environment scopes depot_tools PATH, configurable CIPD/vpython/XDG/ccache caches and TMPDIR to the SSD. Host Xcode and unavoidable OS-managed caches remain system-managed.
@@ -65,7 +71,7 @@ No browser is launched by these stages, and no Profile, Keychain, extension or p
 
 Read [process lifecycle](PROCESS-LIFECYCLE.md) before stopping the current build: Siso deliberately uses separate helper/action groups, and the wrapper independently verifies only its initial group. After a disk/error/cancel stop, explicitly inspect owned worker survivors before accepting cleanup or launching another stage.
 
-After successful compilation, [runtime handoff](RUNTIME.md) describes the read-only artifact/dependency checker and fixed control/reservation launch previews. The checker cannot launch the sample and refuses an active build. Actual source-built runtime acceptance remains pending.
+After successful compilation, [runtime handoff](RUNTIME.md) describes the read-only artifact/dependency checker and fixed control/reservation launch previews. The checker cannot launch the sample and refuses an active build. Initial source-built rendering, natural closes and visual reservation/zoom/fullscreen checks passed narrowly; the remaining hosting/extension gates are listed in [RESULTS.md](RESULTS.md).
 
 ## Verification
 
@@ -73,4 +79,4 @@ After successful compilation, [runtime handoff](RUNTIME.md) describes the read-o
 python3 -m unittest discover -s spikes/engine-build -p 'test_*.py'
 ```
 
-Twelve tests passed. Bootstrap tests verify the pinned command, scoped environment without global mutation, preview behavior and refusal to launch after a provenance failure. They start disposable Python processes, force a simulated low-space transition, stop a TERM-ignoring descendant even when its leader has already exited, preserve an unrelated process/file and record a completed normal run. Initial state-write/print failures also stop the child while preserving the original error. Provenance tests reject changed bootstrap source and dirty pinned tooling, and ensure a partial tree containing a valid VERSION never invokes automate. Preflight passes against the actual mounted SSD. No test starts Chromium checkout or compilation.
+Fourteen guard tests and twelve runtime-checker tests passed. Bootstrap tests verify the pinned command, scoped environment without global mutation, preview behavior and refusal to launch after a provenance failure. They start disposable Python processes, force a simulated low-space transition, stop a TERM-ignoring descendant even when its leader has already exited, preserve an unrelated process/file and record a completed normal run. Initial state-write/print failures also stop the child while preserving the original error. Provenance tests reject changed bootstrap source and dirty pinned tooling, and ensure a partial tree containing a valid VERSION never invokes automate. Preflight passes against the actual mounted SSD. No test starts Chromium checkout or compilation.
