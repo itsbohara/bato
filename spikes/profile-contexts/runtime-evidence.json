@@ -1,0 +1,496 @@
+{
+  "schema": 1,
+  "date": "2026-10-29",
+  "engine": "CEF 156.0.14+g4fa4ab5 / Chromium 156.0.8078.48 official prebuilt arm64",
+  "method": "CUA native accessibility controls; explicit fixture Write/Read and native window close buttons. CLI reads only fixed diagnostic events and owned-process existence.",
+  "profile_policy": "Dedicated fixed profile-contexts cache root, mock Keychain on both launches, no extensions/debug listener/real secrets.",
+  "synthetic_markers": {
+    "A": "bato-context-a-20261029",
+    "B": "bato-context-b-20261029"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "pid_ephemeral": 95190,
+      "events": [
+        {
+          "event": "context-browser-request",
+          "label": "A1",
+          "accepted": true
+        },
+        {
+          "event": "context-browser-request",
+          "label": "A2",
+          "accepted": true
+        },
+        {
+          "event": "context-browser-request",
+          "label": "B",
+          "accepted": true
+        },
+        {
+          "event": "context-ready",
+          "label": "A1",
+          "global": false
+        },
+        {
+          "event": "context-ready",
+          "label": "A2",
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "A1",
+          "browser_id": 1,
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "A2",
+          "browser_id": 2,
+          "global": false
+        },
+        {
+          "event": "context-ready",
+          "label": "B",
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "B",
+          "browser_id": 3,
+          "global": false
+        },
+        {
+          "event": "context-relationships",
+          "phase": "browsers-created",
+          "a1_a2_distinct": false,
+          "a1_a2_shared": true,
+          "b_isolated": true,
+          "matches_expected": false
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 2,
+          "tracked_remaining": 2
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 1,
+          "tracked_remaining": 1
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 3,
+          "tracked_remaining": 0
+        },
+        {
+          "event": "cef-message-loop-exited"
+        },
+        {
+          "event": "cef-shutdown-complete"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "baseline-before-any-write",
+          "A1": {
+            "localStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "cookie": {
+              "status": "ok",
+              "value": null
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": null
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          },
+          "A2": {
+            "localStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "cookie": {
+              "status": "ok",
+              "value": null
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": null
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          },
+          "B": {
+            "localStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "cookie": {
+              "status": "ok",
+              "value": null
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": null
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          }
+        },
+        {
+          "phase": "A1-write",
+          "A1": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            }
+          }
+        },
+        {
+          "phase": "after-A1-write",
+          "A2": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          },
+          "B": {
+            "localStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "cookie": {
+              "status": "ok",
+              "value": null
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": null
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": null
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          }
+        },
+        {
+          "phase": "B-write",
+          "B": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            }
+          }
+        },
+        {
+          "phase": "after-B-write",
+          "A1": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            }
+          },
+          "A2": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          }
+        }
+      ],
+      "close_order": [
+        "A2",
+        "A1",
+        "B"
+      ],
+      "message_loop_exited": true,
+      "cef_shutdown_complete": true,
+      "pid_absent_after_close": true,
+      "forced_stop": false
+    },
+    {
+      "run": 2,
+      "pid_ephemeral": 7033,
+      "events": [
+        {
+          "event": "context-browser-request",
+          "label": "A1",
+          "accepted": true
+        },
+        {
+          "event": "context-browser-request",
+          "label": "A2",
+          "accepted": true
+        },
+        {
+          "event": "context-browser-request",
+          "label": "B",
+          "accepted": true
+        },
+        {
+          "event": "context-ready",
+          "label": "B",
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "B",
+          "browser_id": 1,
+          "global": false
+        },
+        {
+          "event": "context-ready",
+          "label": "A1",
+          "global": false
+        },
+        {
+          "event": "context-ready",
+          "label": "A2",
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "A1",
+          "browser_id": 2,
+          "global": false
+        },
+        {
+          "event": "context-browser-created",
+          "label": "A2",
+          "browser_id": 3,
+          "global": false
+        },
+        {
+          "event": "context-relationships",
+          "phase": "browsers-created",
+          "a1_a2_distinct": false,
+          "a1_a2_shared": true,
+          "b_isolated": true,
+          "matches_expected": false
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 1,
+          "tracked_remaining": 2
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 2,
+          "tracked_remaining": 1
+        },
+        {
+          "event": "context-browser-closing",
+          "browser_id": 3,
+          "tracked_remaining": 0
+        },
+        {
+          "event": "cef-message-loop-exited"
+        },
+        {
+          "event": "cef-shutdown-complete"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "explicit-read-after-clean-restart-no-writes",
+          "A2": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          },
+          "A1": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-a-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          },
+          "B": {
+            "localStorage": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "cookie": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "indexedDB": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "cacheStorage": {
+              "status": "ok",
+              "value": "bato-context-b-20261029"
+            },
+            "sessionStorage": {
+              "status": "ok",
+              "value": null
+            }
+          }
+        }
+      ],
+      "close_order": [
+        "B",
+        "A1",
+        "A2"
+      ],
+      "message_loop_exited": true,
+      "cef_shutdown_complete": true,
+      "pid_absent_after_close": true,
+      "forced_stop": false
+    }
+  ],
+  "interpretation": {
+    "persistent_store_sharing_and_isolation": "passed narrowly in these three windows",
+    "clean_restart_persistence": "passed for four fixture stores",
+    "session_scope": "A1 session marker absent in shared A2; all sessions fresh after restart",
+    "distinct_host_identity_expectation": "not met: IsSame true for A1/A2 actual hosts, IsSharingWith true; B isolated. Unmodified matches_expected false preserved.",
+    "limits": [
+      "No workspace implementation",
+      "No extension-state/service-worker isolation",
+      "No production Keychain or signing evidence",
+      "Native window closes tested; separate application Quit command not tested in this probe"
+    ]
+  },
+  "ui_observation_note": "Final getAXState after each last-window close timed out because the process had exited; independent fixed events plus absent owned PID establish completed shutdown."
+}
