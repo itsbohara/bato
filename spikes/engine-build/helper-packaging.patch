@@ -1,0 +1,12 @@
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -2104,7 +2104,8 @@
+     ]
+ 
+     # Merge all helper apps needed by //content and //chrome.
+-    chrome_mac_helpers = content_mac_helpers + [ alert_helper_params ]
++    chrome_mac_helpers = content_mac_helpers + content_mac_aperitif_helpers +
++                         [ alert_helper_params ]
+ 
+     foreach(helper_params, chrome_mac_helpers) {
+       _helper_target = helper_params[0]

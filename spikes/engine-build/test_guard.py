@@ -182,6 +182,46 @@ class ProvenanceTest(unittest.TestCase):
                 verify.assert_called_once_with(root)
                 run.assert_not_called()
 
+    def test_helper_packaging_exact_apply_and_idempotence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = engine.source_paths(root)[1] / 'BUILD.gn'
+            target.parent.mkdir(parents=True)
+            target.write_text('old\n')
+            patch = root / 'helper-packaging.patch'
+            patch.write_text('--- a/BUILD.gn\n+++ b/BUILD.gn\n@@ -1 +1 @@\n-old\n+new\n')
+            manifest = dict(schema=1, cef_revision=engine.LOCK['cef_revision'], path='BUILD.gn',
+                            original_sha256=hashlib.sha256(b'old\n').hexdigest(),
+                            patched_sha256=hashlib.sha256(b'new\n').hexdigest(),
+                            patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest())
+            with mock.patch.object(engine, 'HERE', root), \
+                    mock.patch.object(engine, 'HELPER_PACKAGING', manifest):
+                with self.assertRaisesRegex(RuntimeError, 'packaging is missing'):
+                    engine.require_helper_packaging(root)
+                engine.patch_helper_packaging(root)
+                self.assertEqual(target.read_bytes(), b'new\n')
+                engine.require_helper_packaging(root)
+                with mock.patch.object(engine.subprocess, 'run') as apply:
+                    engine.patch_helper_packaging(root)
+                    apply.assert_not_called()
+                target.write_text('unexpected local edit\n')
+                with self.assertRaisesRegex(RuntimeError, 'build definitions differ'):
+                    engine.patch_helper_packaging(root)
+                self.assertEqual(target.read_text(), 'unexpected local edit\n')
+
+    def test_helper_patch_hash_failure_never_invokes_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patch = root / 'helper-packaging.patch'
+            patch.write_text('changed patch')
+            manifest = dict(engine.HELPER_PACKAGING)
+            with mock.patch.object(engine, 'HERE', root), \
+                    mock.patch.object(engine, 'HELPER_PACKAGING', manifest), \
+                    mock.patch.object(engine.subprocess, 'run') as apply:
+                with self.assertRaisesRegex(RuntimeError, 'packaging patch changed'):
+                    engine.patch_helper_packaging(root)
+                apply.assert_not_called()
+
     def test_modified_automate_script_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

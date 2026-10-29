@@ -166,7 +166,7 @@ class RuntimeGateTest(unittest.TestCase):
             (profile / 'unknown-provider-data').touch()
             with self.assertRaisesRegex(RuntimeError, 'already contains data'):
                 runtime.fresh_profile(root, False)
-            reserved = root / 'runtime/profiles/reservation-mock-v1'
+            reserved = root / 'runtime/profiles/reservation-mock-v2'
             reserved.symlink_to(profile, target_is_directory=True)
             with self.assertRaisesRegex(RuntimeError, 'symlinked'):
                 runtime.fresh_profile(root, True)
@@ -195,6 +195,10 @@ class RuntimeGateTest(unittest.TestCase):
             self.assertEqual({p.name for p in roots[-1][1]},
                              {'libvulkan.dylib', 'libvk_swiftshader.dylib', 'libcef_sandbox.dylib',
                               'libEGL.dylib', 'libGLESv2.dylib'})
+            missing_name = 'cefsimple Helper (Aperitif Renderer)'
+            (app / 'Contents/Frameworks' / (missing_name + '.app') / 'Contents/MacOS' / missing_name).unlink()
+            with self.assertRaisesRegex(RuntimeError, 'Aperitif Renderer'):
+                runtime.artifact_images(output)
 
     def test_active_workspace_lock_refuses_before_artifact_checks(self):
         with tempfile.TemporaryDirectory() as directory:

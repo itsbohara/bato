@@ -13,7 +13,8 @@ import sys
 import engine
 
 FRAMEWORK = 'Chromium Embedded Framework'
-HELPERS = ('', ' (Renderer)', ' (GPU)', ' (Alerts)')
+HELPERS = ('', ' (Renderer)', ' (GPU)', ' (Alerts)',
+           ' (Aperitif)', ' (Aperitif Renderer)', ' (Aperitif GPU)')
 FIXTURE = 'http://127.0.0.1:18765/login.html'
 SYSTEM_PREFIXES = ('/System/Library/', '/usr/lib/')
 
@@ -47,6 +48,7 @@ def require_configuration(output):
 
 
 def require_patches(root):
+    engine.require_helper_packaging(root)
     source, cef = engine.source_paths(root)
     if hashlib.sha256((cef / engine.LOCK['sample_path']).read_bytes()).hexdigest() != engine.LOCK['sample_patched_sha256']:
         raise RuntimeError('Dedicated mock-Profile/sample termination guard changed or missing')
@@ -180,7 +182,7 @@ def artifact_images(output):
 
 
 def fresh_profile(root, reservation):
-    profile = root / 'runtime/profiles' / ('reservation-mock-v1' if reservation else 'control-mock-v1')
+    profile = root / 'runtime/profiles' / ('reservation-mock-v2' if reservation else 'control-mock-v2')
     if profile.resolve() != profile:
         raise RuntimeError('Refusing symlinked test Profile path')
     if profile.exists() and (not profile.is_dir() or any(profile.iterdir())):

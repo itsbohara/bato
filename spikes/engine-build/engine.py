@@ -21,6 +21,7 @@ import urllib.request
 
 HERE = Path(__file__).resolve().parent
 LOCK = json.loads((HERE / 'lock.json').read_text())
+HELPER_PACKAGING = json.loads((HERE / 'helper-packaging.json').read_text())
 DEFAULT_ROOT = Path('/Volumes/Mahesh/personal/bato-build')
 MARKER = '.bato-engine-workspace.json'
 CHECKOUT_MARKER = 'checkout-complete.json'
@@ -325,6 +326,36 @@ def verify_source(root):
             raise RuntimeError('Unexpected embedded CEF revision')
 
 
+def helper_packaging_paths(root):
+    if (HELPER_PACKAGING.get('schema') != 1 or
+            HELPER_PACKAGING.get('cef_revision') != LOCK['cef_revision'] or
+            HELPER_PACKAGING.get('path') != 'BUILD.gn'):
+        raise RuntimeError('Helper packaging manifest does not match pinned CEF')
+    patch = HERE / 'helper-packaging.patch'
+    if hashlib.sha256(patch.read_bytes()).hexdigest() != HELPER_PACKAGING['patch_sha256']:
+        raise RuntimeError('Helper packaging patch changed')
+    return source_paths(root)[1] / 'BUILD.gn', patch
+
+
+def require_helper_packaging(root):
+    target, _ = helper_packaging_paths(root)
+    if hashlib.sha256(target.read_bytes()).hexdigest() != HELPER_PACKAGING['patched_sha256']:
+        raise RuntimeError('Required Aperitif-named helper packaging is missing or changed; run patch stage')
+
+
+def patch_helper_packaging(root):
+    target, patch = helper_packaging_paths(root)
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    if digest == HELPER_PACKAGING['patched_sha256']:
+        print('Aperitif-named helper packaging already applied')
+        return
+    if digest != HELPER_PACKAGING['original_sha256']:
+        raise RuntimeError('Embedded CEF build definitions differ; refusing helper packaging patch')
+    subprocess.run(['git', 'apply', '--check', str(patch)], cwd=target.parent, check=True)
+    subprocess.run(['git', 'apply', str(patch)], cwd=target.parent, check=True)
+    require_helper_packaging(root)
+
+
 def patch_source(root, execute):
     source, cef = source_paths(root)
     patch = HERE.parent / 'engine-reservation/native-reservation.patch'
@@ -353,6 +384,7 @@ def patch_source(root, execute):
                 raise RuntimeError('Sample runtime guard patch hash mismatch')
         else:
             raise RuntimeError('Embedded sample source differs; refusing runtime guard patch')
+        patch_helper_packaging(root)
 
 
 def main():
@@ -406,6 +438,7 @@ def main():
                 raise RuntimeError('Source has local changes; refusing update/revert. Use configure/build directly')
             verify_automate(root)
         if args.phase == 'build':
+            require_helper_packaging(root)
             sample = source_paths(root)[1] / LOCK['sample_path']
             if hashlib.sha256(sample.read_bytes()).hexdigest() != LOCK['sample_patched_sha256']:
                 raise RuntimeError('Dedicated test-Profile/runtime guard is missing; run patch stage')
