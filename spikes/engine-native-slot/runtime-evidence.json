@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-29",
+  "engine": {
+    "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+    "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+    "configuration": "ARM64 Debug component"
+  },
+  "patch_sha256": "f43ddf5bd5ecd782a1da0e87368793dab3fe04b6e47c4d068179d5dc5ef54516",
+  "client_patch_sha256": "980aefd9b9fb3d961669b749fcc0ec2b9c81b7ce6e8cbd5666a45404f21370da",
+  "builds": [
+    {
+      "result": "failed",
+      "seconds": 85.51,
+      "reason": "raw_ref BrowserView could not convert to pointer"
+    },
+    {
+      "result": "failed",
+      "seconds": 43.34,
+      "reason": "exit-time global map destructor and implicit Objective-C property synthesis rejected"
+    },
+    {
+      "result": "passed",
+      "seconds": 75.86,
+      "scope": "engine+Swift+sample"
+    },
+    {
+      "result": "passed",
+      "seconds": 6.17,
+      "scope": "sample declared API lookup correction"
+    }
+  ],
+  "artifact_images_checked": 527,
+  "declared_exports_verified": 3,
+  "runs": [
+    {
+      "id": "native-slot-v1",
+      "result": "refused before browser UI",
+      "exit_code": 1,
+      "reason": "CFBundle did not recognize already-loaded CEF framework",
+      "correction": "RTLD_NOLOAD known loaded framework + exact three authored versioned symbols; no private API lookup"
+    },
+    {
+      "id": "native-slot-v2",
+      "result": "bounded input/focus/split/fullscreen/teardown pass",
+      "exit_code": 0,
+      "one_slot_for_four_browsers": true,
+      "native_accessibility_subtree_observed": true,
+      "mouse_button_counts": [
+        1,
+        2,
+        3
+      ],
+      "native_text_editing": true,
+      "tab_to_chrome_reload": true,
+      "reverse_tab_to_editable_native_field": true,
+      "focus_browser_to_page": true,
+      "page_mouse_input_in_split": true,
+      "fullscreen_hidden_then_restored": true,
+      "zoom_visual_geometry": true,
+      "native_split_created_and_visible": true,
+      "synthetic_extension_options_and_toolbar_menu": true,
+      "client_quit_veto": true,
+      "actual_beforeunload_cancel": true,
+      "native_and_page_mouse_input_after_cancel": true,
+      "detach_tokens": [
+        1
+      ],
+      "client_remaining_on_detach": 0,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
+    },
+    {
+      "id": "native-slot-v3",
+      "result": "repeated launch and two-window detach pass",
+      "exit_code": 0,
+      "created_tokens": [
+        1,
+        2
+      ],
+      "closed_second_window_detached_token": 2,
+      "surviving_first_window_mouse_action": true,
+      "final_quit_detached_token": 1,
+      "client_remaining_on_final_detach": 0,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
+    }
+  ],
+  "unverified": [
+    "Free resize and split divider drags produced no observable geometry change; not passed",
+    "Minimum sizes and display/scale changes",
+    "Explicit native AX parent/frame attributes beyond observed tree nesting and visual bounds",
+    "Background native input rejection during active modal (tool exposed dialog only)",
+    "Tab-modal dialogs and focus traversal of all native controls",
+    "Moving tabs between windows",
+    "Real Bitwarden/AdGuard/MetaMask popup and focused-pane behavior",
+    "Production Keychain, signing, performance and engine foundation"
+  ],
+  "privacy": "Synthetic pages and mock Profiles only. Raw logs, Profiles and archived failed patches remain in dedicated SSD workspace; entered text is neither logged nor persisted by client."
+}

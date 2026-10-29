@@ -1,0 +1,492 @@
+--- a/cef/libcef/browser/chrome/browser_delegate.h
++++ b/cef/libcef/browser/chrome/browser_delegate.h
+@@ -19,6 +19,7 @@
+ #include "ui/base/window_open_disposition.h"
+ 
+ class Browser;
++class BrowserView;
+ class BrowserUiController;
+ class BrowserWebContentsDelegate;
+ class BrowserWindow;
+@@ -91,6 +92,10 @@
+ 
+   virtual ~BrowserDelegate() = default;
+ 
++  // Opt-in macOS native-slot experiment, window-owned geometry/lifecycle.
++  virtual void NativeSlotBounds(BrowserView*, const gfx::Rect&) {}
++  virtual void NativeSlotUpdate(BrowserView*, bool teardown, bool hide) {}
++
+   // Optionally override chrome::AddWebContents behavior. This is most often
+   // called via Browser::AddNewContents for new popup browsers and provides an
+   // opportunity for CEF to create a new Browser instead of proceeding with
+--- a/cef/libcef/browser/chrome/chrome_browser_delegate.h
++++ b/cef/libcef/browser/chrome/chrome_browser_delegate.h
+@@ -58,6 +58,8 @@
+       std::unique_ptr<content::WebContents>& devtools_contents);
+ 
+   // cef::BrowserDelegate methods:
++  void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds) override;
++  void NativeSlotUpdate(BrowserView* view, bool teardown, bool hide) override;
+   std::unique_ptr<content::WebContents> AddWebContents(
+       std::unique_ptr<content::WebContents> new_contents) override;
+   void OnWebContentsCreated(content::WebContents* new_contents) override;
+--- a/cef/libcef/browser/chrome/browser_util.h
++++ b/cef/libcef/browser/chrome/browser_util.h
+@@ -10,12 +10,16 @@
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/browser.h"
+ 
++class BrowserView;
++
+ namespace cef {
+ 
+ #if BUILDFLAG(IS_MAC)
+ // Opt-in Bato experiment. Enter the normal macOS Chrome quit lifecycle inside
+ // the framework; clients continue using the supported Chrome command API.
+ void RequestNativeApplicationQuit();
++void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds);
++void NativeSlotUpdate(BrowserView* view, bool teardown, bool hide);
+ #endif
+ 
+ // BrowserWindowInterface is always implemented by Browser on desktop
+--- a/cef/libcef/browser/chrome/chrome_browser_delegate.cc
++++ b/cef/libcef/browser/chrome/chrome_browser_delegate.cc
+@@ -680,3 +680,14 @@
+ }
+ 
+ }  // namespace cef
++
++void ChromeBrowserDelegate::NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds) {
++#if BUILDFLAG(IS_MAC)
++  cef::NativeSlotBounds(view, bounds);
++#endif
++}
++void ChromeBrowserDelegate::NativeSlotUpdate(BrowserView* view, bool teardown, bool hide) {
++#if BUILDFLAG(IS_MAC)
++  cef::NativeSlotUpdate(view, teardown, hide);
++#endif
++}
+--- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
++++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
+@@ -49,3 +49,269 @@
+ }
+ 
+ }  // namespace cef
++
++// Bato native-slot experiment. All storage and callbacks are UI-thread only.
++#include <map>
++#include "base/no_destructor.h"
++#include "base/command_line.h"
++#include "cef/libcef/browser/context.h"
++#include "cef/libcef/browser/chrome/browser_delegate.h"
++#include "cef/include/internal/bato_native_slot.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "components/tabs/public/tab_interface.h"
++#include "components/web_modal/web_contents_modal_dialog_manager.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/cocoa/views_hostable.h"
++#include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
++#include "ui/views/controls/native/native_view_host.h"
++#include "ui/views/focus/focus_manager.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++BatoNativeSlotCallbacksV1 g_slot_callbacks = {};
++uint64_t g_slot_generation = 0;
++bool g_slot_registration_closed = false;
++class SlotAdapter;
++bool SlotBlocked(BrowserView* view);
++}
++
++@interface BatoSlotRoot : NSView <ViewsHostable>
++@property(nonatomic, assign) SlotAdapter* adapter;
++@property(nonatomic, strong) id recordedAccessibilityParent;
++@end
++
++namespace {
++class SlotAdapter final : public ui::ViewsHostableView {
++ public:
++  SlotAdapter(NSView* child, uint64_t token, BrowserView* view) : token_(token), view_(view) {
++    root_ = [[BatoSlotRoot alloc] initWithFrame:NSZeroRect];
++    root_.adapter = this;
++    root_.accessibilityElement = YES;
++    root_.accessibilityRole = NSAccessibilityGroupRole;
++    root_.accessibilityLabel = @"Bato native slot";
++    child.frame = root_.bounds;
++    child.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
++    [root_ addSubview:child];
++    root_.hidden = YES;
++  }
++  ~SlotAdapter() { root_.adapter = nullptr; }
++  BatoSlotRoot* root() const { return root_; }
++  bool blocked() const { return SlotBlocked(view_); }
++  void ViewsHostableAttach(Host* host) override {
++    CHECK(!host_);
++    CHECK(!host->GetRemoteCocoaApplication());
++    host_ = host;
++  }
++  void ViewsHostableDetach() override {
++    root_.hidden = YES;
++    root_.recordedAccessibilityParent = nil;
++    [root_ removeFromSuperview];
++    host_ = nullptr;
++  }
++  void ViewsHostableSetBounds(const gfx::Rect& bounds, int superview_height) override {
++    NSRect frame = NSMakeRect(bounds.x(), superview_height - bounds.bottom(),
++                              bounds.width(), bounds.height());
++    root_.frame = [root_.superview convertRect:frame fromView:nil];
++  }
++  void ViewsHostableSetVisible(bool visible) override { root_.hidden = !visible; }
++  void ViewsHostableMakeFirstResponder() override {
++    if (blocked()) return;
++    BatoSlotRoot* __strong root = root_;
++    const uint64_t token = token_;
++    NSView* target = (__bridge NSView*)g_slot_callbacks.focus_target(
++        g_slot_callbacks.context, token);
++    if (target && [target isDescendantOf:root] && !root.hidden && root.window) {
++      [root.window makeFirstResponder:target];
++    }
++  }
++  void ViewsHostableSetParentAccessible(gfx::NativeViewAccessible parent) override {
++    root_.recordedAccessibilityParent = parent.Get();
++  }
++  gfx::NativeViewAccessible ViewsHostableGetParentAccessible() override {
++    return gfx::NativeViewAccessible(root_.recordedAccessibilityParent);
++  }
++  gfx::NativeViewAccessible ViewsHostableGetAccessibilityElement() override {
++    return gfx::NativeViewAccessible(root_);
++  }
++ private:
++  uint64_t token_;
++  BrowserView* view_;
++  BatoSlotRoot* __strong root_;
++  Host* host_ = nullptr;
++};
++struct SlotState {
++  gfx::Rect bounds;
++  uint64_t token = 0;
++  bool attempted = false;
++  bool transitioning = false;
++  views::NativeViewHost* host = nullptr;  // BrowserView owns this child.
++  std::unique_ptr<SlotAdapter> adapter;
++  id __strong will_enter;
++  id __strong will_exit;
++  id __strong did_enter;
++  id __strong did_exit;
++};
++auto& Slots() {
++  static base::NoDestructor<std::map<BrowserView*, SlotState>> slots;
++  return *slots;
++}
++bool SlotEnabled() {
++  auto* command = base::CommandLine::ForCurrentProcess();
++  return command && command->HasSwitch("bato-native-slot") &&
++         command->HasSwitch("bato-native-reservation");
++}
++bool SlotBlocked(BrowserView* view) {
++  if (!view->GetWidget() || NSApp.modalWindow ||
++      view->GetWidget()->GetNativeWindow().GetNativeNSWindow().attachedSheet) {
++    return true;
++  }
++  auto* contents = view->GetActiveWebContents();
++  auto* tab = contents ? tabs::TabInterface::MaybeGetFromContents(contents) : nullptr;
++  if (tab && tab->IsBlocked()) return true;
++  auto* manager = contents ? web_modal::WebContentsModalDialogManager::FromWebContents(contents) : nullptr;
++  return manager && manager->IsDialogActive();
++}
++BrowserView* FindSlot(uint64_t token) {
++  for (const auto& [view, state] : Slots()) {
++    if (state.token == token && state.host && !state.transitioning &&
++        state.host->GetVisible() && !SlotBlocked(view)) return view;
++  }
++  return nullptr;
++}
++void ObserveFullscreen(BrowserView* view, SlotState& state) {
++  NSWindow* window = view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
++  NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
++  auto change = ^(NSNotification* note) {
++    auto found = Slots().find(view);
++    if (found == Slots().end()) return;
++    auto& current = found->second;
++    current.transitioning =
++        [note.name isEqualToString:NSWindowWillEnterFullScreenNotification] ||
++        [note.name isEqualToString:NSWindowWillExitFullScreenNotification];
++    if (current.host) current.host->SetVisible(false);
++    // Recalculate authoritative geometry after the transition completes.
++    if (!current.transitioning) view->InvalidateLayout();
++  };
++  state.will_enter = [center addObserverForName:NSWindowWillEnterFullScreenNotification object:window queue:nil usingBlock:change];
++  state.will_exit = [center addObserverForName:NSWindowWillExitFullScreenNotification object:window queue:nil usingBlock:change];
++  state.did_enter = [center addObserverForName:NSWindowDidEnterFullScreenNotification object:window queue:nil usingBlock:change];
++  state.did_exit = [center addObserverForName:NSWindowDidExitFullScreenNotification object:window queue:nil usingBlock:change];
++}
++}
++
++@implementation BatoSlotRoot
++@synthesize adapter = _adapter;
++@synthesize recordedAccessibilityParent = _recordedAccessibilityParent;
++- (ui::ViewsHostableView*)viewsHostableView { return self.adapter; }
++- (id)accessibilityParent { return self.recordedAccessibilityParent; }
++- (NSView*)hitTest:(NSPoint)point {
++  if (self.hidden || !self.adapter || self.adapter->blocked()) return nil;
++  return [super hitTest:point];
++}
++@end
++
++extern "C" CEF_EXPORT int bato_native_slot_register_v1(
++    const BatoNativeSlotCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_slot_callbacks.version ||
++      g_slot_registration_closed || (CefContext::Get() && CefContext::Get()->initialized()) || !callbacks ||
++      callbacks->size != sizeof(BatoNativeSlotCallbacksV1) ||
++      callbacks->version != 1 || !callbacks->create || !callbacks->detached ||
++      !callbacks->focus_target) return 0;
++  g_slot_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token) {
++  if (!NSThread.isMainThread) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view || !view->GetActiveWebContents()) return 0;
++  view->GetActiveWebContents()->Focus();
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse) {
++  if (!NSThread.isMainThread) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view) return 0;
++  auto* focus = view->GetFocusManager();
++  focus->SetFocusedView(Slots().at(view).host);
++  focus->AdvanceFocus(reverse != 0);
++  return 1;
++}
++
++namespace cef {
++void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds) {
++  CEF_REQUIRE_UIT();
++  g_slot_registration_closed = true;
++  if (!SlotEnabled()) return;
++  Slots()[view].bounds = bounds;
++}
++void NativeSlotUpdate(BrowserView* view, bool teardown, bool hide) {
++  CEF_REQUIRE_UIT();
++  auto found = Slots().find(view);
++  if (teardown) {
++    if (found == Slots().end()) return;
++    auto& state = found->second;
++    for (id observer : @[state.will_enter ?: NSNull.null, state.will_exit ?: NSNull.null,
++                         state.did_enter ?: NSNull.null, state.did_exit ?: NSNull.null]) {
++      if (observer != NSNull.null) [NSNotificationCenter.defaultCenter removeObserver:observer];
++    }
++    const uint64_t token = state.token;
++    const bool attached = !!state.adapter;
++    if (state.host) {
++      state.host->SetVisible(false);
++      state.host->Detach();
++      view->RemoveChildViewT(state.host);
++    }
++    // Invalidate the token and release the adapter before notifying client.
++    Slots().erase(found);
++    if (attached) {
++      fprintf(stderr, "{\"event\":\"native-slot-detached\",\"token\":%llu}\n", (unsigned long long)token);
++      g_slot_callbacks.detached(g_slot_callbacks.context, token);
++    }
++    return;
++  }
++  if (!SlotEnabled() || found == Slots().end()) return;
++  auto& state = found->second;
++  if (hide || state.transitioning || state.bounds.IsEmpty() || view->IsFullscreen()) {
++    if (state.host) state.host->SetVisible(false);
++    return;
++  }
++  if (!state.attempted) {
++    if (!view->GetWidget() || !view->GetWidget()->GetNativeWindow()) return;
++    state.attempted = true;
++    auto* native = views::NativeWidgetMacNSWindowHost::GetFromNativeWindow(view->GetWidget()->GetNativeWindow());
++    auto* browser = BrowserForBWI(view->browser());
++    if (!native || native->application_host() || !browser || !browser->cef_delegate() ||
++        browser->cef_delegate()->IsViewsHosted() ||
++        browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL ||
++        g_slot_callbacks.version != 1) {
++      fprintf(stderr, "{\"event\":\"native-slot-topology-refused\"}\n");
++      return;
++    }
++    state.token = ++g_slot_generation;
++    const uint64_t token = state.token;
++    NSView* child = (__bridge NSView*)g_slot_callbacks.create(g_slot_callbacks.context, token);
++    auto still_live = Slots().find(view);
++    if (still_live == Slots().end() || still_live->second.token != token) {
++      if (child) g_slot_callbacks.detached(g_slot_callbacks.context, token);
++      return;
++    }
++    if (!child || child.superview || child.window) {
++      fprintf(stderr, "{\"event\":\"native-slot-factory-refused\"}\n");
++      if (child) g_slot_callbacks.detached(g_slot_callbacks.context, state.token);
++      return;
++    }
++    state.adapter = std::make_unique<SlotAdapter>(child, state.token, view);
++    state.host = view->AddChildView(std::make_unique<views::NativeViewHost>());
++    state.host->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
++    state.host->SetBoundsRect(state.bounds);
++    state.host->Attach(gfx::NativeView(state.adapter->root()));
++    ObserveFullscreen(view, state);
++    fprintf(stderr, "{\"event\":\"native-slot-attached\",\"token\":%llu}\n", (unsigned long long)state.token);
++  }
++  if (state.host) {
++    state.host->SetBoundsRect(state.bounds);
++    state.host->SetVisible(!SlotBlocked(view));
++    state.host->DeprecatedLayoutImmediately();
++  }
++}
++}  // namespace cef
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -39,6 +39,7 @@
+ 
+ #if BUILDFLAG(ENABLE_CEF)
+ #include "cef/libcef/browser/chrome/browser_delegate.h"
++#include "cef/libcef/browser/chrome/browser_util.h"
+ #endif
+ 
+ BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
+@@ -123,6 +124,7 @@
+     auto local_params = params.InLocalCoordinates(
+         use_browser_bounds ? browser_bounds : params.visual_client_area);
+ #if BUILDFLAG(IS_MAC)
++    gfx::Rect native_slot_bounds;
+     // Bato source-build experiment only. Keep Chrome's complete child layout
+     // (toolbar, origin UI, extension anchors and split subtree) under its own
+     // layout manager. This is not an AppKit hosting contract.
+@@ -133,8 +135,18 @@
+             BrowserWindowInterface::Type::TYPE_NORMAL &&
+         (window_state == WindowState::kNormal ||
+          window_state == WindowState::kMaximized)) {
++      const gfx::Rect original_area = local_params.visual_client_area;
+       local_params.Inset(gfx::Insets::TLBR(44, 260, 0, 0));
+-    }
++      // Use the same authoritative visual-client rectangle. Top margin avoids
++      // frame-owned traffic lights; Chrome keeps all of its own child layout.
++      native_slot_bounds = gfx::Rect(original_area.x(), original_area.y() + 44,
++          std::min(260, original_area.width()), std::max(0, original_area.height() - 44));
++    }
++#if BUILDFLAG(ENABLE_CEF)
++    if (auto* delegate = cef::BrowserForBWI(browser_view_->browser())->cef_delegate()) {
++      delegate->NativeSlotBounds(&browser_view_.get(), native_slot_bounds);
++    }
++#endif
+ #endif
+     return local_params;
+   }
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1132,6 +1132,13 @@
+ }
+ 
+ BrowserView::~BrowserView() {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  if (browser_) {
++    if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
++      delegate->NativeSlotUpdate(this, true, true);
++    }
++  }
++#endif
+   // If the Toolbar is not overloaded it will be destroyed via
+   // RemoveAllChildViews().
+   WillDestroyToolbar();
+@@ -3605,6 +3612,11 @@
+     if (auto* container =
+             multi_contents_view_->GetContentsContainerViewFor(contents)) {
+       container->contents_view()->UpdateIsBlockedByModal();
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++      if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
++        delegate->NativeSlotUpdate(this, false, false);
++      }
++#endif
+     }
+   }
+ 
+@@ -4228,6 +4240,11 @@
+   // Permanently suppress layout during teardown to avoid running layout on
+   // destroying child views or widgets.
+   suppress_layout_for_teardown_ = true;
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
++    delegate->NativeSlotUpdate(this, true, true);
++  }
++#endif
+ 
+   // Destroy any remaining WebContents early on. Doing so may result in
+   // calling back to one of the Views/LayoutManagers or supporting classes of
+@@ -4933,7 +4950,16 @@
+ 
+ gfx::Size BrowserView::GetMinimumSize() const {
+   auto* const layout = GetBrowserViewLayout();
+-  return layout ? layout->GetMinimumSize(this) : gfx::Size();
++  gfx::Size minimum = layout ? layout->GetMinimumSize(this) : gfx::Size();
++#if BUILDFLAG(IS_MAC)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-slot") &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-reservation") &&
++      browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
++      !IsFullscreen()) {
++    minimum.Enlarge(260, 44);
++  }
++#endif
++  return minimum;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+@@ -4992,6 +5018,11 @@
+   }
+ 
+   LayoutSuperclass<views::View>(this);
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
++    delegate->NativeSlotUpdate(this, false, false);
++  }
++#endif
+ 
+   // TODO(jamescook): Why was this in the middle of layout code?
+   toolbar_->location_bar()->UpdateFocusBehavior(
+@@ -5609,6 +5640,11 @@
+ }
+ 
+ void BrowserView::PrepareFullscreen(bool fullscreen) {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
++    delegate->NativeSlotUpdate(this, false, true);
++  }
++#endif
+   if (top_controls_slide_controller_) {
+     top_controls_slide_controller_->OnBrowserFullscreenStateWillChange(
+         fullscreen);
+--- /dev/null
++++ b/cef/include/internal/bato_native_slot.h
+@@ -0,0 +1,29 @@
++// Bato bounded source experiment ABI v1. Not an upstream CEF API.
++#ifndef BATO_NATIVE_SLOT_V1_H_
++#define BATO_NATIVE_SLOT_V1_H_
++#include <stddef.h>
++#include <stdint.h>
++#include "include/internal/cef_export.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++// Register once on the main thread before CefInitialize. Callbacks remain valid
++// until CefShutdown returns. create returns a newly allocated, unparented NSView
++// as an unretained pointer; engine retains it until detach, client may retain too.
++// focus_target returns a child of that root (not arbitrary browser/UI state).
++// token is process-local, unique per attempted window slot and never persisted.
++typedef struct BatoNativeSlotCallbacksV1 {
++  size_t size;
++  uint32_t version;
++  void* context;
++  void* (*create)(void* context, uint64_t token);
++  void (*detached)(void* context, uint64_t token);
++  void* (*focus_target)(void* context, uint64_t token);
++} BatoNativeSlotCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_v1(const BatoNativeSlotCallbacksV1* callbacks);
++CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
++CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
++#ifdef __cplusplus
++}
++#endif
++#endif

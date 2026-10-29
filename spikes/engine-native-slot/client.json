@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+  "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+  "patch_sha256": "980aefd9b9fb3d961669b749fcc0ec2b9c81b7ce6e8cbd5666a45404f21370da",
+  "files": [
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/cefsimple_mac.mm",
+      "original_sha256": "bae6c935e237922a603172bb397241a92eb8e09dd184932c235369c2566b22a8",
+      "patched_sha256": "6cab9121888d83d6729f3d19d091006df2c33b74f4464f69dfcd047c88547a21"
+    },
+    {
+      "root": "cef",
+      "path": "BUILD.gn",
+      "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
+      "patched_sha256": "6452a5100362f5c6add3e81c838ca1cbf478a39cf490341c71a4526718b0e65f"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/native_slot_client.mm",
+      "original_sha256": null,
+      "patched_sha256": "e597636c2041a1b0543433b01b0eff0ff7ed0baee601a1f9c463740f1a136244"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/native_slot_client.h",
+      "original_sha256": null,
+      "patched_sha256": "c1c8a9d97920cd34629e6c35d93e4016c4f2133f2cd1aa6c2990a124450b6d92"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/compile_native_slot.py",
+      "original_sha256": null,
+      "patched_sha256": "1a5d4690c79f0ef1ed42b9f0a49b18fe2b143588bf0c4aef4e8d0ae3defedc89"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/NativeSlot.swift",
+      "original_sha256": null,
+      "patched_sha256": "15b6c439fd8bb22feaf16e15ab49f3293bf2bbfb36d69a45ce46e6530140a0dd"
+    }
+  ]
+}

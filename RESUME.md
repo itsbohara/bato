@@ -2,7 +2,17 @@
 
 Checkpoint: 2026-10-29, after successful source compilation and unlocked runtime tests. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
-## Latest checkpoint: source-engine Quit V3 passed
+## Latest checkpoint: native Swift slot input passed
+
+Read `spikes/engine-native-slot/RESULTS.md` and runtime-evidence.json first. An engine-owned NativeViewHost in the normal Chrome window now accepts real mouse clicks, Swift field editing and native↔Chrome focus handoff. Actual AX exposes its group/controls. Fullscreen hides/restores it; native split and synthetic extension options/menu coexist. Quit veto, beforeunload Cancel and approved Leave completed natural exit0 with detach-once. A second launch/two-window run proved separate slots, sibling close isolation and final clean shutdown. No production foundation selected.
+
+Current source/binary has the native-slot overlay on top of QuitV3+reservation+helper patches. Use `python3 spikes/engine-build/native_slot.py check|build --execute|artifacts` for this overlay. Original engine.py build and runtime preview intentionally refuse modified base targets. Do not rerun checkout/configure or reverse old patches blindly. Exact engine/client manifests cover14files including5newfiles. Successful engine build75.86s; sample lookup correction6.17s; final checker527ARM64images, three exports.36engine-build+2engine-patch tests pass. Earlier compile/CFBundle failures are retained SSD.
+
+Next gate: unresolved free resize/divider drags, explicit modal background-input rejection, tab moves/scale/minimum geometry and real extension popup/focused-pane acceptance. Screenshot-coordinate drags produced no observable change; do not call resizing passed. AX tree nesting is observed, explicit parent/frame attributes not measured. Fullscreen screenshot retains earlier white rightedge.
+
+Mock Profiles native-slot-mock-v1(refused startup),v2(input/split/Quit),v3(two-window) and raw logs live under the SSDroot; preserve same mock provider. No owned browser/build remains. Fixture18765 running. Source and checkpoint reports accompany this checkpoint; inspect Git status and recent commits before compaction or integration.
+
+## Earlier checkpoint: source-engine Quit V3 passed
 
 Read `spikes/engine-quit/RESULTS.md` and runtime-evidence.json first. The flagged source experiment now passes client veto, actual armed beforeunload Cancel (same process/page, counter2→3), repeated standard application-menu Quit → Leave, real loop return, CEF shutdown and natural exit0 with the synthetic controller and native split pair open. Earlier failures below remain retained evidence. Command-Q sent once produced no visible request; keyboard warning/hold behavior remains unresolved. No-window/download/active-app/system-shutdown and production behavior are unpassed.
 

@@ -29,9 +29,13 @@ A failure must be reported as a blocker; do not replace required behavior with a
 
 Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILITY-RESULTS.md). Sample builds, Bitwarden store persistence, narrow AdGuard/MetaMask behavior, Profile markers, native accessory controls, and native Chrome split targeting have been exercised. Full extension acceptance remains open. A browser executable alone does not pass the foundation gate.
 
+### Latest source-native checkpoint
+
+[Registered native-slot results](spikes/engine-native-slot/RESULTS.md) now establish bounded real Swift input/focus in the normal Chrome window, native split/synthetic extension coexistence, fullscreen restoration and two-window teardown. The production gate remains open: drag/resize observability, modal blocking, explicit AX geometry and real extension popup/focused-pane behavior require acceptance. Use the dedicated native_slot.py overlay runner; original base guards must stay intact.
+
 ### Next bounded engineering tasks
 
-1. Extend the explicit linked Swift/Objective-C++ experiment into one supported host combining native input/accessibility, reserved geometry, splits and extension UI. Linked attachment/action/split-command dispatch and mock-Profile shutdown passed; reserved Views geometry passed visually, but native input remains open. See spikes/linked-native-bridge/RESULTS.md and spikes/native-composition/ENGINE-SEAM.md. Resolve production Keychain/signing behavior separately from the test-only mock provider.
+1. Extend the explicit linked Swift/Objective-C++ experiment into one supported host combining native input/accessibility, reserved geometry, splits and extension UI. The registered normal-window slot now passes bounded native mouse/field/focus and synthetic split/lifecycle acceptance; complete modal/AX geometry, drag/resize and real extension UI remain open. See spikes/linked-native-bridge/RESULTS.md and spikes/native-composition/ENGINE-SEAM.md. Resolve production Keychain/signing behavior separately from the test-only mock provider.
 2. Integrate the demonstrated normal-window split control and clean-restart URL reconstruction into the eventual native host. Prove divider resizing and real-extension focused-pane behavior; controller URL storage is not Bato saved pins. Investigate the first extension-controller close-all hang despite later clean exits. Do not build two Alloy panes merely because the CEF BrowserView count is limited.
 3. Exercise Bitwarden autofill with a disposable test vault and controlled HTTPS fixture; exercise MetaMask with an unfunded disposable wallet. Keep real secrets out of artifacts.
 4. Extend Profile tests to multiple contexts/workspaces, more storage types, extension state, and clean restart with one consistent application identity. Investigate the cross-sample cookie observation before making broad persistence claims.

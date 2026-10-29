@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
+  "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+  "patch_sha256": "f43ddf5bd5ecd782a1da0e87368793dab3fe04b6e47c4d068179d5dc5ef54516",
+  "files": [
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/browser_delegate.h",
+      "original_sha256": "fae8eebf5064f7b41e979bf854d4e1b8e66192ff7ca5d26aad0c63fe47fa57ce",
+      "patched_sha256": "7caa547ea1404f800ba69e46b62312b8f86797cb663c29622e5905a45483709e"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/chrome_browser_delegate.h",
+      "original_sha256": "1d9bc1913309dd3f19b582b1dd0066ab8c12d910f0673db63f6a3d78b411c1b2",
+      "patched_sha256": "15b73e63d83c172abe56c00b462c37b63da5539fba82dbb743d84aac59c840f0"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/browser_util.h",
+      "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
+      "patched_sha256": "51a77fd38832c5379586240e0db6006f158c52f74f5cf0c4b2d875038ba7aac9"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/chrome_browser_delegate.cc",
+      "original_sha256": "5dec5cd77127a497b9bc3b9f29726966afa6bb0d36513b0a7f0b1baee0f14410",
+      "patched_sha256": "6f3020eba59828a36d9104ae2253ed71fc389b9aaf152eaaea9124923e161204"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
+      "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
+      "patched_sha256": "75aacae1703987b8d029aa74f3c298d02dec384058ce48116963556ad7cf65f4"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
+      "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
+      "patched_sha256": "e1042f1063025b66d85eb92e56c585f46e95d27f22f77ab36871a09572025664"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/frame/browser_view.cc",
+      "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
+      "patched_sha256": "4c395220f5af17e10f1ec5c2790f6caacc11784c7b696fadc2f1e321348a9411"
+    },
+    {
+      "root": "cef",
+      "path": "include/internal/bato_native_slot.h",
+      "original_sha256": null,
+      "patched_sha256": "d059fc0f47455f1f36f6e87a26e7dceb2a9b576336a80a63a67120f56c480754"
+    }
+  ]
+}

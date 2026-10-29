@@ -84,3 +84,7 @@ Fourteen guard tests and twelve runtime-checker tests passed. Bootstrap tests ve
 ## Opt-in native Quit follow-up
 
 The patch/build stages now require the separately hash-locked [Quit experiment](../engine-quit/README.md), including its seven embedded CEF files and two Chromium startup/cancellation files. Both patch roots are checked before applying either; mixed/unknown states are refused. The original checkout lock remains unchanged. V3 compiled in90.83s and passed bounded runtime acceptance in [Quit results](../engine-quit/RESULTS.md).31 engine-build tests and two exact-patch tests passed. Do not rerun upstream configure over these changes.
+
+## Registered native-slot overlay
+
+The current source experiment adds a [guarded native-slot overlay](../engine-native-slot/README.md) on top of these base patches. While applied, use native_slot.py for checking/building/artifact validation; original engine.py build and runtime preview reject the overlay's changed base targets. This intentional refusal preserves the base guard contract. Real Swift mouse/field/focus and bounded split/fullscreen/two-window teardown passed; [remaining acceptance](../engine-native-slot/RESULTS.md) is still required before foundation selection.

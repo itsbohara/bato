@@ -1,0 +1,305 @@
+--- a/cef/tests/cefsimple/cefsimple_mac.mm
++++ b/cef/tests/cefsimple/cefsimple_mac.mm
+@@ -10,6 +10,7 @@
+ #include "include/wrapper/cef_helpers.h"
+ #include "include/wrapper/cef_library_loader.h"
+ #include "tests/cefsimple/simple_app.h"
++#include "tests/cefsimple/native_slot_client.h"
+ #include "tests/cefsimple/simple_handler.h"
+ 
+ // Receives notifications from the application.
+@@ -220,6 +221,15 @@
+     // CEF has initialized.
+     CefRefPtr<SimpleApp> app(new SimpleApp);
+ 
++    if (command_line->HasSwitch("bato-native-slot")) {
++      if (!command_line->HasSwitch("bato-native-reservation") ||
++          !command_line->HasSwitch("bato-native-quit") ||
++          !BatoRegisterNativeSlotClient()) {
++        fprintf(stderr, "Bato native slot requires reservation, native Quit and matching ABI\n");
++        return 1;
++      }
++    }
++
+     // Initialize the CEF browser process. May return false if initialization
+     // fails or if early exit is desired (for example, due to process singleton
+     // relaunch behavior).
+--- a/cef/BUILD.gn
++++ b/cef/BUILD.gn
+@@ -2189,6 +2189,10 @@
+         cflags_c = invoker.cflags_c
+       }
+ 
++      if (defined(invoker.ldflags)) {
++        ldflags = invoker.ldflags
++      }
++
+       info_plist_target = ":${app_name}_plist"
+ 
+       # Disable clang modules for this target (see issue #3611).
+@@ -2313,6 +2317,26 @@
+     output_path = "{{bundle_resources_dir}}/English.lproj"
+   }
+ 
++  # Bato experiment only: Chromium's Mac toolchain intentionally lacks a Swift
++  # tool. A contained action builds one application-owned library with Xcode.
++  action("bato_native_slot_swift") {
++    testonly = true
++    script = "tests/cefsimple/compile_native_slot.py"
++    inputs = [ "tests/cefsimple/NativeSlot.swift" ]
++    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
++    args = [
++      rebase_path(inputs[0], root_build_dir),
++      rebase_path(outputs[0], root_build_dir),
++    ]
++  }
++
++  bundle_data("bato_native_slot_swift_bundle") {
++    testonly = true
++    sources = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
++    outputs = [ "{{bundle_contents_dir}}/Frameworks/{{source_file_part}}" ]
++    public_deps = [ ":bato_native_slot_swift" ]
++  }
++
+   cef_app("cefsimple") {
+     # Necessary because the cef_framework target is testonly.
+     testonly = true
+@@ -2336,12 +2360,19 @@
+               gypi_paths2.includes_wrapper +
+               gypi_paths2.includes_wrapper_mac +
+               gypi_paths2.cefsimple_sources_common +
+-              gypi_paths2.cefsimple_sources_mac
++              gypi_paths2.cefsimple_sources_mac +
++              [ "tests/cefsimple/native_slot_client.mm" ]
+     deps = [
+       ":libcef_dll_wrapper",
+       ":cefsimple_resources_bundle_data",
+       ":cefsimple_resources_bundle_data_english",
+       ":cefsimple_xibs",
++      ":bato_native_slot_swift",
++      ":bato_native_slot_swift_bundle",
++    ]
++    ldflags = [
++      rebase_path("$target_gen_dir/libBatoNativeSlot.dylib", root_build_dir),
++      "-Wl,-rpath,@executable_path/../Frameworks",
+     ]
+     frameworks = [
+       "AppKit.framework",
+--- /dev/null
++++ b/cef/tests/cefsimple/native_slot_client.mm
+@@ -0,0 +1,56 @@
++#import <Cocoa/Cocoa.h>
++#include <dlfcn.h>
++#include <cstdio>
++#include "include/internal/bato_native_slot.h"
++#include "tests/cefsimple/native_slot_client.h"
++
++extern "C" void* BatoSwiftNativeSlotCreate(uint64_t token);
++extern "C" void* BatoSwiftNativeSlotFocusTarget(uint64_t token);
++extern "C" void BatoSwiftNativeSlotDetached(uint64_t token);
++extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
++                                              int (*advance)(uint64_t, int));
++
++namespace {
++void* Create(void*, uint64_t token) { return BatoSwiftNativeSlotCreate(token); }
++void Detached(void*, uint64_t token) { BatoSwiftNativeSlotDetached(token); }
++void* FocusTarget(void*, uint64_t token) { return BatoSwiftNativeSlotFocusTarget(token); }
++}
++
++bool BatoRegisterNativeSlotClient() {
++  if (![NSThread isMainThread]) {
++    return false;
++  }
++  // This is the declared, matching experiment ABI at the exact bundle loaded
++  // by CefScopedLibraryLoader. No private symbol names or window discovery.
++  NSString* path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
++      @"Contents/Frameworks/Chromium Embedded Framework.framework"];
++  NSString* binary = [[path stringByAppendingPathComponent:@"Chromium Embedded Framework"]
++      stringByResolvingSymlinksInPath];
++  void* loaded = dlopen(binary.fileSystemRepresentation, RTLD_NOW | RTLD_NOLOAD);
++  if (!loaded) {
++    fprintf(stderr, "{\"event\":\"slot-client-framework-unavailable\"}\n");
++    return false;
++  }
++  auto registration = reinterpret_cast<decltype(&bato_native_slot_register_v1)>(
++      dlsym(loaded, "bato_native_slot_register_v1"));
++  auto focus = reinterpret_cast<decltype(&bato_native_slot_focus_browser_v1)>(
++      dlsym(loaded, "bato_native_slot_focus_browser_v1"));
++  auto advance = reinterpret_cast<decltype(&bato_native_slot_advance_focus_v1)>(
++      dlsym(loaded, "bato_native_slot_advance_focus_v1"));
++  dlclose(loaded);  // CefScopedLibraryLoader retains the framework until shutdown.
++  if (!registration || !focus || !advance) {
++    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
++    return false;
++  }
++  BatoNativeSlotCallbacksV1 callbacks = {};
++  callbacks.size = sizeof(callbacks);
++  callbacks.version = 1;
++  callbacks.create = Create;
++  callbacks.detached = Detached;
++  callbacks.focus_target = FocusTarget;
++  BatoSwiftNativeSlotSetActions(focus, advance);
++  const bool registered = registration(&callbacks) == 1;
++  fprintf(stderr, "{\"event\":\"slot-client-registration\",\"success\":%s}\n",
++          registered ? "true" : "false");
++  return registered;
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/native_slot_client.h
+@@ -0,0 +1,5 @@
++#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
++#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
++// Called once after loading the matching framework, before CefInitialize.
++bool BatoRegisterNativeSlotClient();
++#endif
+--- /dev/null
++++ b/cef/tests/cefsimple/compile_native_slot.py
+@@ -0,0 +1,25 @@
++#!/usr/bin/env python3
++"""GN-only Swift library action, scoped to the bounded SSD component output."""
++from pathlib import Path
++import subprocess
++import sys
++
++
++def main():
++    source, output = (Path(value).resolve() for value in sys.argv[1:])
++    tree = source.parents[3]
++    expected_source = tree / 'cef/tests/cefsimple/NativeSlot.swift'
++    expected_output = tree / 'out/Debug_GN_arm64/gen/cef/libBatoNativeSlot.dylib'
++    if source != expected_source or output != expected_output:
++        raise SystemExit('Refusing unexpected native-slot Swift source/output')
++    output.parent.mkdir(parents=True, exist_ok=True)
++    sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
++    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-emit-library',
++                    '-module-name', 'BatoNativeSlot', '-target', 'arm64-apple-macos13.0',
++                    '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
++                    '-Xlinker', '-install_name', '-Xlinker', '@rpath/libBatoNativeSlot.dylib',
++                    str(source), '-o', str(output)], check=True)
++
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ b/cef/tests/cefsimple/NativeSlot.swift
+@@ -0,0 +1,120 @@
++import AppKit
++
++private typealias FocusBrowser = @convention(c) (UInt64) -> Int32
++private typealias AdvanceFocus = @convention(c) (UInt64, Int32) -> Int32
++private var focusBrowser: FocusBrowser?
++private var advanceFocus: AdvanceFocus?
++
++private func report(_ event: String, token: UInt64, count: Int? = nil) {
++    var record: [String: Any] = ["event": event, "token": token,
++                                "mainThread": Thread.isMainThread]
++    if let count { record["count"] = count }
++    if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
++        FileHandle.standardError.write(data + Data([10]))
++    }
++}
++
++private final class SlotRoot: NSView {
++    override var isFlipped: Bool { true }
++    override func isAccessibilityElement() -> Bool { true }
++    override func accessibilityRole() -> NSAccessibility.Role? { .group }
++    override func accessibilityLabel() -> String? { "Bato native slot controls" }
++}
++
++private final class Slot: NSObject, NSTextFieldDelegate {
++    let token: UInt64
++    let root = SlotRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 400))
++    let field = NSTextField(string: "Native field")
++    private let status = NSTextField(labelWithString: "Native action count: 0")
++    private var count = 0
++
++    init(token: UInt64) {
++        self.token = token
++        super.init()
++        root.wantsLayer = true
++        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
++        root.setAccessibilityIdentifier("bato-native-slot-root")
++        let title = NSTextField(labelWithString: "Bato native slot")
++        title.font = .boldSystemFont(ofSize: 16)
++        field.setAccessibilityLabel("Bato native input")
++        field.setAccessibilityIdentifier("bato-native-slot-input")
++        field.delegate = self
++        let action = NSButton(title: "Native action", target: self, action: #selector(clicked))
++        action.setAccessibilityIdentifier("bato-native-slot-action")
++        let focus = NSButton(title: "Focus browser", target: self, action: #selector(focusPage))
++        let stack = NSStackView(views: [title, status, field, action, focus])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 12
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        root.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
++            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
++            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
++            field.widthAnchor.constraint(equalTo: stack.widthAnchor)
++        ])
++        report("slot-client-created", token: token)
++    }
++
++    @objc private func clicked() {
++        count += 1
++        status.stringValue = "Native action count: \(count)"
++        report("slot-client-action", token: token, count: count)
++    }
++
++    @objc private func focusPage() {
++        _ = focusBrowser?(token)
++        report("slot-client-focus-browser-requested", token: token)
++    }
++
++    func control(_ control: NSControl, textView: NSTextView,
++                 doCommandBy commandSelector: Selector) -> Bool {
++        if commandSelector == #selector(NSResponder.insertTab(_:)) ||
++            commandSelector == #selector(NSResponder.insertBacktab(_:)) {
++            let reverse: Int32 = commandSelector == #selector(NSResponder.insertBacktab(_:)) ? 1 : 0
++            let handled = advanceFocus?(token, reverse) == 1
++            report("slot-client-focus-advance-requested", token: token, count: Int(reverse))
++            return handled
++        }
++        return false
++    }
++
++    func controlTextDidChange(_ notification: Notification) {
++        // Neither entered text nor its length is logged or persisted.
++        report("slot-client-input-edited", token: token)
++    }
++}
++
++private var slots: [UInt64: Slot] = [:]
++
++@_cdecl("BatoSwiftNativeSlotSetActions")
++public func setActions(_ focus: @escaping @convention(c) (UInt64) -> Int32,
++                       _ advance: @escaping @convention(c) (UInt64, Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    focusBrowser = focus
++    advanceFocus = advance
++}
++
++@_cdecl("BatoSwiftNativeSlotCreate")
++public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
++    precondition(Thread.isMainThread)
++    guard slots[token] == nil else { return nil }
++    let slot = Slot(token: token)
++    slots[token] = slot
++    return Unmanaged.passUnretained(slot.root).toOpaque()
++}
++
++@_cdecl("BatoSwiftNativeSlotFocusTarget")
++public func focusTarget(_ token: UInt64) -> UnsafeMutableRawPointer? {
++    precondition(Thread.isMainThread)
++    guard let slot = slots[token] else { return nil }
++    return Unmanaged.passUnretained(slot.field).toOpaque()
++}
++
++@_cdecl("BatoSwiftNativeSlotDetached")
++public func detached(_ token: UInt64) {
++    precondition(Thread.isMainThread)
++    guard slots.removeValue(forKey: token) != nil else { return }
++    report("slot-client-detached", token: token, count: slots.count)
++}
