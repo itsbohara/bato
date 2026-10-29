@@ -84,6 +84,23 @@ def expand_path(value, image, executable):
     raise RuntimeError('Unsupported relative dyld path: ' + value)
 
 
+def inspect_macho(path):
+    """Inspect an open read-only image without classic otool's archive syntax.
+
+    Xcode's otool (including its llvm-otool alias on this host) interprets a
+    filename ending in parentheses as archive(member). A passed descriptor
+    avoids that interpretation without copying or changing the image. Callers
+    continue resolving dyld paths against the original image path.
+    """
+    with path.open('rb') as image:
+        descriptor = image.fileno()
+        text = subprocess.check_output(['otool', '-l', '/dev/fd/' + str(descriptor)],
+                                       pass_fds=(descriptor,), text=True)
+    if not re.search(r'^Load command \d+$', text, re.M):
+        raise RuntimeError('No Mach-O load commands returned for image: ' + str(path))
+    return text
+
+
 def dependency_closure(images, output, inspect=None):
     """Resolve required non-system images in place; never invokes their code.
 
@@ -92,10 +109,22 @@ def dependency_closure(images, output, inspect=None):
     libraries need not exist as ordinary filesystem files.
     """
     output = output.resolve()
-    inspect = inspect or (lambda path: engine.command_output(['otool', '-l', str(path)]))
+    inspect = inspect or inspect_macho
     checked = set()
+    metadata = {}
+    def read_metadata(image):
+        if not image.is_relative_to(output) or not image.is_file():
+            raise RuntimeError('Missing or external component image: ' + str(image))
+        if image not in metadata:
+            if engine.command_output(['lipo', '-archs', str(image)]) != 'arm64':
+                raise RuntimeError('Expected ARM64-only image: ' + str(image))
+            metadata[image] = load_commands(inspect(image))
+        return metadata[image]
     for executable, initial_images in images:
-        pending = [(image, ()) for image in initial_images]
+        executable = executable.resolve()
+        _, executable_rpaths = read_metadata(executable)
+        inherited = tuple(expand_path(path, executable, executable) for path in executable_rpaths)
+        pending = [(image, inherited) for image in initial_images]
         seen = set()
         while pending:
             image, inherited = pending.pop()
@@ -104,11 +133,7 @@ def dependency_closure(images, output, inspect=None):
             if context in seen:
                 continue
             seen.add(context)
-            if not image.is_relative_to(output) or not image.is_file():
-                raise RuntimeError('Missing or external component image: ' + str(image))
-            if engine.command_output(['lipo', '-archs', str(image)]) != 'arm64':
-                raise RuntimeError('Expected ARM64-only image: ' + str(image))
-            dependencies, raw_rpaths = load_commands(inspect(image))
+            dependencies, raw_rpaths = read_metadata(image)
             rpaths = tuple(dict.fromkeys(
                 tuple(expand_path(path, image, executable) for path in raw_rpaths) + inherited))
             for name in dependencies:
@@ -119,7 +144,7 @@ def dependency_closure(images, output, inspect=None):
                     candidate = next(((base / suffix).resolve() for base in rpaths
                                       if (base / suffix).is_file()), None)
                     if candidate is None:
-                        raise RuntimeError('Unresolved component dependency: ' + name)
+                        raise RuntimeError('Unresolved component dependency: ' + name + ' from ' + str(image))
                 else:
                     candidate = expand_path(name, image, executable)
                 if not candidate.is_relative_to(output):
@@ -166,7 +191,7 @@ def fresh_profile(root, reservation):
 def preview(root, reservation=False):
     engine.preflight(root)
     engine.require_marker(root)
-    # Existing wrapper creates this lock during prepare; r+ does not create it.
+    # Existing wrapper creates this lock during prepare; read-only open does not create it.
     with (root / 'run.lock').open('r') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)

@@ -2,6 +2,8 @@
 import importlib.util
 import fcntl
 import json
+import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -16,6 +18,42 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeGateTest(unittest.TestCase):
+    def test_otool_uses_open_descriptor_for_parenthesized_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'cefsimple Helper (Renderer)'
+            image.write_bytes(b'synthetic-image')
+            observed = []
+            def inspect(command, **kwargs):
+                descriptor, = kwargs['pass_fds']
+                self.assertEqual(command, ['otool', '-l', '/dev/fd/' + str(descriptor)])
+                self.assertEqual(os.pread(descriptor, 15, 0), b'synthetic-image')
+                self.assertTrue(kwargs['text'])
+                observed.append(descriptor)
+                return 'Load command 0\n cmd LC_LOAD_DYLIB\n name /usr/lib/libSystem.B.dylib (offset 24)\n'
+            with mock.patch.object(runtime.subprocess, 'check_output', side_effect=inspect):
+                text = runtime.inspect_macho(image)
+            self.assertEqual(runtime.load_commands(text)[0], ['/usr/lib/libSystem.B.dylib'])
+            with self.assertRaises(OSError):
+                os.fstat(observed[0])
+            self.assertEqual(image.read_bytes(), b'synthetic-image')
+
+    def test_otool_failure_closes_descriptor_and_empty_output_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'cefsimple Helper (GPU)'
+            image.touch()
+            observed = []
+            def fail(command, **kwargs):
+                observed.extend(kwargs['pass_fds'])
+                raise subprocess.CalledProcessError(1, command)
+            with mock.patch.object(runtime.subprocess, 'check_output', side_effect=fail):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    runtime.inspect_macho(image)
+            with self.assertRaises(OSError):
+                os.fstat(observed[0])
+            with mock.patch.object(runtime.subprocess, 'check_output', return_value=''):
+                with self.assertRaisesRegex(RuntimeError, 'No Mach-O load commands'):
+                    runtime.inspect_macho(image)
+
     def test_build_gate_rejects_running_failed_or_wrong_stage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -72,6 +110,43 @@ class RuntimeGateTest(unittest.TestCase):
                         runtime.dependency_closure([(main, (main,))], output, inspect=inspected)
                 finally:
                     external.unlink()
+
+    def test_metadata_cached_without_skipping_distinct_rpath_contexts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve()
+            main_a, main_b, shared = (output / name for name in ('main-a', 'main-b', 'shared.dylib'))
+            leaf_a, leaf_b = output / 'a/leaf.dylib', output / 'b/leaf.dylib'
+            for image in (main_a, main_b, shared, leaf_a, leaf_b):
+                image.parent.mkdir(exist_ok=True)
+                image.touch()
+            def main_commands(folder):
+                return ('Load command 0\n cmd LC_RPATH\n path @loader_path/' + folder + ' (offset 12)\n'
+                        'Load command 1\n cmd LC_LOAD_DYLIB\n name @loader_path/shared.dylib (offset 24)\n')
+            commands = {main_a: main_commands('a'), main_b: main_commands('b'),
+                        shared: 'Load command 0\n cmd LC_LOAD_DYLIB\n name @rpath/leaf.dylib (offset 24)\n'}
+            inspect = mock.Mock(side_effect=lambda path: commands.get(path, ''))
+            with mock.patch.object(runtime.engine, 'command_output', return_value='arm64') as arch:
+                checked = runtime.dependency_closure([(main_a, (main_a,)), (main_b, (main_b,))],
+                                                     output, inspect=inspect)
+            self.assertEqual(set(checked), {'main-a', 'main-b', 'shared.dylib', 'a/leaf.dylib', 'b/leaf.dylib'})
+            self.assertEqual(inspect.call_count, 5)
+            self.assertEqual(arch.call_count, 5)
+            self.assertEqual(sum(call.args == (shared,) for call in inspect.call_args_list), 1)
+
+    def test_runtime_loaded_image_inherits_executable_rpaths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve()
+            main, dynamic, leaf = output / 'main', output / 'dynamic.dylib', output / 'deps/leaf.dylib'
+            leaf.parent.mkdir()
+            for image in (main, dynamic, leaf):
+                image.touch()
+            metadata = {
+                main: 'Load command 0\n cmd LC_RPATH\n path @executable_path/deps (offset 12)\n',
+                dynamic: 'Load command 0\n cmd LC_LOAD_DYLIB\n name @rpath/leaf.dylib (offset 24)\n'}
+            with mock.patch.object(runtime.engine, 'command_output', return_value='arm64'):
+                checked = runtime.dependency_closure([(main, (dynamic,))], output,
+                    inspect=lambda path: metadata.get(path, ''))
+            self.assertEqual(set(checked), {'dynamic.dylib', 'deps/leaf.dylib'})
 
     def test_wrong_architecture_refused(self):
         with tempfile.TemporaryDirectory() as directory:
