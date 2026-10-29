@@ -89,5 +89,44 @@
     "No production Keychain acceptance",
     "No real vault/wallet/credentials or private browser data used",
     "Exception instance address omitted; raw disposable log stays outside Git"
-  ]
+  ],
+  "followup_2026_10_29": {
+    "scope": "Revised prebuilt-engine linked sample; source-built engine not used in this quit run",
+    "same_disposable_profile_and_mock_provider": true,
+    "ui_sequence": [
+      "Open controller through Extensions Details > Extension options",
+      "Restore saved pair",
+      "Activate left and observe both fixture pages",
+      "Separate pair",
+      "Pair existing test tabs",
+      "Close test tabs",
+      "Window > Bato bridge experiment",
+      "Actual native Quit application button"
+    ],
+    "observations": {
+      "delegate_selector_exception_observed": false,
+      "sample_terminate_requested": true,
+      "command_dispatched_completion_logged": true,
+      "remaining_browser_counts": [
+        1,
+        0
+      ],
+      "linked_detached": true,
+      "quit_message_loop_request_and_return_logged": true,
+      "cef_message_loop_exit_logged": false,
+      "cef_shutdown_complete_logged": false,
+      "process_remained_alive": true,
+      "new_tab_window_observed_after_quit": true,
+      "new_tab_incorrect_profile_diagnostic_logged": true,
+      "cause_of_new_tab_not_established": true
+    },
+    "cleanup": {
+      "owned_process_sample_saved_outside_git": true,
+      "bounded_sigterm_required": true,
+      "owned_process_absent_after_sigterm": true,
+      "fixture_server_untouched": true
+    },
+    "result": "Partial: prior selector crash avoided, but application quit still fails to complete; forced stop is not graceful shutdown",
+    "source_followup": "Pinned macOS Chrome termination normally enters AppController quit state and releases its keepalive; direct sample handler closure bypasses that path. Runtime keepalive instrumentation is still pending."
+  }
 }
