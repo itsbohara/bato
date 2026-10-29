@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato quit cancellation fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>Application Quit cancellation</h1>
+<p>This page keeps only a synthetic unsaved-changes flag and an activity counter in memory. It sends nothing and stores nothing.</p>
+<p>Click <strong>Arm unsaved changes</strong> yourself before requesting Quit from the native application control. A real click is required for Chromium's unload confirmation; a simulated JavaScript click does not establish that requirement.</p>
+<button id="arm">Arm unsaved changes</button>
+<button id="disarm">Disarm unsaved changes</button>
+<button id="activity">Check page is still usable</button>
+<output id="quit-status" aria-live="polite"></output>
+<p>First choose the dialog's option to stay on this page. Check that this page and its activity counter remain usable. Request Quit again and choose the option to leave. The browser's standard dialog wording is controlled by Chromium.</p>
+<p>This fixture never requests native Quit itself. Use only a disposable test Profile. Disarming removes this page's objection to leaving; it does not change browser settings.</p>
+</main><script src="quit.js"></script></html>

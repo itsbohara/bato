@@ -25,6 +25,7 @@ python3 -m unittest discover -s spikes/fixtures -p 'test_server.py' -v
 node spikes/fixtures/test_wallet.mjs
 node spikes/fixtures/test_popup.mjs
 node spikes/fixtures/test_storage.mjs
+node spikes/fixtures/test_quit.mjs
 ```
 
 Python tests exercise real HTTP resources, loopback binding, traversal/listing denial, submission rejection and manifest file references. The Node test uses a mocked provider to verify no unsolicited wallet permission request, rejection handling, the fixed `personal_sign` payload, and revocation. These are fixture checks, not runtime extension compatibility passes.
@@ -32,3 +33,11 @@ Python tests exercise real HTTP resources, loopback binding, traversal/listing d
 The storage Node test checks explicit request gating, exact store/key namespaces, shared versus isolated mocked state, tab-local session storage, unexpected-value suppression, unsupported APIs and partial failures. It does not establish browser request-context isolation or restart persistence; those require the real CEF runtime. When testing real contexts, open A1 and A2 before writing, write `bato-shared-a` in A1, read A2 and B, then write `bato-isolated-b` in B and reread A1. Keep both windows at the identical numeric-loopback origin/port. Reopen the same dedicated Profiles for restart checks; sessionStorage is not expected to persist. CookieStore is required for the named-cookie check; no document.cookie fallback reads unrelated cookies.
 
 The recorded 2026-10-27 runtime observations used port 8765. Future runs default to 18765 to avoid sharing a port with an existing local service. Historical evidence retains the actual observed URLs.
+
+## Application Quit cancellation
+
+`/quit.html` provides a synthetic in-memory unsaved-changes flag and activity counter. It has no input fields, storage, network requests, native command transport or startup objection to leaving. Click **Arm unsaved changes** through actual UI before requesting application Quit through the native sample control. Chromium requires sticky user activation for an unload confirmation; the fixture ignores untrusted synthetic button events, and its unit test cannot establish browser activation or dialog behavior.
+
+With the disposable controller extension loaded, verify the intended controlled tabs first. Open the quit fixture, arm it with a real click and request Quit. Require an actual visible unload dialog; automatic acceptance or a missing dialog is a failed cancellation test. Choose the option to stay. Verify the same process/window/page remains, **Check page is still usable** increments the activity counter and the page stays armed. Request Quit again, require the dialog again, then choose the option to leave. Only actual loop return, completed CEF shutdown and natural process exit establish a positive application-quit result. Disarming is available for cleanup, but does not prove cancellation. Test a separate extension-loaded, unarmed positive quit where feasible.
+
+The Node quit test checks initial non-objection, trusted-event gating, explicit arm/disarm state, unload prevention and activity continuity without persistent facilities. Its fabricated trusted-event booleans exercise state logic only; they do not grant Chromium user activation. No application-quit runtime pass follows from these tests.
