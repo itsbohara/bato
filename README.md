@@ -4,7 +4,7 @@ A native macOS browser with an Arc-inspired interface, built with Swift and Chro
 
 ## Status
 
-Feasibility implementation is in progress on Apple Silicon. The stock CEF sample builds and runs; real extension installation, selected filtering/provider behavior, and a Swift/AppKit diagnostic have been exercised. The Bato application and complete extension compatibility are not yet demonstrated. See the [evidence matrix](FEASIBILITY-RESULTS.md).
+Provisional alpha development has started on Apple Silicon. The first native [organization preview](app/README.md) implements workspace, Favorite, pin and temporary-tab state with local persistence. It does not render web pages yet. The source-built CEF/native-host experiments and selected extension behavior have been exercised; complete compatibility and daily-use readiness remain open. See the [evidence matrix](FEASIBILITY-RESULTS.md).
 
 ## Direction
 
@@ -15,7 +15,7 @@ Feasibility implementation is in progress on Apple Silicon. The stock CEF sample
 - Built-in ad/tracker blocking enabled by default, with per-site exceptions.
 - AI chat and cross-device sync are deferred beyond V1.
 
-Chromium integration remains undecided. Extension behavior and native embedding must pass a feasibility gate before selecting the foundation.
+The source-built CEF/native-slot path is the provisional integration candidate. Remaining extension and native-host acceptance continues alongside application work; production foundation selection remains open.
 
 ## Project documents
 
@@ -23,6 +23,7 @@ Chromium integration remains undecided. Extension behavior and native embedding 
 - [Chromium feasibility](CHROMIUM-FEASIBILITY.md)
 - [Arc import and blocking](IMPORT-AND-BLOCKING.md)
 - [Work plan](TASK.md)
+- [Build the native organization preview](app/README.md)
 - [Run the feasibility harness](spikes/cef-baseline/README.md)
 - [Controlled test fixtures](spikes/fixtures/README.md)
 

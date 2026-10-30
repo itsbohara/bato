@@ -1,6 +1,6 @@
 # Bato — personal-alpha design
 
-Date: 2026-10-27. Status: approved by the user on 2026-10-27; feasibility work authorized. No application implementation or compatibility validation is claimed by this document.
+Date: 2026-10-27. Status: approved by the user on 2026-10-27; feasibility work authorized. The user authorized provisional alpha implementation on2026-10-30 while remaining compatibility checks continue. That authorization does not establish compatibility or production foundation readiness.
 
 Source of product decisions: the local ideastorm planning checkout, under `/Users/itsbohara/code/ideastorm/concepts/bato/` (`README.md`, `HANDOFF.md`, and `references.md`). These private-workspace references are not part of this public repository; confirmed product behavior is captured below. **Confirmed** means the user has decided it. **Proposed** labels below identify recommendations in the original draft. The user approved this draft and its proposed defaults/experiment on 2026-10-27. Approval authorizes the work; it does not demonstrate engine or extension compatibility.
 
@@ -114,6 +114,8 @@ Keyboard focus must move correctly among chrome, command bar, web content, exten
 Diagnostics should record versions, operation type, and sanitized errors. Full URLs, page content, browsing history, extension secrets, and private reference screenshots should not be published in bug reports by default.
 
 ## Review and delivery gates
+
+On2026-10-30, the user approved starting provisional application implementation alongside remaining engine/extension acceptance. This changes implementation sequencing; the compatibility and daily-use requirements below remain in force.
 
 1. **Design review — complete:** the user approved this draft’s proposed behavior and architecture experiment on 2026-10-27. Keep requirements fixed unless the user changes them.
 2. **Feasibility:** native embedding and the three required extensions meet the explicit gates above; Profile isolation and persistence pass. Record limitations with evidence.

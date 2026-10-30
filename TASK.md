@@ -49,9 +49,9 @@ The [native input audit](spikes/native-composition/NATIVE-INPUT-AUDIT.md) identi
 
 The user selected the external SSD's personal folder on 2026-10-28. Dedicated engine artifacts, tools, caches and temporary files belong under `/Volumes/Mahesh/personal/bato-build`. The application Git checkout remains here. Initial checks found writable APFS, approximately167GiB free and16GiB host RAM. Prepare a single ARM64 developer component configuration, preserve a20GiB free-space reserve and avoid distribution/multiple-configuration builds. Keep the exact existing CEF/Chromium pins. The reservation patch is a source-build experiment; neither a successful checkout nor its dry-run selects a production foundation.
 
-## 3. Personal alpha implementation (after gate)
+## 3. Provisional personal alpha implementation (authorized2026-10-30)
 
-Plan bounded vertical slices for durable browser state, native shell and command bar, workspace/Profile lifecycle, tabs/pins/folders, split pairs/Peek, extensions, Arc import, built-in blocking, and daily-use essentials. Add recovery, migration, and restart acceptance checks. Make each slice reviewable before integration.
+The user authorized application work alongside the remaining compatibility checks. First slice in `app/`: Swift state model, atomic organization store and native organization preview. It exercises saved/temporary entry semantics without rendering web pages. Next connect the model/sidebar to the source-built Chromium adapter; then implement workspace/Profile lifecycle, folders, split pairs/Peek, extensions, Arc import, built-in blocking, and daily-use essentials. Add recovery, migration, and restart acceptance checks. Make each slice reviewable before integration.
 
 ## 4. Daily-use acceptance
 

@@ -2,6 +2,14 @@
 
 Checkpoint: 2026-10-29, after successful source compilation and unlocked runtime tests. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
+## Provisional application slice authorized and started2026-10-30
+
+The user explicitly approved beginning application implementation alongside remaining compatibility checks. Do not restore the old “no application until all gates pass” sequencing or ask those decisions again. Requirements and daily-use readiness gates remain.
+
+`app/` now contains Swift6 BatoCore, BatoPersistence and native BatoShell organization preview. No page renderer connected yet. Read app/README.md and app/RESULTS.md. Model has stable Profile/workspace/page IDs, shared Favorites, scoped pins/temps, saved/sessionURL semantics and validation. Store atomically replaces private JSON under advisory lock, rejects stale writes, preserves invalid documents and keeps one previous-good file. No engine secrets in organization. Runtime pages/loaded state remain outside Codable. Native CmdT/field/Enter, context pin/Favorite, CmdW saved-preserve/temp-remove, shared-Profile workspace switch, CmdS and restart passed narrowly. Native field fixed initialfocusfailure; background hidden/disabled duringcommandbar. Invalidstore UI leftbytesintact. Swift tests11core+9store+3session; final results recorded with slice.
+
+Build/test via `python3 app/tools/dev.py test|build|run --state-directory <path>`; defaults caches/output to SSDalpha-swift. Preview bundle SSDalpha-swift/Bato Shell Preview.app; syntheticstore runtime/alpha-shell-v1 restored2workspaces/1Favorite/1pin/1temp; separatecorruptstore alpha-shell-corrupt-v1 preserved. Quit before rebuilding. No engine changes/rebuild. Next wire shared model/sidebar to source Chromium adapter; preview is not working browser. Remaining gates below stay open.
+
 ## Latest follow-up: resize and persisted AdGuard popup
 
 On2026-10-30, v4 passed one inward corner resize1200×1005→982×823 with the260-point slot and working native input. Tab-focused split slider +Righttwice moved divider100points; Lefttwice restored. Pointer divider/outward window drags remain unresolved. New modal.html real confirmation Cancel restored native/page input; background modal rejection still unverified due dialog-only capture.

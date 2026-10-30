@@ -1,6 +1,7 @@
 # macOS and build output
 .DS_Store
 .build/
+.swiftpm/
 build/
 DerivedData/
 *.xcuserstate
