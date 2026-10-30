@@ -1,5 +1,16 @@
 # Resume Bato
 
+## Latest Unpin/Favorite removal checkpoint2026-10-31
+
+Chromium-connected saved context menus now expose Unpin / Remove from Favorites. Core/runtime makeTemporary moves same entryUUID/title/latestURL to end currentworkspace.tabs, clears savedURL, preservescurrentselection(liveorbackground), clears onlyremovedFavorite selectionselsewhere. No create/select/closeeffects, unloadedconversionallowed. Pendingclose rejectsconversion untilCancel/confirmation; convertedTemp closesviaexistingengineconfirmationsemantics. Existing PinTab/AddFavorite reverseconversion. No schema/engineABIchange; standalonepreviewunchanged.
+
+62Swift tests passed(19core/9store/3session/31runtime),8new; independentboundedreview noactionabledefect. Guarded13clientfile actualreverse/forward/hashroundtrip/9mirrors/21overlayfiles passed; build26.11s,527ARM64artifactimagespassed. Currentcanonical/stagedsource/binarymatch. SSDlogs/unsave-entry-compiler.log archivesactualcompileroutput; rawlogs/snapshots/exitreceipts unsave-entry-v{1,2}*. Futurecanonicalchangesneedmirrorstaging+manifestregenbeforebuild.
+
+Actualv1: livepinUnpin exactdocumentdiffsavedstatus/listonly; samepage/UUID/selectionremained. AddFavorite sameUUID, switchemptyResearch, RemoveFavorite movedsameentrytoResearchTemp; PersonalobsoleteFavorite selectioncleared, Researchstayedblank/unselected; exactJSONexpected. Selectconvertedtab reusedexistingpage, onlyanchor+1browsercreatedthroughout. NormalQuit2browsers/1detach/loop+CEFshutdown/exit0,bytesunchanged. v2same-providerrestart restoredsameTempUUIDselectedResearch/storageURL,fullorgbytesidentical; PinTab returnedsameentrytosavedResearchpin,exactJSONexpected;normalQuit2browsers/1detach/loop+shutdown/exit0/bytesunchanged. Pending/unloaded/savefailure/CancelconfirmedTempclose testedwithfakeengine,noextraUIclaim. Evidence spikes/engine-native-slot/unsave-entry-evidence.json. Noextensions tested.
+
+Noownedbrowser/buildrunning. Knowncleanmockworkspace-v3profile/state now2workspaces:PersonalSageempty/noselection;ResearchOceanactivewith1selectedstoragepin,0temps/0Favorites. Stablepin5552FC1D-B9DC-42AF-81A2-2B6D47EF3D9A saved+lastURL localstoragefixture. EVERYrestartmockKeychain. CUAbindingsunsaveEntry/unsaveEntryRestartEXITED;configuredlaunchbeforegetApp. SSDtmp launch-unsave-entry-v{1,2}.py cannotrerunsamelogs;newboundedwrapper/logneeded. Fixture18765live. Userwillletusknowwhencompacting; checkpointready. Continueapplicationfeatureswhenasked,keepextensiveextensiontestsdeferred. Usefulnextsliceworkspaceorganization(reorder/folders)ordailyuseUI; do not repeatsettled productquestions.
+
+
 ## Latest saved destination checkpoint2026-10-31
 
 Explicit Update Saved URL is complete for Chromium-connected sidebar saved pins/Favorites. Context menu disabled when unchanged/unloaded/closing/latestnavinvalidorunsaved. Core copies latestcommittedlastURL to savedURL transactionally, preservesUUID/order/selection/title/liveURL. Runtime canUpdateSavedURL rechecksvisible/profile/live/pendingclose and generation-scoped navigation-attemptUUID dictionary; failed/unsupportedlatestnav blocks until validcommit. UUIDattemptcomparison prevents olderoutercallback clearing nestednewerinvalidnav. No engineeffects on update, schema/ABIunchanged. Standalonepreviewunchanged; unpin/remove remains nextwork.

@@ -157,6 +157,142 @@ struct PageRuntimeTests {
         #expect(runtime.state.visibleEntries.isEmpty)
     }
 
+    @Test func savedConversionKeepsLivePageAndThenUsesConfirmedTemporaryClose() throws {
+        for kind in [EntryKind.pinned, .favorite] {
+            var state = BrowserState.initial()
+            let id = try state.addTab(url: start, title: "Saved")
+            if kind == .pinned { try state.pinEntry(id) } else { try state.favoriteEntry(id) }
+            let engine = FakeEngine(state.currentWorkspace.profileID)
+            var committed: [BrowserState] = []
+            let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+            runtime.start()
+            let page = try #require(runtime.livePages[id])
+            runtime.receive(.navigation(page, url: next, title: "Current"))
+            let selections = engine.selections
+            var publications: [BrowserState] = []
+            runtime.onStateChange = { candidate in
+                #expect(committed.last == candidate)
+                publications.append(candidate)
+            }
+            #expect(runtime.makeTemporary(id))
+            let converted = runtime.state
+            #expect(publications == [converted])
+            #expect(converted.currentWorkspace.tabs.first?.id == id)
+            #expect(converted.currentWorkspace.tabs.first?.lastURL == next)
+            #expect(converted.currentWorkspace.tabs.first?.savedURL == nil)
+            #expect(converted.currentWorkspace.activeEntryID == id)
+            #expect(runtime.livePages[id] == page)
+            #expect(engine.visible == page)
+            #expect(engine.created.count == 1)
+            #expect(engine.selections == selections)
+            #expect(engine.closes.isEmpty)
+            #expect(runtime.closeEntry(id))
+            #expect(runtime.state == converted)
+            runtime.receive(.closeCancelled(page))
+            #expect(runtime.state == converted)
+            #expect(runtime.pendingClose.isEmpty)
+            #expect(runtime.livePages[id] == page)
+            #expect(runtime.closeEntry(id))
+            runtime.receive(.closed(page))
+            #expect(runtime.state.visibleEntries.isEmpty)
+            #expect(runtime.livePages.isEmpty)
+            #expect(engine.closes == [page, page])
+            runtime.receive(.navigation(page, url: start, title: "Stale"))
+            #expect(runtime.state.visibleEntries.isEmpty)
+        }
+    }
+
+    @Test func backgroundSavedConversionDoesNotSelectOrRecreateItsPage() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Saved")
+        try state.pinEntry(id)
+        let selected = try state.addTab(url: next, title: "Selected")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        runtime.start()
+        runtime.selectEntry(id)
+        runtime.selectEntry(selected)
+        let pages = runtime.livePages
+        let selections = engine.selections
+        #expect(runtime.makeTemporary(id))
+        #expect(runtime.state.currentWorkspace.activeEntryID == selected)
+        #expect(runtime.livePages == pages)
+        #expect(engine.visible == pages[selected])
+        #expect(engine.created.count == 2)
+        #expect(engine.selections == selections)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func unloadedSavedConversionDoesNotLoadAndRejectsNonSavedCommands() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        try state.recordNavigation(entryID: id, url: next, title: "Latest")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in saves += 1 })
+        #expect(runtime.makeTemporary(id))
+        #expect(runtime.livePages.isEmpty)
+        #expect(engine.created.isEmpty)
+        #expect(engine.selections.isEmpty)
+        #expect(engine.closes.isEmpty)
+        #expect(runtime.state.currentWorkspace.tabs.first?.lastURL == next)
+        let converted = runtime.state
+        #expect(!runtime.makeTemporary(id))
+        #expect(!runtime.makeTemporary(UUID()))
+        #expect(runtime.state == converted)
+        #expect(saves == 1)
+        #expect(runtime.start())
+        #expect(engine.created.first?.1 == next)
+    }
+
+    @Test func pendingSavedCloseCannotChangeItsSavedSemanticsUntilCancelled() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in saves += 1 })
+        runtime.start()
+        let page = try #require(runtime.livePages[id])
+        #expect(runtime.closeEntry(id))
+        let before = runtime.state
+        let selections = engine.selections
+        #expect(!runtime.makeTemporary(id))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(runtime.state == before)
+        #expect(saves == 0)
+        #expect(runtime.pendingClose == [page])
+        #expect(runtime.livePages[id] == page)
+        #expect(engine.closes == [page])
+        #expect(engine.selections == selections)
+        runtime.receive(.closeCancelled(page))
+        #expect(runtime.makeTemporary(id))
+        #expect(runtime.state.currentWorkspace.tabs.first?.id == id)
+    }
+
+    @Test func failedSavedConversionPreservesSavedEntryAndLivePage() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Favorite")
+        try state.favoriteEntry(id)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in throw Failure.disk })
+        runtime.start()
+        let page = try #require(runtime.livePages[id])
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.makeTemporary(id))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(runtime.state == state)
+        #expect(runtime.livePages[id] == page)
+        #expect(publications == 0)
+        #expect(engine.visible == page)
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes.isEmpty)
+    }
+
     @Test func explicitSavedDestinationPersistsWithoutEngineEffectsAndReopensAtUpdatedURL() throws {
         for kind in [EntryKind.pinned, .favorite] {
             var state = BrowserState.initial()

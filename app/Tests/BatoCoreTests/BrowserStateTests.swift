@@ -68,6 +68,82 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertEqual(state, expected)
     }
 
+    func testSavedConversionPreservesIdentityDestinationOrderAndCurrentSelection() throws {
+        for kind in [EntryKind.pinned, .favorite] {
+            for selected in [false, true] {
+                var state = BrowserState.initial()
+                let id = try state.addTab(url: saved, title: "Saved")
+                if kind == .pinned { try state.pinEntry(id) } else { try state.favoriteEntry(id) }
+                try state.recordNavigation(entryID: id, url: navigated, title: "Current title")
+                let sibling = try state.addTab(url: saved, title: "Sibling")
+                if selected { try state.selectEntry(id) }
+                let before = state
+                try state.makeTemporary(id)
+                XCTAssertTrue(state.profiles[0].favorites.isEmpty)
+                XCTAssertTrue(state.currentWorkspace.pins.isEmpty)
+                XCTAssertEqual(state.currentWorkspace.tabs.map(\.id), [sibling, id])
+                let converted = try XCTUnwrap(state.currentWorkspace.tabs.last)
+                XCTAssertEqual(converted, PageEntry(id: id, title: "Current title", lastURL: navigated, kind: .temporary))
+                XCTAssertEqual(state.activeWorkspaceID, before.activeWorkspaceID)
+                XCTAssertEqual(state.currentWorkspace.activeEntryID, before.currentWorkspace.activeEntryID)
+                XCTAssertEqual(state.currentWorkspace.profileID, before.currentWorkspace.profileID)
+                let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+                try restored.validate()
+                XCTAssertEqual(restored, state)
+            }
+        }
+    }
+
+    func testRemovedSharedFavoriteBecomesLocalAndOnlyInvalidSelectionsAreCleared() throws {
+        var state = BrowserState.initial()
+        let owner = state.activeWorkspaceID
+        let id = try state.addTab(url: saved, title: "Shared")
+        try state.favoriteEntry(id)
+        let retained = try state.addTab(url: saved, title: "Retained favorite")
+        try state.favoriteEntry(retained)
+        try state.selectEntry(id)
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let selected = try state.addTab(url: navigated, title: "Current")
+        let unrelated = try state.addWorkspace(name: "Unrelated", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(unrelated)
+        let unrelatedSelection = try state.addTab(url: saved, title: "Other")
+        try state.activateWorkspace(destination)
+        let before = state
+        try state.makeTemporary(id)
+        XCTAssertEqual(state.profiles[0].favorites.map(\.id), [retained])
+        XCTAssertEqual(state.currentWorkspace.tabs.map(\.id), [selected, id])
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, selected)
+        XCTAssertEqual(state.workspaces.first(where: { $0.id == owner })?.activeEntryID, nil)
+        XCTAssertEqual(state.workspaces.first(where: { $0.id == unrelated })?.activeEntryID, unrelatedSelection)
+        XCTAssertEqual(state.workspaces.map(\.id), before.workspaces.map(\.id))
+        XCTAssertEqual(state.workspaces.map(\.profileID), before.workspaces.map(\.profileID))
+        try state.activateWorkspace(owner)
+        XCTAssertFalse(state.visibleEntries.contains(where: { $0.id == id }))
+        try state.validate()
+    }
+
+    func testSavedConversionRejectsTemporaryMissingAndInvisibleEntriesAtomically() throws {
+        var state = BrowserState.initial()
+        let temporary = try state.addTab(url: saved, title: "Temporary")
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        let before = state
+        XCTAssertThrowsError(try state.makeTemporary(temporary)) { error in
+            XCTAssertEqual(error as? BrowserStateError, .invalidEntryOwnership)
+        }
+        XCTAssertEqual(state, before)
+        XCTAssertThrowsError(try state.makeTemporary(UUID()))
+        XCTAssertEqual(state, before)
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let inactive = state
+        XCTAssertThrowsError(try state.makeTemporary(pin)) { error in
+            XCTAssertEqual(error as? BrowserStateError, .missingEntry)
+        }
+        XCTAssertEqual(state, inactive)
+    }
+
     func testExplicitSavedURLUpdateChangesOnlyDestinationForPinsAndFavorites() throws {
         for kind in [EntryKind.pinned, .favorite] {
             var state = BrowserState.initial()

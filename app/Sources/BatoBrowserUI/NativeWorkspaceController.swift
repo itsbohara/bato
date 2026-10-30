@@ -253,6 +253,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 update.toolTip = "Use this page’s current address when reopening it."
                 update.isEnabled = runtime.canUpdateSavedURL(page.id) && page.savedURL != page.lastURL
                 menu.addItem(update)
+                let unsave = ActionMenuItem(title: page.kind == .pinned ? "Unpin" : "Remove from Favorites") { [weak self] in
+                    guard let self else { return }
+                    self.perform { self.runtime.makeTemporary(page.id) }
+                }
+                unsave.toolTip = "Keep this page as a tab in this workspace."
+                unsave.isEnabled = !runtime.pendingClose.contains(where: { $0.entryID == page.id })
+                menu.addItem(unsave)
                 select.menu = menu
             }
             let close = ActionButton(title: "×") { [weak self] in

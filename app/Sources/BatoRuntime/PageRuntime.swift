@@ -114,6 +114,17 @@ public final class PageRuntime {
         change { try $0.favoriteEntry(id) }
     }
 
+    /// Drops saved status as an organization-only transaction. An in-flight
+    /// close must finish or cancel before its saved/temporary semantics change.
+    @discardableResult
+    public func makeTemporary(_ id: UUID) -> Bool {
+        guard !pendingClose.contains(where: { $0.entryID == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.makeTemporary(id) }
+    }
+
     /// Whether a saved page's latest destination is safely represented by committed
     /// organization. Failed or unsupported navigation must not save an older URL.
     public func canUpdateSavedURL(_ id: UUID) -> Bool {

@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Unpin and Remove from Favorites conversion to current-workspace temporary tabs",
+  "behavior": {
+    "conversion": "Same UUID/title/latestURL; kind temporary, savedURL cleared, appended to current workspace tabs",
+    "selection": "Current selected/background identity preserved; obsolete sharedFavorite selections elsewhere cleared",
+    "engine": "No create/select/close during conversion; unloaded saved pages stay unloaded",
+    "pending_close": "Conversion rejected until close confirms or cancels",
+    "reversibility": "Existing Pin Tab/Add to Favorites may save the temporary entry again",
+    "schema_change": false,
+    "engine_api_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 62,
+      "core": 19,
+      "store": 9,
+      "session": 3,
+      "runtime": 31,
+      "new_cases": 8,
+      "result": "passed"
+    },
+    "incremental_build_seconds": 26.11,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "review": "Independent bounded read-only review found no actionable defect; coordinator reviewed and integrated"
+  },
+  "runs": [
+    {
+      "id": "unsave-entry-v1",
+      "exit_code": 0,
+      "observations": [
+        "Live saved storage pin showed Unpin in context menu",
+        "Unpin changed only saved status/list placement; UUID/title/currentURL/current selection preserved exactly",
+        "Same real Chromium storage page remained visible under Tabs",
+        "Add to Favorites promoted same live entry without new browser creation",
+        "Research empty workspace displayed shared Favorite with blank anchor selected",
+        "Remove from Favorites moved same UUID to Research temporary tabs, cleared Personal obsolete selection, left Research unselected; exact full document matched expected",
+        "Selecting converted tab reused existing Chromium page; only placeholder+one page created throughout",
+        "Normal application-menu Quit completed one detach, loop return and CEF shutdown; organization bytes unchanged"
+      ]
+    },
+    {
+      "id": "unsave-entry-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated Profile and mock Keychain provider",
+        "Converted temporary entry restored selected in Research at same storage URL and UUID; full organization bytes identical",
+        "Pin Tab saved same entry in Research, preserving ID/destination/selection; exact document matched expected reverse conversion",
+        "Normal application-menu Quit completed one detach, loop return and CEF shutdown; organization bytes unchanged"
+      ]
+    }
+  ],
+  "limits": [
+    "Pending close, failed save, unloaded conversion, unrelated shared selections and confirmed/cancelled temporary close covered in tests rather than additional live fault/modal cases",
+    "Standalone preview UI unchanged",
+    "No workspace deletion, multi-Profile integration or broad daily-use readiness claim",
+    "No extension tests performed"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/unsave-entry-* including compiler log and synthetic organization snapshots; current engine Profile workspace-v3"
+}

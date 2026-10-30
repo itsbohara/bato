@@ -248,6 +248,24 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Removes saved status without closing the page or replacing its identity.
+    /// Profile-wide Favorites become local to the current workspace.
+    public mutating func makeTemporary(_ id: UUID) throws {
+        try transact { draft in
+            guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            guard entry.kind != .temporary else { throw BrowserStateError.invalidEntryOwnership }
+            let selected = draft.currentWorkspace.activeEntryID
+            draft.removeEntry(id)
+            entry.kind = .temporary
+            entry.savedURL = nil
+            let workspace = draft.currentWorkspaceIndex
+            draft.workspaces[workspace].tabs.append(entry)
+            draft.workspaces[workspace].activeEntryID = selected
+        }
+    }
+
     /// Explicitly adopts the latest committed destination for a visible saved page.
     /// Ordinary navigation continues to leave its saved destination untouched.
     public mutating func updateSavedURL(_ id: UUID) throws {

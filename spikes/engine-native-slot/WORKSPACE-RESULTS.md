@@ -75,3 +75,15 @@ Runtime v1: unchanged-address context action was disabled. Navigating the existi
 
 
 Same-provider runtime v2 restart restored the same pin selected in Personal at the updated storage URL. Only placeholder+selected page were created. Final standard Quit detached once, returned the message loop and completed CEF shutdown/exit0; organization bytes exactly matched the pre-restart snapshot. The artifact checker passed527ARM64 images. No owned browser/build remains. Runtime covered one pin; Favorites/shared-workspace behavior and invalid/failed/reentrant navigation were covered by model/runtime tests rather than broader UI/disk-fault tests.
+
+
+## Unpin and remove from Favorites, 2026-10-31
+
+Saved context menus now expose Unpin / Remove from Favorites. Both atomically move the same entry into current-workspace temporary tabs and clear savedURL. Identity, title, latest destination and current selection are retained; background conversion does not select or create a page. Shared Favorite removal clears selections of that now-local entry elsewhere, preserving all other entries/selections. Pending closes block conversion until Cancel/confirmation; unloaded saved pages can be converted without loading.
+
+62Swift tests passed (19core/9store/3session/31runtime), including8newcases. Independent bounded review found no actionable defect. Guarded13clientfile reverse/forward/hash roundtrip,9mirrors and21overlayfiles passed. Incremental source build26.11s. No engine API or organization schema change.
+
+Runtime v1 passed live pin→Unpin: exact persisted state differed only by saved status/list placement, while stable UUID/current selection/destination/page survived. Added that same temporary tab to Favorites, switched to empty Research, then Remove from Favorites moved it to Research temporary tabs. Exact state comparison confirmed Personal’s obsolete selection cleared and Research remained unselected; visible blank anchor was retained. Selecting the converted tab reused the existing Chromium page; only anchor+one page were created throughout. Normal application-menu Quit detached once, returned loop and completed CEF shutdown/exit0, with exact organization bytes unchanged. No extension tests. Full evidence is in unsave-entry-evidence.json; raw logs and snapshots stay on the SSD.
+
+
+Same-provider v2 restart restored the converted temporary tab selected in Research, with the same entry UUID/storage destination and complete organization bytes unchanged. Pin Tab then returned it to a saved pin in Research; exact document comparison confirmed ID/destination/selection retained. Normal Quit again detached once, returned loop and completed CEF shutdown/exit0; organization bytes unchanged.527ARM64 artifact images passed. No owned browser/build remains. Pending-close/unloaded/failed-save and temporary-close cancellation cases were covered by tests; the live run focused on conversion, workspace ownership and restart.

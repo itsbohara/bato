@@ -1147,7 +1147,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,359 @@
 +import Foundation
 +
 +public enum EntryKind: String, Codable, Sendable {
@@ -1395,6 +1395,24 @@
 +            let profile = draft.currentProfileIndex
 +            draft.profiles[profile].favorites.append(entry)
 +            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
++        }
++    }
++
++    /// Removes saved status without closing the page or replacing its identity.
++    /// Profile-wide Favorites become local to the current workspace.
++    public mutating func makeTemporary(_ id: UUID) throws {
++        try transact { draft in
++            guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            guard entry.kind != .temporary else { throw BrowserStateError.invalidEntryOwnership }
++            let selected = draft.currentWorkspace.activeEntryID
++            draft.removeEntry(id)
++            entry.kind = .temporary
++            entry.savedURL = nil
++            let workspace = draft.currentWorkspaceIndex
++            draft.workspaces[workspace].tabs.append(entry)
++            draft.workspaces[workspace].activeEntryID = selected
 +        }
 +    }
 +
@@ -1690,7 +1708,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,311 @@
 +import Foundation
 +import BatoCore
 +
@@ -1805,6 +1823,17 @@
 +    @discardableResult
 +    public func favoriteEntry(_ id: UUID) -> Bool {
 +        change { try $0.favoriteEntry(id) }
++    }
++
++    /// Drops saved status as an organization-only transaction. An in-flight
++    /// close must finish or cancel before its saved/temporary semantics change.
++    @discardableResult
++    public func makeTemporary(_ id: UUID) -> Bool {
++        guard !pendingClose.contains(where: { $0.entryID == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: false) { try $0.makeTemporary(id) }
 +    }
 +
 +    /// Whether a saved page's latest destination is safely represented by committed
@@ -1993,7 +2022,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,513 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2249,6 +2278,13 @@
 +                update.toolTip = "Use this page’s current address when reopening it."
 +                update.isEnabled = runtime.canUpdateSavedURL(page.id) && page.savedURL != page.lastURL
 +                menu.addItem(update)
++                let unsave = ActionMenuItem(title: page.kind == .pinned ? "Unpin" : "Remove from Favorites") { [weak self] in
++                    guard let self else { return }
++                    self.perform { self.runtime.makeTemporary(page.id) }
++                }
++                unsave.toolTip = "Keep this page as a tab in this workspace."
++                unsave.isEnabled = !runtime.pendingClose.contains(where: { $0.entryID == page.id })
++                menu.addItem(unsave)
 +                select.menu = menu
 +            }
 +            let close = ActionButton(title: "×") { [weak self] in
