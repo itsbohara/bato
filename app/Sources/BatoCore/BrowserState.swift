@@ -248,6 +248,18 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Explicitly adopts the latest committed destination for a visible saved page.
+    /// Ordinary navigation continues to leave its saved destination untouched.
+    public mutating func updateSavedURL(_ id: UUID) throws {
+        try transact { draft in
+            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            guard entry.kind != .temporary else { throw BrowserStateError.invalidSavedURL }
+            draft.updateEntry(id) { $0.savedURL = entry.lastURL }
+        }
+    }
+
     /// Closing saved entries keeps their identity/order and restores their saved destination for reopening.
     public mutating func closeEntry(_ id: UUID) throws {
         try transact { draft in

@@ -1,5 +1,16 @@
 # Resume Bato
 
+## Latest saved destination checkpoint2026-10-31
+
+Explicit Update Saved URL is complete for Chromium-connected sidebar saved pins/Favorites. Context menu disabled when unchanged/unloaded/closing/latestnavinvalidorunsaved. Core copies latestcommittedlastURL to savedURL transactionally, preservesUUID/order/selection/title/liveURL. Runtime canUpdateSavedURL rechecksvisible/profile/live/pendingclose and generation-scoped navigation-attemptUUID dictionary; failed/unsupportedlatestnav blocks until validcommit. UUIDattemptcomparison prevents olderoutercallback clearing nestednewerinvalidnav. No engineeffects on update, schema/ABIunchanged. Standalonepreviewunchanged; unpin/remove remains nextwork.
+
+54Swift tests passed(16core/9store/3session/26runtime),8new; initialsubagentreview flaggedstaleURL,rootcompletedguard+reentranttestreview afteragentshitusage limit. Source build26.99s,13clientfile actualreverse/forward/hashroundtrip+9mirrors+21overlayfiles passed;527ARM64artifactimagespassed. Source/binarymatch. Futurecanonicalchangesneed mirrorstaging/manifestregenbeforebuild.
+
+Actualsaved-destination-v1: unchangedpin menu disabled; login→storage.html?label=saved-pin changedsessionURL/titleonly; actionchangedonlysavedURL; samepage/stableentry/selectionremained. Unload preservedpin/disabledaction, reopenloadedupdatedstorageURL. NormalQuit2browsers/1detach/loop+CEFshutdown/exit0,organizationbytesunchanged. v2same-providerrestart restoredsamepinUUIDselectedPersonalatupdatedstorageURL,onlyanchor+selectedbrowsercreated;normalQuit2browsers/1detach/loop+shutdown/exit0;organizationbytesexactlypre-restart. Runtimeonepin;Favorites/invalid/failed/reentrantnavverifiedwithtests,nolivediskfaultclaim. Noextensiontests. Evidence spikes/engine-native-slot/saved-destination-evidence.json;rawSSDlogs/saved-destination-*.
+
+Noownedbrowser/buildrunning. Knowncleanmockworkspace-v3profile/state now2workspaces(PersonalSageactivewith1selectedstoragepin;ResearchOceanempty),0temps. Stablepin5552FC1D-B9DC-42AF-81A2-2B6D47EF3D9A saved+lastURL localstoragefixture. EVERYrestartmockKeychain. CUAbindingssavedDestination/savedDestinationRestartEXITED;configuredlaunchbeforegetApp. SSDtmp launch-saved-destination-v{1,2}.py cannotrerunsamelogs;newboundedwrapper/logneeded. Fixture18765live. Userwantscompactionafterthischeckpoint;notifysafe,waitfornextcontinuation. Continueapplicationfeaturesnext,keepextensivextensiontestingdeferred;useboundedsubagentswhenavailable.
+
+
 ## Latest workspace customization checkpoint2026-10-31
 
 Workspace name/color editing is complete in Chromium-connected native sidebar (Edit… below picker). Native sheet captures workspace UUID, private draft, six named colors plus preserved existing custom value, blank-name inline validation, Save/Cancel. Atomic BrowserState.updateWorkspace + PageRuntime metadata update commits before publication without create/select/close/reconcile. Current workspace tint and row selection follow saved color. No schema/engine ABI change; standalone BatoShell preview UI unchanged.

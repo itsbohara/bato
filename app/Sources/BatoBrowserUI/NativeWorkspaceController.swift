@@ -239,6 +239,21 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                     self.perform { self.runtime.favoriteEntry(page.id) }
                 })
                 select.menu = menu
+            } else {
+                let menu = NSMenu()
+                // Keep the explicit live-page gate: AppKit's automatic target
+                // validation would otherwise re-enable this action.
+                menu.autoenablesItems = false
+                let update = ActionMenuItem(title: "Update Saved URL") { [weak self] in
+                    guard let self else { return }
+                    // Resolve the latest committed destination at invocation;
+                    // the page may navigate after this menu was constructed.
+                    self.perform { self.runtime.updateSavedURL(page.id) }
+                }
+                update.toolTip = "Use this page’s current address when reopening it."
+                update.isEnabled = runtime.canUpdateSavedURL(page.id) && page.savedURL != page.lastURL
+                menu.addItem(update)
+                select.menu = menu
             }
             let close = ActionButton(title: "×") { [weak self] in
                 guard let self else { return }

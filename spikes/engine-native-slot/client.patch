@@ -1147,7 +1147,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,341 @@
 +import Foundation
 +
 +public enum EntryKind: String, Codable, Sendable {
@@ -1395,6 +1395,18 @@
 +            let profile = draft.currentProfileIndex
 +            draft.profiles[profile].favorites.append(entry)
 +            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
++        }
++    }
++
++    /// Explicitly adopts the latest committed destination for a visible saved page.
++    /// Ordinary navigation continues to leave its saved destination untouched.
++    public mutating func updateSavedURL(_ id: UUID) throws {
++        try transact { draft in
++            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            guard entry.kind != .temporary else { throw BrowserStateError.invalidSavedURL }
++            draft.updateEntry(id) { $0.savedURL = entry.lastURL }
 +        }
 +    }
 +
@@ -1678,7 +1690,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,300 @@
 +import Foundation
 +import BatoCore
 +
@@ -1738,6 +1750,7 @@
 +    public private(set) var lastError: PageRuntimeError?
 +    public var onStateChange: ((BrowserState) -> Void)?
 +    private let engine: any PageEngine
++    private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
 +    private let commit: (BrowserState) throws -> Void
 +
 +    public init(state: BrowserState, engine: any PageEngine,
@@ -1794,6 +1807,25 @@
 +        change { try $0.favoriteEntry(id) }
 +    }
 +
++    /// Whether a saved page's latest destination is safely represented by committed
++    /// organization. Failed or unsupported navigation must not save an older URL.
++    public func canUpdateSavedURL(_ id: UUID) -> Bool {
++        guard let entry = state.visibleEntries.first(where: { $0.id == id }),
++              entry.kind != .temporary, let page = livePages[id],
++              page.entryID == id, page.profileID == state.currentWorkspace.profileID else { return false }
++        return !pendingClose.contains(page) && pagesWithUncommittedNavigation[page] == nil
++    }
++
++    /// Adopts the current committed page destination without navigating/refocusing.
++    @discardableResult
++    public func updateSavedURL(_ id: UUID) -> Bool {
++        guard canUpdateSavedURL(id) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: false) { try $0.updateSavedURL(id) }
++    }
++
 +    /// Unloaded entries close immediately after committing. Loaded entries remain
 +    /// in the organization until the matching engine closed event is received.
 +    @discardableResult
@@ -1838,20 +1870,27 @@
 +            guard livePages[page.entryID] == page else { return }
 +            livePages.removeValue(forKey: page.entryID)
 +            pendingClose.remove(page)
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
 +            engine.select(selectedLivePage)
 +        case let .creationFailed(page):
 +            guard livePages[page.entryID] == page else { return }
 +            livePages.removeValue(forKey: page.entryID)
 +            pendingClose.remove(page)
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
 +            lastError = .creationRejected
 +            engine.select(selectedLivePage)
 +        case let .navigation(page, url, title):
 +            guard livePages[page.entryID] == page else { return }
 +            // BrowserState validates URL scheme, host and embedded credentials.
 +            // Unsupported engine/internal URLs are ignored, never navigated back.
++            let navigationAttempt = UUID()
++            pagesWithUncommittedNavigation[page] = navigationAttempt
 +            var candidate = state
 +            guard (try? candidate.recordNavigation(entryID: page.entryID, url: url, title: title)) != nil else { return }
-+            _ = save(candidate)
++            if save(candidate), livePages[page.entryID] == page,
++               pagesWithUncommittedNavigation[page] == navigationAttempt {
++                pagesWithUncommittedNavigation.removeValue(forKey: page)
++            }
 +        case let .closeCancelled(page):
 +            guard livePages[page.entryID] == page else { return }
 +            pendingClose.remove(page)
@@ -1859,6 +1898,7 @@
 +            guard livePages[page.entryID] == page else { return }
 +            livePages.removeValue(forKey: page.entryID)
 +            pendingClose.remove(page)
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
 +            // The entry may belong to a workspace that is no longer active.
 +            // Apply close in its owner workspace, then restore current selection.
 +            var candidate = state
@@ -1937,6 +1977,7 @@
 +        livePages[id] = page
 +        guard engine.create(page, url: entry.lastURL) else {
 +            if livePages[id] == page { livePages.removeValue(forKey: id) }
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
 +            lastError = .creationRejected
 +            engine.select(selectedLivePage)
 +            return false
@@ -1952,7 +1993,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,506 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2193,6 +2234,21 @@
 +                    guard let self else { return }
 +                    self.perform { self.runtime.favoriteEntry(page.id) }
 +                })
++                select.menu = menu
++            } else {
++                let menu = NSMenu()
++                // Keep the explicit live-page gate: AppKit's automatic target
++                // validation would otherwise re-enable this action.
++                menu.autoenablesItems = false
++                let update = ActionMenuItem(title: "Update Saved URL") { [weak self] in
++                    guard let self else { return }
++                    // Resolve the latest committed destination at invocation;
++                    // the page may navigate after this menu was constructed.
++                    self.perform { self.runtime.updateSavedURL(page.id) }
++                }
++                update.toolTip = "Use this page’s current address when reopening it."
++                update.isEnabled = runtime.canUpdateSavedURL(page.id) && page.savedURL != page.lastURL
++                menu.addItem(update)
 +                select.menu = menu
 +            }
 +            let close = ActionButton(title: "×") { [weak self] in

@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Explicit saved URL update for pins and Favorites in Chromium-connected sidebar",
+  "behavior": {
+    "action": "Update Saved URL",
+    "ordinary_navigation": "Session URL/title change only; saved URL preserved",
+    "explicit_update": "Saved URL only, from current committed supported destination; stable ID/order/selection/live page preserved",
+    "eligibility": "Live visible saved page, no pending close or uncommitted/rejected latest navigation; unchanged destination disabled in menu",
+    "stale_navigation_guard": "Generation-scoped navigation-attempt UUIDs, rechecked at invocation and cleaned on terminal events",
+    "schema_change": false,
+    "engine_api_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 54,
+      "core": 16,
+      "store": 9,
+      "session": 3,
+      "runtime": 26,
+      "new_cases": 8,
+      "result": "passed"
+    },
+    "incremental_build_seconds": 26.99,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "review": "Initial subagent review identified stale-navigation risk; coordinator reviewed final guard and added reentrant rejection test. Final subagent review interrupted by usage limit."
+  },
+  "runs": [
+    {
+      "id": "saved-destination-v1",
+      "exit_code": 0,
+      "observations": [
+        "Unchanged loaded pin showed disabled Update Saved URL",
+        "Actual navigation from synthetic login to storage.html?label=saved-pin persisted latest URL/title and preserved saved login URL",
+        "Context action enabled for changed destination",
+        "Explicit action changed only savedURL in organization JSON; same entry UUID and selection",
+        "Actual storage page remained open after update",
+        "Unload preserved pin and disabled update action",
+        "Reopening same stable pin loaded new saved storage URL",
+        "Standard application-menu Quit completed one detach, message-loop return and CEF shutdown; organization bytes unchanged"
+      ]
+    },
+    {
+      "id": "saved-destination-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated engine Profile and mock Keychain provider",
+        "Same pin UUID restored selected in Personal at updated storage URL",
+        "Only placeholder and selected saved page created",
+        "Normal application-menu Quit completed one detach, message-loop return and CEF shutdown",
+        "Restart and final Quit preserved exact organization bytes"
+      ]
+    }
+  ],
+  "limits": [
+    "Runtime exercised one pin; Favorites/shared-workspace semantics exercised with fake engine and core tests",
+    "Invalid/failed navigation and reentrancy covered with tests, not injected live disk faults",
+    "No claim that explicit update works for unsupported internal URLs",
+    "Unpin/remove saved entries and standalone-preview UI remain separate work",
+    "No extension tests performed; existing host and production acceptance gates remain"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/saved-destination-*; synthetic engine Profile remains workspace-v3"
+}

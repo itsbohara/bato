@@ -68,6 +68,51 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertEqual(state, expected)
     }
 
+    func testExplicitSavedURLUpdateChangesOnlyDestinationForPinsAndFavorites() throws {
+        for kind in [EntryKind.pinned, .favorite] {
+            var state = BrowserState.initial()
+            let id = try state.addTab(url: saved, title: "Saved")
+            if kind == .pinned { try state.pinEntry(id) } else { try state.favoriteEntry(id) }
+            _ = try state.addTab(url: saved, title: "Sibling")
+            try state.recordNavigation(entryID: id, url: navigated, title: "Next")
+            let before = state
+            XCTAssertEqual(before.visibleEntries.first(where: { $0.id == id })?.savedURL, saved)
+            try state.updateSavedURL(id)
+            var expected = before
+            if kind == .pinned {
+                expected.workspaces[0].pins[0].savedURL = navigated
+            } else {
+                expected.profiles[0].favorites[0].savedURL = navigated
+            }
+            XCTAssertEqual(state, expected)
+            let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+            XCTAssertEqual(restored, expected)
+            try state.closeEntry(id)
+            XCTAssertEqual(state.visibleEntries.first(where: { $0.id == id })?.lastURL, navigated)
+        }
+    }
+
+    func testSavedURLUpdateRejectsTemporaryMissingAndInvisibleEntriesAtomically() throws {
+        var state = BrowserState.initial()
+        let temporary = try state.addTab(url: saved, title: "Temporary")
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        let before = state
+        XCTAssertThrowsError(try state.updateSavedURL(temporary)) { error in
+            XCTAssertEqual(error as? BrowserStateError, .invalidSavedURL)
+        }
+        XCTAssertEqual(state, before)
+        XCTAssertThrowsError(try state.updateSavedURL(UUID()))
+        XCTAssertEqual(state, before)
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let inactive = state
+        XCTAssertThrowsError(try state.updateSavedURL(pin)) { error in
+            XCTAssertEqual(error as? BrowserStateError, .missingEntry)
+        }
+        XCTAssertEqual(state, inactive)
+    }
+
     func testSavedURLSurvivesNavigationAndCloseWithoutDeletingPin() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: saved, title: "Start")

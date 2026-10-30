@@ -57,6 +57,7 @@ public final class PageRuntime {
     public private(set) var lastError: PageRuntimeError?
     public var onStateChange: ((BrowserState) -> Void)?
     private let engine: any PageEngine
+    private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
     private let commit: (BrowserState) throws -> Void
 
     public init(state: BrowserState, engine: any PageEngine,
@@ -113,6 +114,25 @@ public final class PageRuntime {
         change { try $0.favoriteEntry(id) }
     }
 
+    /// Whether a saved page's latest destination is safely represented by committed
+    /// organization. Failed or unsupported navigation must not save an older URL.
+    public func canUpdateSavedURL(_ id: UUID) -> Bool {
+        guard let entry = state.visibleEntries.first(where: { $0.id == id }),
+              entry.kind != .temporary, let page = livePages[id],
+              page.entryID == id, page.profileID == state.currentWorkspace.profileID else { return false }
+        return !pendingClose.contains(page) && pagesWithUncommittedNavigation[page] == nil
+    }
+
+    /// Adopts the current committed page destination without navigating/refocusing.
+    @discardableResult
+    public func updateSavedURL(_ id: UUID) -> Bool {
+        guard canUpdateSavedURL(id) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.updateSavedURL(id) }
+    }
+
     /// Unloaded entries close immediately after committing. Loaded entries remain
     /// in the organization until the matching engine closed event is received.
     @discardableResult
@@ -157,20 +177,27 @@ public final class PageRuntime {
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)
             pendingClose.remove(page)
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
             engine.select(selectedLivePage)
         case let .creationFailed(page):
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)
             pendingClose.remove(page)
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
             lastError = .creationRejected
             engine.select(selectedLivePage)
         case let .navigation(page, url, title):
             guard livePages[page.entryID] == page else { return }
             // BrowserState validates URL scheme, host and embedded credentials.
             // Unsupported engine/internal URLs are ignored, never navigated back.
+            let navigationAttempt = UUID()
+            pagesWithUncommittedNavigation[page] = navigationAttempt
             var candidate = state
             guard (try? candidate.recordNavigation(entryID: page.entryID, url: url, title: title)) != nil else { return }
-            _ = save(candidate)
+            if save(candidate), livePages[page.entryID] == page,
+               pagesWithUncommittedNavigation[page] == navigationAttempt {
+                pagesWithUncommittedNavigation.removeValue(forKey: page)
+            }
         case let .closeCancelled(page):
             guard livePages[page.entryID] == page else { return }
             pendingClose.remove(page)
@@ -178,6 +205,7 @@ public final class PageRuntime {
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)
             pendingClose.remove(page)
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
             // The entry may belong to a workspace that is no longer active.
             // Apply close in its owner workspace, then restore current selection.
             var candidate = state
@@ -256,6 +284,7 @@ public final class PageRuntime {
         livePages[id] = page
         guard engine.create(page, url: entry.lastURL) else {
             if livePages[id] == page { livePages.removeValue(forKey: id) }
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
             lastError = .creationRejected
             engine.select(selectedLivePage)
             return false
