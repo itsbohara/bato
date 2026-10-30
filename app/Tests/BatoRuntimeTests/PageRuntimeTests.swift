@@ -28,6 +28,87 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func orderingCommitsBeforePublicationWithoutChangingLivePagesOrPendingClose() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        let second = try state.addTab(url: next, title: "Second")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        runtime.start()
+        runtime.selectEntry(first)
+        let page = try #require(runtime.livePages[first])
+        #expect(runtime.closeEntry(first))
+        let pages = runtime.livePages
+        let selections = engine.selections
+        let created = engine.created.count
+        var publications: [BrowserState] = []
+        runtime.onStateChange = { candidate in
+            #expect(committed.last == candidate)
+            publications.append(candidate)
+        }
+        #expect(runtime.moveEntry(first, direction: .down))
+        #expect(publications == [runtime.state])
+        #expect(runtime.state.currentWorkspace.tabs.map(\.id) == [second, first])
+        #expect(runtime.state.currentWorkspace.activeEntryID == first)
+        #expect(runtime.livePages == pages)
+        #expect(runtime.pendingClose == [page])
+        #expect(engine.visible == page)
+        #expect(engine.created.count == created)
+        #expect(engine.selections == selections)
+        #expect(engine.closes == [page])
+        runtime.receive(.closeCancelled(page))
+        #expect(runtime.pendingClose.isEmpty)
+        #expect(runtime.state.currentWorkspace.tabs.map(\.id) == [second, first])
+    }
+
+    @Test func orderingUnloadedSavedEntriesDoesNotLoadOrSelectThem() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        try state.pinEntry(first)
+        let second = try state.addTab(url: next, title: "Second")
+        try state.pinEntry(second)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.moveEntry(second, direction: .up))
+        #expect(runtime.state.currentWorkspace.pins.map(\.id) == [second, first])
+        #expect(runtime.state.currentWorkspace.activeEntryID == second)
+        #expect(runtime.livePages.isEmpty)
+        #expect(engine.created.isEmpty)
+        #expect(engine.selections.isEmpty)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func failedOrIllegalOrderingPreservesCommittedOrderAndEngineState() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        _ = try state.addTab(url: next, title: "Second")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in
+            saves += 1
+            throw Failure.disk
+        })
+        runtime.start()
+        let pages = runtime.livePages
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.moveEntry(first, direction: .down))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(saves == 1)
+        #expect(!runtime.moveEntry(first, direction: .up))
+        #expect(!runtime.moveEntry(UUID(), direction: .down))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saves == 1)
+        #expect(publications == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.livePages == pages)
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes.isEmpty)
+    }
+
     @Test func workspaceCustomizationCommitsWithoutPageEffectsOrClosingChanges() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: start, title: "Current")

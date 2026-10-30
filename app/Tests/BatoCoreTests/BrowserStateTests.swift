@@ -16,6 +16,89 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertNil(state.currentWorkspace.activeEntryID)
     }
 
+    func testAdjacentOrderingChangesOnlyItsSectionAndRoundTrips() throws {
+        for kind in [EntryKind.favorite, .pinned, .temporary] {
+            var state = BrowserState.initial()
+            var ids: [UUID] = []
+            for title in ["First", "Second"] {
+                let id = try state.addTab(url: saved, title: title)
+                if kind == .favorite { try state.favoriteEntry(id) }
+                if kind == .pinned { try state.pinEntry(id) }
+                ids.append(id)
+            }
+            _ = try state.addTab(url: navigated, title: "Selected sibling")
+            let before = state
+            XCTAssertTrue(state.canMoveEntry(ids[0], direction: .down))
+            try state.moveEntry(ids[0], direction: .down)
+            var expected = before
+            switch kind {
+            case .favorite: expected.profiles[0].favorites.swapAt(0, 1)
+            case .pinned: expected.workspaces[0].pins.swapAt(0, 1)
+            case .temporary: expected.workspaces[0].tabs.swapAt(0, 1)
+            }
+            XCTAssertEqual(state, expected)
+            let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+            try restored.validate()
+            XCTAssertEqual(restored, expected)
+            try state.moveEntry(ids[0], direction: .up)
+            XCTAssertEqual(state, before)
+        }
+    }
+
+    func testSharedFavoriteOrderPreservesEveryWorkspaceSelection() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: saved, title: "First")
+        try state.favoriteEntry(first)
+        let second = try state.addTab(url: navigated, title: "Second")
+        try state.favoriteEntry(second)
+        let owner = state.activeWorkspaceID
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        try state.selectEntry(first)
+        let before = state
+        try state.moveEntry(second, direction: .up)
+        var expected = before
+        expected.profiles[0].favorites.swapAt(0, 1)
+        XCTAssertEqual(state, expected)
+        XCTAssertEqual(state.visibleEntries.map(\.id), [second, first])
+        try state.activateWorkspace(owner)
+        XCTAssertEqual(state.visibleEntries.map(\.id), [second, first])
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, second)
+    }
+
+    func testOrderingRejectsBoundariesMissingAndInvisibleEntriesAtomically() throws {
+        var state = BrowserState.initial()
+        let favorite = try state.addTab(url: saved, title: "Favorite")
+        try state.favoriteEntry(favorite)
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        let tab = try state.addTab(url: navigated, title: "Tab")
+        let before = state
+        // Adjacent entries in other sections do not make a move legal.
+        for id in [favorite, pin, tab] {
+            for direction in [EntryMoveDirection.up, .down] {
+                XCTAssertFalse(state.canMoveEntry(id, direction: direction))
+                XCTAssertThrowsError(try state.moveEntry(id, direction: direction))
+                XCTAssertEqual(state, before)
+            }
+        }
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let inactive = state
+        for id in [pin, tab, UUID()] {
+            XCTAssertFalse(state.canMoveEntry(id, direction: .up))
+            XCTAssertThrowsError(try state.moveEntry(id, direction: .up))
+            XCTAssertEqual(state, inactive)
+        }
+        let isolatedProfile = try state.addProfile(name: "Isolated")
+        let isolated = try state.addWorkspace(name: "Isolated", profileID: isolatedProfile)
+        try state.activateWorkspace(isolated)
+        let isolatedState = state
+        XCTAssertFalse(state.canMoveEntry(favorite, direction: .down))
+        XCTAssertThrowsError(try state.moveEntry(favorite, direction: .down))
+        XCTAssertEqual(state, isolatedState)
+    }
+
     func testWorkspaceCustomizationPreservesOrganizationAndRoundTrips() throws {
         var state = BrowserState.initial()
         let workspaceID = state.activeWorkspaceID

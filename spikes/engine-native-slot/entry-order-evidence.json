@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Adjacent sidebar ordering within Favorites, Pinned and Tabs sections",
+  "behavior": {
+    "commands": [
+      "Move Up",
+      "Move Down"
+    ],
+    "ownership": "Current Profile Favorites order shared across same-Profile workspaces; pins/tabs remain in current workspace section",
+    "preservation": "Full entries, IDs, active workspace and every workspace selection retained",
+    "engine": "No page create/select/close/navigation during reorder; unloaded and pending-close state unchanged",
+    "validation": "Boundary commands disabled; invocation revalidates current section/order before transaction",
+    "schema_change": false,
+    "engine_api_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 68,
+      "core": 22,
+      "store": 9,
+      "session": 3,
+      "runtime": 34,
+      "new_cases": 6,
+      "result": "passed"
+    },
+    "incremental_build_seconds": 28.61,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "review": "Independent bounded read-only review and coordinator review found no actionable defect"
+  },
+  "runs": [
+    {
+      "id": "entry-order-v1",
+      "exit_code": 0,
+      "observations": [
+        "Added and pinned synthetic modal fixture beside existing storage pin in Research",
+        "Single temporary item had both movement commands disabled",
+        "First pin Move Up disabled; last pin Move Down disabled",
+        "Background storage Move Down changed only order, keeping modal selected and visible",
+        "Background storage Move Up restored exact initial organization bytes",
+        "Actual page activity counter set to1; selected modal Move Up retained visible counter1 and page selection",
+        "Final full document differed only by pin order; all IDs/entry fields/workspace selections unchanged",
+        "Only placeholder plus two intended page creations; no reorder-created browsers",
+        "Normal application-menu Quit closed3 browsers, detached once, returned loop and completed CEF shutdown; exact organization bytes unchanged"
+      ]
+    },
+    {
+      "id": "entry-order-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated engine Profile and mock Keychain provider",
+        "Restored order modal then storage, same stable IDs and modal selected",
+        "Only placeholder plus selected modal created; inactive storage pin stayed unloaded",
+        "Full organization bytes identical before/after restart and final Quit",
+        "Normal application-menu Quit closed2 browsers, detached once, returned loop and completed CEF shutdown"
+      ]
+    }
+  ],
+  "limits": [
+    "Runtime covered two pins and single temporary-item boundaries; Favorites/temporary ordering and shared-Profile order tested with core/runtime suite",
+    "Failed saves, unloaded reorder and pending-close reorder verified with tests rather than live fault/modal cases",
+    "Ordering affects Bato sidebar; Chromium diagnostic tab strip retains separate order",
+    "Drag-and-drop, cross-section movement and standalone preview UI remain separate work",
+    "No extension tests performed; existing foundation and daily-use acceptance gates remain"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/entry-order-* including compiler log, organization snapshots and exit receipts; synthetic engine Profile workspace-v3"
+}

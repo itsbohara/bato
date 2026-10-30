@@ -104,6 +104,12 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
     }
 
+    /// Reorders organization without changing page visibility or close semantics.
+    @discardableResult
+    public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
+        change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
+    }
+
     @discardableResult
     public func pinEntry(_ id: UUID) -> Bool {
         change { try $0.pinEntry(id) }

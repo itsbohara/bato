@@ -262,6 +262,23 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 menu.addItem(unsave)
                 select.menu = menu
             }
+            if let menu = select.menu {
+                // Boundary actions stay disabled for every entry kind.
+                menu.autoenablesItems = false
+                menu.addItem(.separator())
+                let moveUp = ActionMenuItem(title: "Move Up") { [weak self] in
+                    guard let self else { return }
+                    self.perform { self.runtime.moveEntry(page.id, direction: .up) }
+                }
+                moveUp.isEnabled = runtime.state.canMoveEntry(page.id, direction: .up)
+                menu.addItem(moveUp)
+                let moveDown = ActionMenuItem(title: "Move Down") { [weak self] in
+                    guard let self else { return }
+                    self.perform { self.runtime.moveEntry(page.id, direction: .down) }
+                }
+                moveDown.isEnabled = runtime.state.canMoveEntry(page.id, direction: .down)
+                menu.addItem(moveDown)
+            }
             let close = ActionButton(title: "×") { [weak self] in
                 guard let self else { return }
                 self.perform { self.runtime.closeEntry(page.id) }

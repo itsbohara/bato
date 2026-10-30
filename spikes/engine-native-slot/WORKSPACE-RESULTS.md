@@ -87,3 +87,15 @@ Runtime v1 passed live pin→Unpin: exact persisted state differed only by saved
 
 
 Same-provider v2 restart restored the converted temporary tab selected in Research, with the same entry UUID/storage destination and complete organization bytes unchanged. Pin Tab then returned it to a saved pin in Research; exact document comparison confirmed ID/destination/selection retained. Normal Quit again detached once, returned loop and completed CEF shutdown/exit0; organization bytes unchanged.527ARM64 artifact images passed. No owned browser/build remains. Pending-close/unloaded/failed-save and temporary-close cancellation cases were covered by tests; the live run focused on conversion, workspace ownership and restart.
+
+
+## Sidebar ordering, 2026-10-31
+
+Every sidebar entry menu now includes Move Up / Move Down. Adjacent moves stay within current Profile Favorites, current workspace pins or current workspace temporary tabs. Full entries and all workspace selections remain intact; a committed order update does not reconcile engine visibility or touch live handles/pending closes. Runtime revalidates at invocation. Boundary actions remain disabled through explicit AppKit menu validation settings. Existing arrays persist order; no schema/engine API change.
+
+68 Swift tests passed (22 core / 9 store / 3 session / 34 runtime), including six new cases. Independent bounded review found no actionable defect. Guarded 13-client-file actual reverse/forward/hash roundtrip, 9 source mirrors and 21 overlay files passed. Source build28.61s;527ARM64 artifact images passed.
+
+Runtime v1 added a second synthetic pin in Research. Its single-item temporary section had both movement actions disabled. The first pin’s Move Up and last pin’s Move Down were disabled as expected. Moving background storage Down changed only pin array order and left the modal fixture selected; moving it Up restored exact initial organization bytes. Setting a real in-page activity counter to1 and then moving the selected modal pin Up retained counter1 and the visible page, with only order changed in JSON. Only anchor+the two intended pages were created; no ordering-created browsers. Normal application-menu Quit closed3browsers, detached once, returned loop and completed CEF shutdown/exit0. Organization bytes remained unchanged. Raw logs/snapshots stay on SSD; full evidence is in entry-order-evidence.json. No extension tests.
+
+
+Same-provider v2 restart restored pin order modal→storage, the same stable IDs and selected modal fixture. Only placeholder+selected modal were created; inactive storage stayed unloaded. Full organization bytes matched the pre-restart snapshot. Final normal Quit closed2browsers, detached once, returned loop and completed CEF shutdown/exit0; bytes unchanged. No owned browser/build remains. Actual runtime covered two pins/single temporary-item boundaries; Favorites/temporary ordering, failed saves and pending-close/unloaded moves were covered by tests.

@@ -1147,8 +1147,12 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,411 @@
 +import Foundation
++
++public enum EntryMoveDirection: Sendable {
++    case up, down
++}
 +
 +public enum EntryKind: String, Codable, Sendable {
 +    case favorite, pinned, temporary
@@ -1372,6 +1376,45 @@
 +        }
 +    }
 +
++    /// Order changes stay inside the entry's current sidebar section.
++    public func canMoveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
++        guard let section = sectionContaining(id), let index = section.firstIndex(where: { $0.id == id }) else {
++            return false
++        }
++        switch direction {
++        case .up: return index > 0
++        case .down: return index + 1 < section.count
++        }
++    }
++
++    public mutating func moveEntry(_ id: UUID, direction: EntryMoveDirection) throws {
++        try transact { draft in
++            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            guard draft.canMoveEntry(id, direction: direction),
++                  let section = draft.sectionContaining(id),
++                  let index = section.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.invalidSelection
++            }
++            let destination: Int
++            switch direction {
++            case .up: destination = index - 1
++            case .down: destination = index + 1
++            }
++            let workspace = draft.currentWorkspaceIndex
++            switch entry.kind {
++            case .favorite:
++                let profile = draft.currentProfileIndex
++                draft.profiles[profile].favorites.swapAt(index, destination)
++            case .pinned:
++                draft.workspaces[workspace].pins.swapAt(index, destination)
++            case .temporary:
++                draft.workspaces[workspace].tabs.swapAt(index, destination)
++            }
++        }
++    }
++
 +    public mutating func pinEntry(_ id: UUID) throws {
 +        try transact { draft in
 +            guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
@@ -1451,6 +1494,15 @@
 +                entry.title = title
 +            }
 +        }
++    }
++
++    private func sectionContaining(_ id: UUID) -> [PageEntry]? {
++        let workspace = currentWorkspace
++        let favorites = profiles[currentProfileIndex].favorites
++        if favorites.contains(where: { $0.id == id }) { return favorites }
++        if workspace.pins.contains(where: { $0.id == id }) { return workspace.pins }
++        if workspace.tabs.contains(where: { $0.id == id }) { return workspace.tabs }
++        return nil
 +    }
 +
 +    private var currentWorkspaceIndex: Int { workspaces.firstIndex(where: { $0.id == activeWorkspaceID })! }
@@ -1708,7 +1760,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,317 @@
 +import Foundation
 +import BatoCore
 +
@@ -1813,6 +1865,12 @@
 +    @discardableResult
 +    public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
 +        change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
++    }
++
++    /// Reorders organization without changing page visibility or close semantics.
++    @discardableResult
++    public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
++        change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
 +    }
 +
 +    @discardableResult
@@ -2022,7 +2080,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,513 @@
+@@ -0,0 +1,530 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2286,6 +2344,23 @@
 +                unsave.isEnabled = !runtime.pendingClose.contains(where: { $0.entryID == page.id })
 +                menu.addItem(unsave)
 +                select.menu = menu
++            }
++            if let menu = select.menu {
++                // Boundary actions stay disabled for every entry kind.
++                menu.autoenablesItems = false
++                menu.addItem(.separator())
++                let moveUp = ActionMenuItem(title: "Move Up") { [weak self] in
++                    guard let self else { return }
++                    self.perform { self.runtime.moveEntry(page.id, direction: .up) }
++                }
++                moveUp.isEnabled = runtime.state.canMoveEntry(page.id, direction: .up)
++                menu.addItem(moveUp)
++                let moveDown = ActionMenuItem(title: "Move Down") { [weak self] in
++                    guard let self else { return }
++                    self.perform { self.runtime.moveEntry(page.id, direction: .down) }
++                }
++                moveDown.isEnabled = runtime.state.canMoveEntry(page.id, direction: .down)
++                menu.addItem(moveDown)
 +            }
 +            let close = ActionButton(title: "×") { [weak self] in
 +                guard let self else { return }

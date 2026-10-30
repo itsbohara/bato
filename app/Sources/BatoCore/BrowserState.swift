@@ -1,5 +1,9 @@
 import Foundation
 
+public enum EntryMoveDirection: Sendable {
+    case up, down
+}
+
 public enum EntryKind: String, Codable, Sendable {
     case favorite, pinned, temporary
 }
@@ -222,6 +226,45 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Order changes stay inside the entry's current sidebar section.
+    public func canMoveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
+        guard let section = sectionContaining(id), let index = section.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        switch direction {
+        case .up: return index > 0
+        case .down: return index + 1 < section.count
+        }
+    }
+
+    public mutating func moveEntry(_ id: UUID, direction: EntryMoveDirection) throws {
+        try transact { draft in
+            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            guard draft.canMoveEntry(id, direction: direction),
+                  let section = draft.sectionContaining(id),
+                  let index = section.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.invalidSelection
+            }
+            let destination: Int
+            switch direction {
+            case .up: destination = index - 1
+            case .down: destination = index + 1
+            }
+            let workspace = draft.currentWorkspaceIndex
+            switch entry.kind {
+            case .favorite:
+                let profile = draft.currentProfileIndex
+                draft.profiles[profile].favorites.swapAt(index, destination)
+            case .pinned:
+                draft.workspaces[workspace].pins.swapAt(index, destination)
+            case .temporary:
+                draft.workspaces[workspace].tabs.swapAt(index, destination)
+            }
+        }
+    }
+
     public mutating func pinEntry(_ id: UUID) throws {
         try transact { draft in
             guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
@@ -301,6 +344,15 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 entry.title = title
             }
         }
+    }
+
+    private func sectionContaining(_ id: UUID) -> [PageEntry]? {
+        let workspace = currentWorkspace
+        let favorites = profiles[currentProfileIndex].favorites
+        if favorites.contains(where: { $0.id == id }) { return favorites }
+        if workspace.pins.contains(where: { $0.id == id }) { return workspace.pins }
+        if workspace.tabs.contains(where: { $0.id == id }) { return workspace.tabs }
+        return nil
     }
 
     private var currentWorkspaceIndex: Int { workspaces.firstIndex(where: { $0.id == activeWorkspaceID })! }
