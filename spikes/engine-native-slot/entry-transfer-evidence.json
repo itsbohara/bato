@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Move same-Profile pins and temporary tabs between workspaces",
+  "behavior": {
+    "control": "Move to Workspace submenu on pins and temporary tabs",
+    "ownership": "Other same-Profile workspaces, append to matching section; Favorites remain shared and excluded",
+    "preservation": "Full entry, UUID, kind, saved and latest URLs retained; current workspace and destination selection unchanged; clear only moved source selection",
+    "engine": "Background move has no effects; selected move hides page after commit, retaining live generation; unloaded pages remain unloaded",
+    "validation": "Captured entry/destination UUIDs, pending-close gate and transactional destination/ownership validation",
+    "schema_change": false,
+    "engine_api_change": false,
+    "standalone_preview_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "core": 26,
+      "store": 9,
+      "session": 3,
+      "runtime": 41,
+      "new_cases": 6,
+      "result": "passed",
+      "total": 79
+    },
+    "incremental_build_seconds": 28.56,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "artifact_check": "passed, exit0",
+    "review": "Independent bounded read-only review and coordinator review found no actionable defect"
+  },
+  "runs": [
+    {
+      "id": "entry-transfer-v1",
+      "exit_code": 0,
+      "observations": [
+        "Actual selected modal page activity counter advanced0\u21921 in Research",
+        "Moved background unloaded storage pin to Personal; exact full-document comparison showed only removal from source and append to destination matching section; Research modal/selection and counter1 retained",
+        "Moved selected modal pin to Personal; Research stayed active, only source selection cleared, destination selection stayed nil, and about:blank displayed; exact expected document matched",
+        "Selecting Personal displayed storage then modal pins and initially blank content; selecting modal reused the same Chrome page with counter1, without reload",
+        "Final full-document comparison matched only the explicit workspace switch and modal selection added to prior expected state",
+        "Only anchor plus selected modal created; storage stayed unloaded and transfers created no browsers. Normal application-menu Quit closed2 browsers, detached once, returned the loop and completed CEF shutdown; exit0 and exact organization bytes preserved"
+      ]
+    },
+    {
+      "id": "entry-transfer-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated engine Profile and mock Keychain provider",
+        "Restored active Personal with storage then modal pins, same stable IDs and selected modal at actual fixture URL/title",
+        "Full organization bytes matched v1 final before restart, after restore and after final Quit",
+        "Only anchor plus selected modal created; storage stayed unloaded",
+        "Normal application-menu Quit closed2 browsers, detached once, returned the loop and completed CEF shutdown; normal exit0",
+        "No owned browser or build remains"
+      ]
+    }
+  ],
+  "limits": [
+    "Actual runtime covered two pins; temporary transfers, invalid/cross-Profile destinations, pending closes, failed saves and unloaded/lifecycle callback cases covered by core/runtime tests",
+    "Favorites remain Profile-wide; cross-Profile transfer and standalone preview UI remain separate work",
+    "No extension tests; existing foundation and daily-use acceptance gates remain"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/entry-transfer-*; synthetic engine Profile workspace-v3"
+}

@@ -28,6 +28,141 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func selectedEntryTransferCommitsBeforeHidingAndReusesLiveGeneration() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let id = try state.addTab(url: start, title: "Moved pin")
+        try state.pinEntry(id)
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        var publications = 0
+        runtime.onStateChange = { candidate in
+            #expect(committed.last == candidate)
+            #expect(engine.visible == page) // Hide follows successful publication.
+            publications += 1
+        }
+        #expect(runtime.moveEntry(id, toWorkspace: destination))
+        #expect(publications == 1)
+        #expect(runtime.state.activeWorkspaceID == source)
+        #expect(runtime.state.currentWorkspace.activeEntryID == nil)
+        #expect(runtime.state.workspaces[1].activeEntryID == nil)
+        #expect(runtime.livePages == [id: page])
+        #expect(engine.visible == nil)
+        #expect(engine.selections == [page, nil])
+        #expect(engine.created.count == 1)
+        #expect(engine.closes.isEmpty)
+        runtime.onStateChange = nil
+        runtime.receive(.navigation(page, url: next, title: "Moved page navigation"))
+        #expect(runtime.state.workspaces[1].pins.first?.lastURL == next)
+        #expect(runtime.state.workspaces[1].pins.first?.savedURL == start)
+        #expect(runtime.state.activeWorkspaceID == source)
+        #expect(runtime.activateWorkspace(destination))
+        #expect(engine.visible == nil) // Destination selection was deliberately retained as empty.
+        #expect(runtime.selectEntry(id))
+        #expect(engine.visible == page)
+        #expect(engine.created.count == 1)
+        #expect(runtime.closeEntry(id))
+        runtime.receive(.closed(page))
+        #expect(runtime.state.currentWorkspace.pins.first?.lastURL == start)
+        #expect(runtime.state.currentWorkspace.pins.first?.id == id)
+        #expect(runtime.livePages.isEmpty)
+        let after = runtime.state
+        runtime.receive(.navigation(page, url: next, title: "Late stale callback"))
+        #expect(runtime.state == after)
+    }
+
+    @Test func backgroundEntryTransferPreservesVisiblePageAndUnrelatedPendingClose() throws {
+        var state = BrowserState.initial()
+        let moved = try state.addTab(url: start, title: "Moved temporary")
+        let current = try state.addTab(url: next, title: "Current")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        let currentPage = try #require(runtime.livePages[current])
+        #expect(runtime.selectEntry(moved))
+        let movedPage = try #require(runtime.livePages[moved])
+        #expect(runtime.selectEntry(current))
+        #expect(runtime.closeEntry(current))
+        let selections = engine.selections
+        let pages = runtime.livePages
+        #expect(runtime.moveEntry(moved, toWorkspace: destination))
+        #expect(runtime.state.currentWorkspace.activeEntryID == current)
+        #expect(runtime.state.workspaces[1].tabs.map(\.id) == [moved])
+        #expect(runtime.livePages == pages)
+        #expect(runtime.pendingClose == [currentPage])
+        #expect(engine.selections == selections)
+        #expect(engine.visible == currentPage)
+        #expect(engine.created.count == 2)
+        #expect(engine.closes == [currentPage])
+        runtime.receive(.navigation(movedPage, url: next, title: "Background moved page"))
+        #expect(runtime.state.workspaces[1].tabs.first?.lastURL == next)
+        #expect(engine.selections == selections)
+    }
+
+    @Test func unloadedEntryTransferStaysLazyAndInvalidDestinationsHaveNoEffects() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Unloaded selected temporary")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        let otherProfile = try state.addProfile(name: "Other")
+        let isolated = try state.addWorkspace(name: "Isolated", profileID: otherProfile)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in saves += 1 })
+        #expect(!runtime.moveEntry(id, toWorkspace: isolated))
+        #expect(!runtime.moveEntry(id, toWorkspace: state.activeWorkspaceID))
+        #expect(!runtime.moveEntry(id, toWorkspace: UUID()))
+        #expect(saves == 0)
+        #expect(runtime.state == state)
+        #expect(engine.selections.isEmpty)
+        #expect(runtime.moveEntry(id, toWorkspace: destination))
+        #expect(saves == 1)
+        #expect(runtime.livePages.isEmpty)
+        #expect(engine.created.isEmpty)
+        #expect(engine.closes.isEmpty)
+        #expect(engine.selections.count == 1)
+        #expect(engine.visible == nil)
+        #expect(runtime.state.workspaces[1].tabs.first?.id == id)
+        #expect(runtime.state.currentWorkspace.activeEntryID == nil)
+    }
+
+    @Test func failedTransferAndOwnPendingClosePreserveOrganizationAndPages() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Current")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in
+            saves += 1
+            throw Failure.disk
+        })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.moveEntry(id, toWorkspace: destination))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(saves == 1)
+        #expect(runtime.state == state)
+        #expect(runtime.closeEntry(id))
+        #expect(!runtime.moveEntry(id, toWorkspace: destination))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saves == 1)
+        #expect(publications == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.livePages == [id: page])
+        #expect(runtime.pendingClose == [page])
+        #expect(engine.visible == page)
+        #expect(engine.selections == selections)
+        #expect(engine.created.count == 1)
+        #expect(engine.closes == [page])
+    }
+
     @Test func workspaceOrderingCommitsBeforePublicationAndPreservesLivePendingClose() throws {
         var state = BrowserState.initial()
         let owner = state.activeWorkspaceID

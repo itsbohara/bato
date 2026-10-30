@@ -1147,7 +1147,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,480 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -1441,6 +1441,45 @@
 +                draft.workspaces[workspace].pins.swapAt(index, destination)
 +            case .temporary:
 +                draft.workspaces[workspace].tabs.swapAt(index, destination)
++            }
++        }
++    }
++
++    /// Only local pins/tabs can move; Favorites already span their Profile's workspaces.
++    public func canMoveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
++        let source = currentWorkspace
++        guard destinationID != source.id,
++              let destination = workspaces.first(where: { $0.id == destinationID }),
++              destination.profileID == source.profileID else { return false }
++        return (source.pins + source.tabs).contains(where: { $0.id == id })
++    }
++
++    /// Transfers the entire entry without changing the active workspace or destination selection.
++    public mutating func moveEntry(_ id: UUID, toWorkspace destinationID: UUID) throws {
++        try transact { draft in
++            guard let destination = draft.workspaces.firstIndex(where: { $0.id == destinationID }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            let source = draft.currentWorkspaceIndex
++            guard destination != source,
++                  draft.workspaces[destination].profileID == draft.workspaces[source].profileID else {
++                throw BrowserStateError.invalidSelection
++            }
++            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            switch entry.kind {
++            case .favorite:
++                throw BrowserStateError.invalidEntryOwnership
++            case .pinned:
++                draft.workspaces[source].pins.removeAll { $0.id == id }
++                draft.workspaces[destination].pins.append(entry)
++            case .temporary:
++                draft.workspaces[source].tabs.removeAll { $0.id == id }
++                draft.workspaces[destination].tabs.append(entry)
++            }
++            if draft.workspaces[source].activeEntryID == id {
++                draft.workspaces[source].activeEntryID = nil
 +            }
 +        }
 +    }
@@ -1790,7 +1829,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,336 @@
 +import Foundation
 +import BatoCore
 +
@@ -1907,6 +1946,19 @@
 +    @discardableResult
 +    public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
 +        change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
++    }
++
++    /// Moving an active entry hides it after commit; background moves leave focus untouched.
++    @discardableResult
++    public func moveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
++        guard !pendingClose.contains(where: { $0.entryID == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        let movesSelection = state.currentWorkspace.activeEntryID == id
++        return change(reconcileSelection: movesSelection) {
++            try $0.moveEntry(id, toWorkspace: destinationID)
++        }
 +    }
 +
 +    @discardableResult
@@ -2116,7 +2168,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,565 @@
+@@ -0,0 +1,586 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2408,6 +2460,27 @@
 +                }
 +                moveDown.isEnabled = runtime.state.canMoveEntry(page.id, direction: .down)
 +                menu.addItem(moveDown)
++                if page.kind != .favorite {
++                    menu.addItem(.separator())
++                    let transfer = NSMenuItem(title: "Move to Workspace", action: nil, keyEquivalent: "")
++                    let destinations = NSMenu()
++                    destinations.autoenablesItems = false
++                    let workspace = runtime.state.currentWorkspace
++                    let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
++                    for destination in runtime.state.workspaces
++                        where destination.id != workspace.id && destination.profileID == workspace.profileID {
++                        let destinationID = destination.id
++                        let item = ActionMenuItem(title: destination.name) { [weak self] in
++                            guard let self else { return }
++                            self.perform { self.runtime.moveEntry(page.id, toWorkspace: destinationID) }
++                        }
++                        item.isEnabled = !isClosing && runtime.state.canMoveEntry(page.id, toWorkspace: destinationID)
++                        destinations.addItem(item)
++                    }
++                    transfer.submenu = destinations
++                    transfer.isEnabled = destinations.items.contains(where: \.isEnabled)
++                    menu.addItem(transfer)
++                }
 +            }
 +            let close = ActionButton(title: "×") { [weak self] in
 +                guard let self else { return }

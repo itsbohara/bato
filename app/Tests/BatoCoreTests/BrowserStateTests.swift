@@ -16,6 +16,73 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertNil(state.currentWorkspace.activeEntryID)
     }
 
+    func testEntryTransferPreservesFullEntryAndBothWorkspaceSelections() throws {
+        for kind in [EntryKind.pinned, .temporary] {
+            for selected in [false, true] {
+                var state = BrowserState.initial()
+                let source = state.activeWorkspaceID
+                let profile = state.currentWorkspace.profileID
+                let moved = try state.addTab(url: saved, title: "Moved page")
+                if kind == .pinned { try state.pinEntry(moved) }
+                try state.recordNavigation(entryID: moved, url: navigated, title: "Latest title")
+                let retained = try state.addTab(url: saved, title: "Retained source page")
+                if selected { try state.selectEntry(moved) }
+                let destination = try state.addWorkspace(name: "Destination", profileID: profile)
+                try state.activateWorkspace(destination)
+                let existing = try state.addTab(url: saved, title: "Destination selection")
+                if kind == .pinned { try state.pinEntry(existing) }
+                try state.activateWorkspace(source)
+                let before = state
+                let entry = try XCTUnwrap(state.visibleEntries.first(where: { $0.id == moved }))
+                XCTAssertTrue(state.canMoveEntry(moved, toWorkspace: destination))
+                try state.moveEntry(moved, toWorkspace: destination)
+                var expected = before
+                if kind == .pinned {
+                    expected.workspaces[0].pins.removeAll { $0.id == moved }
+                    expected.workspaces[1].pins.append(entry)
+                } else {
+                    expected.workspaces[0].tabs.removeAll { $0.id == moved }
+                    expected.workspaces[1].tabs.append(entry)
+                }
+                expected.workspaces[0].activeEntryID = selected ? nil : retained
+                XCTAssertEqual(state, expected)
+                XCTAssertEqual(state.workspaces[1].activeEntryID, existing)
+                let decoded = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+                try decoded.validate()
+                XCTAssertEqual(decoded, expected)
+                XCTAssertFalse(state.canMoveEntry(moved, toWorkspace: destination))
+            }
+        }
+    }
+
+    func testEntryTransferRejectsInvalidOwnershipAndDestinationsAtomically() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        let favorite = try state.addTab(url: saved, title: "Favorite")
+        try state.favoriteEntry(favorite)
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let invisible = try state.addTab(url: saved, title: "Destination-only tab")
+        let otherProfile = try state.addProfile(name: "Other Profile")
+        let isolated = try state.addWorkspace(name: "Isolated", profileID: otherProfile)
+        try state.activateWorkspace(source)
+        let before = state
+        let cases: [(UUID, UUID, BrowserStateError)] = [
+            (pin, source, .invalidSelection), (pin, isolated, .invalidSelection),
+            (pin, UUID(), .missingWorkspace), (UUID(), destination, .missingEntry),
+            (invisible, destination, .missingEntry), (favorite, destination, .invalidEntryOwnership)
+        ]
+        for (id, target, expectedError) in cases {
+            XCTAssertFalse(state.canMoveEntry(id, toWorkspace: target))
+            XCTAssertThrowsError(try state.moveEntry(id, toWorkspace: target)) { error in
+                XCTAssertEqual(error as? BrowserStateError, expectedError)
+            }
+            XCTAssertEqual(state, before)
+        }
+    }
+
     func testWorkspaceOrderingPreservesFullOrganizationAcrossProfilesAndRoundTrips() throws {
         var state = BrowserState.initial()
         let first = state.activeWorkspaceID

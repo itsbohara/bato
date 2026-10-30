@@ -295,6 +295,45 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Only local pins/tabs can move; Favorites already span their Profile's workspaces.
+    public func canMoveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
+        let source = currentWorkspace
+        guard destinationID != source.id,
+              let destination = workspaces.first(where: { $0.id == destinationID }),
+              destination.profileID == source.profileID else { return false }
+        return (source.pins + source.tabs).contains(where: { $0.id == id })
+    }
+
+    /// Transfers the entire entry without changing the active workspace or destination selection.
+    public mutating func moveEntry(_ id: UUID, toWorkspace destinationID: UUID) throws {
+        try transact { draft in
+            guard let destination = draft.workspaces.firstIndex(where: { $0.id == destinationID }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            let source = draft.currentWorkspaceIndex
+            guard destination != source,
+                  draft.workspaces[destination].profileID == draft.workspaces[source].profileID else {
+                throw BrowserStateError.invalidSelection
+            }
+            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            switch entry.kind {
+            case .favorite:
+                throw BrowserStateError.invalidEntryOwnership
+            case .pinned:
+                draft.workspaces[source].pins.removeAll { $0.id == id }
+                draft.workspaces[destination].pins.append(entry)
+            case .temporary:
+                draft.workspaces[source].tabs.removeAll { $0.id == id }
+                draft.workspaces[destination].tabs.append(entry)
+            }
+            if draft.workspaces[source].activeEntryID == id {
+                draft.workspaces[source].activeEntryID = nil
+            }
+        }
+    }
+
     public mutating func pinEntry(_ id: UUID) throws {
         try transact { draft in
             guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }

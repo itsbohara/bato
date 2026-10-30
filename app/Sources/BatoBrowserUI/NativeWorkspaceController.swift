@@ -289,6 +289,27 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 }
                 moveDown.isEnabled = runtime.state.canMoveEntry(page.id, direction: .down)
                 menu.addItem(moveDown)
+                if page.kind != .favorite {
+                    menu.addItem(.separator())
+                    let transfer = NSMenuItem(title: "Move to Workspace", action: nil, keyEquivalent: "")
+                    let destinations = NSMenu()
+                    destinations.autoenablesItems = false
+                    let workspace = runtime.state.currentWorkspace
+                    let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
+                    for destination in runtime.state.workspaces
+                        where destination.id != workspace.id && destination.profileID == workspace.profileID {
+                        let destinationID = destination.id
+                        let item = ActionMenuItem(title: destination.name) { [weak self] in
+                            guard let self else { return }
+                            self.perform { self.runtime.moveEntry(page.id, toWorkspace: destinationID) }
+                        }
+                        item.isEnabled = !isClosing && runtime.state.canMoveEntry(page.id, toWorkspace: destinationID)
+                        destinations.addItem(item)
+                    }
+                    transfer.submenu = destinations
+                    transfer.isEnabled = destinations.items.contains(where: \.isEnabled)
+                    menu.addItem(transfer)
+                }
             }
             let close = ActionButton(title: "×") { [weak self] in
                 guard let self else { return }

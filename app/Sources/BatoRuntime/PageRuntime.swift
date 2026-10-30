@@ -116,6 +116,19 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
     }
 
+    /// Moving an active entry hides it after commit; background moves leave focus untouched.
+    @discardableResult
+    public func moveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
+        guard !pendingClose.contains(where: { $0.entryID == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        let movesSelection = state.currentWorkspace.activeEntryID == id
+        return change(reconcileSelection: movesSelection) {
+            try $0.moveEntry(id, toWorkspace: destinationID)
+        }
+    }
+
     @discardableResult
     public func pinEntry(_ id: UUID) -> Bool {
         change { try $0.pinEntry(id) }
