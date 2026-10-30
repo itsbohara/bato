@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-29",
+  "date": "2026-10-30",
   "engine": {
     "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
     "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
@@ -83,16 +83,100 @@
       "client_remaining_on_final_detach": 0,
       "message_loop_returned": true,
       "cef_shutdown_completed": true
+    },
+    {
+      "id": "native-slot-v4",
+      "result": "bounded inward window resize, keyboard split resize and modal cancellation pass",
+      "exit_code": 0,
+      "window_screenshot_dimensions_before": [
+        1200,
+        1005
+      ],
+      "window_screenshot_dimensions_after": [
+        982,
+        823
+      ],
+      "slot_width_points": 260,
+      "native_mouse_after_resize": true,
+      "split_divider_x_before": 621,
+      "split_divider_x_after_two_right_keys": 721,
+      "split_divider_x_after_two_left_keys": 621,
+      "resize_slider_tab_focused": true,
+      "pointer_split_drag": "no observable change",
+      "tab_modal_confirmation_cancelled": true,
+      "native_counter_after_cancel": 2,
+      "page_activity_after_cancel": 1,
+      "background_native_rejection": "unverified: modal-only snapshot",
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
+    },
+    {
+      "id": "native-slot-v5",
+      "result": "three command-line real extensions loaded; popup attempts incomplete; clean exit",
+      "exit_code": 0,
+      "real_extensions": [
+        "Bitwarden 2026.10.0",
+        "AdGuard 5.5.3.3",
+        "MetaMask 13.54.0.0"
+      ],
+      "archives_and_extracted_entries_match_lock": true,
+      "bitwarden_adguard_toolbar_actions": "transient icon observed, no visible popup before later actions",
+      "metamask": "side panel initially blank, then onboarding tab rendered",
+      "native_mouse_action": true,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
+    },
+    {
+      "id": "native-slot-v5-restart",
+      "result": "SIGABRT while restoring command-line AdGuard DNR allocation",
+      "exit_code": -6,
+      "assertion": "allocated_global_rule_count_ >= old_allocated_rule_count",
+      "values": [
+        0,
+        40804
+      ]
+    },
+    {
+      "id": "native-slot-v5-control",
+      "result": "same SIGABRT with native-slot and reservation flags omitted",
+      "exit_code": -6,
+      "values": [
+        0,
+        40804
+      ]
+    },
+    {
+      "id": "native-slot-v6",
+      "result": "persisted unpacked AdGuard popup input and clean shutdown pass",
+      "exit_code": 0,
+      "installation": "chrome://extensions Load unpacked, manifest location4",
+      "dnr_allocation": 40804,
+      "command_line_extension_flags": false,
+      "real_popup_rendered": true,
+      "real_mouse_statistics_tab": true,
+      "native_mouse_after_popup": true,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
+    },
+    {
+      "id": "native-slot-v6-restart",
+      "result": "persisted unpacked AdGuard restored, popup rendered, clean shutdown pass",
+      "exit_code": 0,
+      "command_line_extension_flags": false,
+      "real_popup_rendered": true,
+      "native_mouse_after_popup": true,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true
     }
   ],
   "unverified": [
-    "Free resize and split divider drags produced no observable geometry change; not passed",
+    "Split divider pointer drags and outward window drags produced no observable change; inward corner resize and keyboard divider resize passed narrowly",
     "Minimum sizes and display/scale changes",
     "Explicit native AX parent/frame attributes beyond observed tree nesting and visual bounds",
     "Background native input rejection during active modal (tool exposed dialog only)",
-    "Tab-modal dialogs and focus traversal of all native controls",
+    "Tab-modal background input rejection and focus traversal of all native controls",
     "Moving tabs between windows",
-    "Real Bitwarden/AdGuard/MetaMask popup and focused-pane behavior",
+    "Bitwarden/MetaMask popup and all real extension focused-split-pane behavior; AdGuard single-pane popup passed",
     "Production Keychain, signing, performance and engine foundation"
   ],
   "privacy": "Synthetic pages and mock Profiles only. Raw logs, Profiles and archived failed patches remain in dedicated SSD workspace; entered text is neither logged nor persisted by client."

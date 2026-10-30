@@ -31,7 +31,7 @@ Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILIT
 
 ### Latest source-native checkpoint
 
-[Registered native-slot results](spikes/engine-native-slot/RESULTS.md) now establish bounded real Swift input/focus in the normal Chrome window, native split/synthetic extension coexistence, fullscreen restoration and two-window teardown. The production gate remains open: drag/resize observability, modal blocking, explicit AX geometry and real extension popup/focused-pane behavior require acceptance. Use the dedicated native_slot.py overlay runner; original base guards must stay intact.
+[Registered native-slot results](spikes/engine-native-slot/RESULTS.md) now establish bounded real Swift input/focus in the normal Chrome window, native split/synthetic extension coexistence, fullscreen restoration and two-window teardown. Follow-up now passes one inward window resize, keyboard split resize and single-pane AdGuard popup/input across persisted-unpacked clean restart. The production gate remains open: pointer divider/arbitrary resize, modal blocking, explicit AX geometry, Bitwarden/MetaMask popups and real extension focused-pane behavior require acceptance. See the retained command-line AdGuard restart failure before reusing its v5 Profile. Use the dedicated native_slot.py overlay runner; original base guards must stay intact.
 
 ### Next bounded engineering tasks
 

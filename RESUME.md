@@ -2,6 +2,16 @@
 
 Checkpoint: 2026-10-29, after successful source compilation and unlocked runtime tests. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
+## Latest follow-up: resize and persisted AdGuard popup
+
+On2026-10-30, v4 passed one inward corner resize1200×1005→982×823 with the260-point slot and working native input. Tab-focused split slider +Righttwice moved divider100points; Lefttwice restored. Pointer divider/outward window drags remain unresolved. New modal.html real confirmation Cancel restored native/page input; background modal rejection still unverified due dialog-only capture.
+
+v5 loaded all3 pinned real extensions (archive/extracted bytes verified), then clean Quit passed. Bitwarden/AdGuard initial popup attempts incomplete; MetaMask sidepanel→onboarding. Same command-line-loaded Profile restart SIGABRT at global_rules_tracker.cc112 (0vs40804); same failure without native-slot/reservation flags. Read EXTENSION-RESTART.md. Preserve failingProfile; no assertion/prefediting.
+
+v6 installed official AdGuard via browser Load unpacked (location4,allocation40804), no extension startup flags. Real popup rendered, real mouse switched toStatistics, native action afterward worked. Clean Quit→same-provider restart restored popup/native input; final naturalexit0. Single-pane AdGuard popup/persistence passed; filtering/storeupdates/focusedsplit/Bitwarden/MetaMask remain open. No engine rebuild/source changes this follow-up. New Profiles/logs SSD. No owned browser/build remains.
+
+Next: install Bitwarden/MetaMask through persisted paths, allow popup loading interval, test focused split behavior; address pointer divider/modal diagnostic observability. v6Profile contains only synthetic AdGuard state, same mock provider required.
+
 ## Latest checkpoint: native Swift slot input passed
 
 Read `spikes/engine-native-slot/RESULTS.md` and runtime-evidence.json first. An engine-owned NativeViewHost in the normal Chrome window now accepts real mouse clicks, Swift field editing and native↔Chrome focus handoff. Actual AX exposes its group/controls. Fullscreen hides/restores it; native split and synthetic extension options/menu coexist. Quit veto, beforeunload Cancel and approved Leave completed natural exit0 with detach-once. A second launch/two-window run proved separate slots, sibling close isolation and final clean shutdown. No production foundation selected.

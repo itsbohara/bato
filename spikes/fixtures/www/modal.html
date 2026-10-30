@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato tab-modal fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>Tab-modal input blocking</h1>
+<p>These synthetic dialogs open only after a real button click. This page sends nothing and stores nothing.</p>
+<button id="show-alert">Show alert</button>
+<button id="show-confirm">Show confirm</button>
+<button id="activity">Check page is still usable</button>
+<output id="modal-status" aria-live="polite"></output>
+<p>While a dialog is open, check native control access and focus traversal. Dismiss the alert or cancel the confirmation, then check that native controls and this page's activity counter work again.</p>
+</main><script src="modal.js"></script></html>
