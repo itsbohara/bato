@@ -16,6 +16,72 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertNil(state.currentWorkspace.activeEntryID)
     }
 
+    func testWorkspaceOrderingPreservesFullOrganizationAcrossProfilesAndRoundTrips() throws {
+        var state = BrowserState.initial()
+        let first = state.activeWorkspaceID
+        let profile = state.currentWorkspace.profileID
+        let favorite = try state.addTab(url: saved, title: "Shared favorite")
+        try state.favoriteEntry(favorite)
+        let pin = try state.addTab(url: saved, title: "Saved page")
+        try state.pinEntry(pin)
+        try state.recordNavigation(entryID: pin, url: navigated, title: "Navigated pin")
+        let second = try state.addWorkspace(name: "Research", profileID: profile)
+        try state.activateWorkspace(second)
+        try state.selectEntry(favorite)
+        let isolatedProfile = try state.addProfile(name: "Isolated")
+        let third = try state.addWorkspace(name: "Isolated", profileID: isolatedProfile)
+        try state.activateWorkspace(third)
+        _ = try state.addTab(url: navigated, title: "Isolated temporary")
+        try state.activateWorkspace(second)
+        let before = state
+
+        XCTAssertTrue(state.canMoveWorkspace(first, direction: .down))
+        try state.moveWorkspace(first, direction: .down)
+        var expected = before
+        expected.workspaces.swapAt(0, 1)
+        XCTAssertEqual(state, expected)
+        // Global order may cross Profile boundaries without rebinding either workspace.
+        try state.moveWorkspace(third, direction: .up)
+        expected.workspaces.swapAt(1, 2)
+        XCTAssertEqual(state, expected)
+        let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+        try restored.validate()
+        XCTAssertEqual(restored, expected)
+        try state.moveWorkspace(third, direction: .down)
+        try state.moveWorkspace(first, direction: .up)
+        XCTAssertEqual(state, before)
+    }
+
+    func testWorkspaceOrderingRejectsMissingAndBoundaryMovesAtomically() throws {
+        var state = BrowserState.initial()
+        let first = state.activeWorkspaceID
+        let initial = state
+        for direction in [WorkspaceMoveDirection.up, .down] {
+            XCTAssertFalse(state.canMoveWorkspace(first, direction: direction))
+            XCTAssertThrowsError(try state.moveWorkspace(first, direction: direction)) { error in
+                XCTAssertEqual(error as? BrowserStateError, .invalidSelection)
+            }
+            XCTAssertEqual(state, initial)
+        }
+        let last = try state.addWorkspace(name: "Last", profileID: state.currentWorkspace.profileID)
+        let before = state
+        for (id, direction) in [(first, WorkspaceMoveDirection.up), (last, .down)] {
+            XCTAssertFalse(state.canMoveWorkspace(id, direction: direction))
+            XCTAssertThrowsError(try state.moveWorkspace(id, direction: direction)) { error in
+                XCTAssertEqual(error as? BrowserStateError, .invalidSelection)
+            }
+            XCTAssertEqual(state, before)
+        }
+        let missing = UUID()
+        for direction in [WorkspaceMoveDirection.up, .down] {
+            XCTAssertFalse(state.canMoveWorkspace(missing, direction: direction))
+            XCTAssertThrowsError(try state.moveWorkspace(missing, direction: direction)) { error in
+                XCTAssertEqual(error as? BrowserStateError, .missingWorkspace)
+            }
+            XCTAssertEqual(state, before)
+        }
+    }
+
     func testAdjacentOrderingChangesOnlyItsSectionAndRoundTrips() throws {
         for kind in [EntryKind.favorite, .pinned, .temporary] {
             var state = BrowserState.initial()

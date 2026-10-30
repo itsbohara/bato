@@ -104,6 +104,12 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
     }
 
+    /// Workspace ordering must not change active pages or pending close operations.
+    @discardableResult
+    public func moveWorkspace(_ id: UUID, direction: WorkspaceMoveDirection) -> Bool {
+        change(reconcileSelection: false) { try $0.moveWorkspace(id, direction: direction) }
+    }
+
     /// Reorders organization without changing page visibility or close semantics.
     @discardableResult
     public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {

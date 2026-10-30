@@ -1,5 +1,9 @@
 import Foundation
 
+public enum WorkspaceMoveDirection: Sendable {
+    case up, down
+}
+
 public enum EntryMoveDirection: Sendable {
     case up, down
 }
@@ -204,6 +208,32 @@ public struct BrowserState: Codable, Equatable, Sendable {
             try Self.validateName(name)
             draft.workspaces[index].name = name
             draft.workspaces[index].color = color.uppercased()
+        }
+    }
+
+    /// Workspace ordering is global; ownership and active selections stay unchanged.
+    public func canMoveWorkspace(_ id: UUID, direction: WorkspaceMoveDirection) -> Bool {
+        guard let index = workspaces.firstIndex(where: { $0.id == id }) else { return false }
+        switch direction {
+        case .up: return index > 0
+        case .down: return index + 1 < workspaces.count
+        }
+    }
+
+    public mutating func moveWorkspace(_ id: UUID, direction: WorkspaceMoveDirection) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            guard draft.canMoveWorkspace(id, direction: direction) else {
+                throw BrowserStateError.invalidSelection
+            }
+            let destination: Int
+            switch direction {
+            case .up: destination = index - 1
+            case .down: destination = index + 1
+            }
+            draft.workspaces.swapAt(index, destination)
         }
     }
 

@@ -28,6 +28,102 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func workspaceOrderingCommitsBeforePublicationAndPreservesLivePendingClose() throws {
+        var state = BrowserState.initial()
+        let owner = state.activeWorkspaceID
+        let id = try state.addTab(url: start, title: "Current")
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let unloaded = try state.addTab(url: next, title: "Inactive page")
+        try state.activateWorkspace(owner)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        #expect(runtime.closeEntry(id))
+        let pages = runtime.livePages
+        let selections = engine.selections
+        var publications: [BrowserState] = []
+        runtime.onStateChange = { candidate in
+            #expect(committed.last == candidate)
+            publications.append(candidate)
+        }
+        #expect(runtime.moveWorkspace(owner, direction: .down))
+        var expected = state
+        expected.workspaces.swapAt(0, 1)
+        #expect(runtime.state == expected)
+        #expect(committed == [expected])
+        #expect(publications == [expected])
+        #expect(runtime.livePages == pages)
+        #expect(runtime.pendingClose == [page])
+        #expect(engine.visible == page)
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes == [page])
+
+        // Index changes do not redirect a subsequent engine-confirmed close.
+        runtime.receive(.closed(page))
+        #expect(runtime.pendingClose.isEmpty)
+        #expect(runtime.state.activeWorkspaceID == owner)
+        #expect(runtime.state.currentWorkspace.tabs.isEmpty)
+        #expect(runtime.state.workspaces.first(where: { $0.id == other })?.tabs.map(\.id) == [unloaded])
+        #expect(engine.created.count == 1)
+    }
+
+    @Test func workspaceOrderingKeepsUnloadedSelectionsLazyAcrossProfiles() throws {
+        var state = BrowserState.initial()
+        _ = try state.addTab(url: start, title: "Unloaded selected page")
+        let profile = try state.addProfile(name: "Unbound Profile")
+        let other = try state.addWorkspace(name: "Unbound workspace", profileID: profile)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        #expect(runtime.moveWorkspace(other, direction: .up))
+        var expected = state
+        expected.workspaces.swapAt(0, 1)
+        #expect(runtime.state == expected)
+        #expect(committed == [expected])
+        #expect(runtime.livePages.isEmpty)
+        #expect(engine.created.isEmpty)
+        #expect(engine.selections.isEmpty)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func failedOrIllegalWorkspaceOrderingPreservesStateAndEngineEffects() throws {
+        var state = BrowserState.initial()
+        let owner = state.activeWorkspaceID
+        let id = try state.addTab(url: start, title: "Current")
+        _ = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in
+            saves += 1
+            throw Failure.disk
+        })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        #expect(runtime.closeEntry(id))
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.moveWorkspace(owner, direction: .down))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(saves == 1)
+        #expect(!runtime.moveWorkspace(owner, direction: .up))
+        #expect(!runtime.moveWorkspace(UUID(), direction: .down))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saves == 1)
+        #expect(publications == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.livePages == [id: page])
+        #expect(runtime.pendingClose == [page])
+        #expect(engine.visible == page)
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes == [page])
+    }
+
     @Test func orderingCommitsBeforePublicationWithoutChangingLivePagesOrPendingClose() throws {
         var state = BrowserState.initial()
         let first = try state.addTab(url: start, title: "First")

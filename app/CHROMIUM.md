@@ -29,7 +29,7 @@ The embedded sidebar’s Edit… control opens a native sheet for the current wo
 
 The model/runtime suite now totals46 passing tests (14core,9store,3session,20runtime). Six added cases cover atomic invalid edits, stable organization/Codable roundtrip, inactive workspaces, commit-before-publication, unchanged live generations/pending closes, and failed saves without engine effects. The source host compiled the edited Swift modules in29.90s; the guarded13-file client patch roundtrip/9mirrors and527ARM64-image dependency check passed. No engine API or document version changed. Actual source-host checks passed Cancel, blank-name validation, metadata-only saves with preserved IDs, switching with an existing pin, and same-provider restart showing Research/Ocean. Both runs completed normal Quit with exit0. Runtime evidence is recorded in `spikes/engine-native-slot/workspace-customization-evidence.json`.
 
-The standalone preview retains its earlier UI; this editor is in the Chromium-connected sidebar. Multiple engine Profiles, workspace deletion/reordering, folders, split ownership and the remaining compatibility gates are separate work.
+The standalone preview retains its earlier UI; this editor is in the Chromium-connected sidebar. Multiple engine Profiles, workspace deletion, folders, split ownership and the remaining compatibility gates are separate work.
 
 
 ## Explicit saved destination updates
@@ -57,3 +57,10 @@ Move Up and Move Down are available in every sidebar entry’s context menu. The
 Boundary actions are disabled. Runtime rechecks the current section/order when the action is invoked, so a stale menu cannot move an entry into a different section. Saves commit before publication and a failed save preserves the prior order. Existing array storage represents the ordering, so no schema or engine API change is needed.
 
 68 Swift tests pass (22 core, 9 store, 3 session, 34 runtime), including six new cases across section boundaries, shared Favorites, Codable roundtrip, invalid commands, save failure, unloaded pages and pending close. Independent review found no actionable defect. The source build passed in28.61s; guarded13-file client patch roundtrip and9source mirrors passed. Actual checks passed both directions, disabled boundary commands, order-only JSON changes, and preserved page counter1 after moving its selected pin. Same-provider restart restored order/selection while the inactive pin stayed unloaded. Both normal Quit runs exited0 and preserved organization bytes;527ARM64 images passed. See `spikes/engine-native-slot/entry-order-evidence.json` for actual runtime evidence and limits. Ordering applies to Bato’s sidebar sections; the Chromium diagnostic tab strip has its own order. Drag-and-drop and cross-section moves remain separate work. Standalone preview UI is unchanged.
+
+
+## Workspace ordering
+
+The Workspace actions menu beside Edit… offers Move Workspace Up and Move Workspace Down. These adjacent moves change the global workspace picker order while retaining workspace UUIDs, Profile associations, all entries and selections. The current workspace and visible page stay active. Boundary commands are disabled, and invocation rechecks the captured workspace UUID against current organization.
+
+Order saves transactionally before publication, without creating, selecting, navigating or closing pages. Pending closes and unloaded pages retain their state. A failed save leaves the previous order intact. The existing workspace array persists order; no schema or engine API change is required. This control is in the Chromium-connected sidebar; the standalone preview UI is unchanged. See `spikes/engine-native-slot/workspace-order-evidence.json` for verification and limits.

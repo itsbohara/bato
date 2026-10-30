@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Persistent adjacent workspace ordering in the Chromium-connected native sidebar",
+  "behavior": {
+    "control": "Workspace actions beside Edit…",
+    "commands": ["Move Workspace Up", "Move Workspace Down"],
+    "ownership": "Global workspace array order, preserving each workspace's Profile association and contents",
+    "preservation": "Full workspace/Profile contents, stable IDs, active workspace and every workspace selection retained",
+    "engine": "No page create/select/close/navigation or visibility reconciliation; live handles, unloaded pages and pending closes unchanged",
+    "validation": "Boundary actions disabled; captured workspace UUID and runtime transaction revalidation prevent position-based targeting",
+    "schema_change": false,
+    "engine_api_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 73,
+      "core": 24,
+      "store": 9,
+      "session": 3,
+      "runtime": 37,
+      "new_cases": 5,
+      "result": "passed"
+    },
+    "incremental_build_seconds": 27.73,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "artifact_check": "passed, exit0",
+    "review": "Independent bounded read-only review found no actionable defect"
+  },
+  "runs": [
+    {
+      "id": "workspace-order-v1",
+      "exit_code": 0,
+      "observations": [
+        "Started with active Research second, containing modal and storage pins; Move Workspace Down disabled",
+        "Actual page activity counter advanced0→1 before moving Research Up",
+        "Move Up retained counter1, the visible page and selection; full JSON differed only by reversed workspace array",
+        "Picker displayed Research then Personal and kept Research selected; Move Workspace Up disabled at first position",
+        "Move Down restored exact initial organization bytes; final Move Up restored the exact expected reversed document",
+        "Only anchor plus selected modal created; inactive storage stayed unloaded and moves created no browsers",
+        "Standard application-menu Quit closed2 browsers, detached once, returned the message loop and completed CEF shutdown; normal exit0 and organization bytes unchanged"
+      ]
+    },
+    {
+      "id": "workspace-order-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated engine Profile and mock Keychain provider",
+        "Restored Research first then Personal, with Research selected and the same modal entry UUID and actual modal.html page URL",
+        "Full organization bytes exactly matched v1 final before restart, after restore and after final Quit",
+        "Only anchor plus selected modal created; inactive storage stayed unloaded",
+        "Standard application-menu Quit closed2 browsers, detached once, returned the message loop and completed CEF shutdown; normal exit0",
+        "No owned browser or build remains"
+      ]
+    }
+  ],
+  "limits": [
+    "Actual runtime covered two same-Profile workspaces; cross-Profile ordering, missing/boundary rejection, unloaded pages, pending closes and failed saves were covered by model/runtime tests",
+    "Drag-and-drop and standalone preview UI remain separate work",
+    "No extension tests performed; existing foundation and daily-use acceptance gates remain"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/workspace-order-* including compiler output, organization snapshots and exit receipts; synthetic engine Profile workspace-v3"
+}

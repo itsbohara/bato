@@ -15,6 +15,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private let addressField = NSTextField(string: "")
     private let entries = SidebarEntries()
     private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let workspaceActions = NSButton(frame: .zero)
     private let profileLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var workspaceIDs: [UUID] = []
@@ -137,8 +138,18 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         workspaceEdit.setAccessibilityLabel("Edit workspace")
         workspaceEdit.setAccessibilityIdentifier("bato-edit-workspace")
         workspaceEdit.toolTip = "Edit workspace name and color"
+        workspaceActions.title = "…"
+        workspaceActions.bezelStyle = .rounded
+        workspaceActions.target = self
+        workspaceActions.action = #selector(showWorkspaceActions)
+        workspaceActions.setAccessibilityLabel("Workspace actions")
+        workspaceActions.setAccessibilityIdentifier("bato-workspace-actions")
+        workspaceActions.toolTip = "Reorder this workspace"
+        let workspaceActionRow = NSStackView(views: [workspaceEdit, workspaceActions])
+        workspaceActionRow.orientation = .horizontal
+        workspaceActionRow.spacing = 6
         let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
-        let workspaceControls = NSStackView(views: [workspaceRow, workspaceEdit])
+        let workspaceControls = NSStackView(views: [workspaceRow, workspaceActionRow])
         workspaceControls.orientation = .vertical
         workspaceControls.alignment = .leading
         workspaceControls.spacing = 5
@@ -320,6 +331,30 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         // when that commit added the entry; preserve text on a failed save.
         if runtime.state != before { addressField.stringValue = "" }
         render()
+    }
+
+    @objc private func showWorkspaceActions() {
+        guard hasStarted, workspaceEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let id = runtime.state.activeWorkspaceID
+        requestNativeFocus?()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        // Capture the workspace, not its position or a later active selection.
+        // The runtime revalidates its position when the action is invoked.
+        let moveUp = ActionMenuItem(title: "Move Workspace Up") { [weak self] in
+            guard let self else { return }
+            self.perform { self.runtime.moveWorkspace(id, direction: .up) }
+        }
+        moveUp.isEnabled = runtime.state.canMoveWorkspace(id, direction: .up)
+        menu.addItem(moveUp)
+        let moveDown = ActionMenuItem(title: "Move Workspace Down") { [weak self] in
+            guard let self else { return }
+            self.perform { self.runtime.moveWorkspace(id, direction: .down) }
+        }
+        moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
+        menu.addItem(moveDown)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
     }
 
     private func editWorkspace() {
