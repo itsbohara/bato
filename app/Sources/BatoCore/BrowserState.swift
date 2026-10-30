@@ -190,6 +190,19 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Edits organization metadata without changing ownership, order or selection.
+    public mutating func updateWorkspace(_ id: UUID, name: String, color: String) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateName(name)
+            draft.workspaces[index].name = name
+            draft.workspaces[index].color = color.uppercased()
+        }
+    }
+
     @discardableResult
     public mutating func addTab(url: URL, title: String) throws -> UUID {
         try transact { draft in

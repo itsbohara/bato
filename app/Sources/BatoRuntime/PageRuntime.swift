@@ -97,6 +97,12 @@ public final class PageRuntime {
         }
     }
 
+    /// A metadata edit must not refocus or recreate the current engine page.
+    @discardableResult
+    public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
+        change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
+    }
+
     @discardableResult
     public func pinEntry(_ id: UUID) -> Bool {
         change { try $0.pinEntry(id) }
@@ -200,7 +206,8 @@ public final class PageRuntime {
         state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }
     }
 
-    private func change(_ mutate: (inout BrowserState) throws -> Void) -> Bool {
+    private func change(reconcileSelection: Bool = true,
+                        _ mutate: (inout BrowserState) throws -> Void) -> Bool {
         var candidate = state
         do {
             try mutate(&candidate)
@@ -214,7 +221,7 @@ public final class PageRuntime {
             return false
         }
         guard save(candidate) else { return false }
-        return showSelection()
+        return reconcileSelection ? showSelection() : true
     }
 
     private func save(_ candidate: BrowserState) -> Bool {

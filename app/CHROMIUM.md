@@ -21,3 +21,12 @@ The v3 synthetic run created a real page on fresh startup, exited normally, and 
 Forty Swift tests and eight overlay/patch tests pass. See the source host's workspace evidence for retained failures and remaining limits. This does not select a production foundation or establish daily-use readiness.
 
 The keyboard follow-up passed page-focused default-dialog Cancel/Leave, working page input after Cancel, untracked Chrome tab closure without organization changes, and final normal exit0. It exercised no extensions. See `spikes/engine-native-slot/keyboard-evidence.json` and the workspace report for retained intermediate failures and exact limits.
+
+
+## Workspace customization
+
+The embedded sidebar’s Edit… control opens a native sheet for the current workspace name and color. Save commits both fields together; Cancel leaves organization unchanged. Six named colors are available, and an existing custom hex color is retained if no replacement is chosen. Workspace identity, Profile binding, page entries and selections remain unchanged. Metadata edits do not create, select or close engine pages. Sidebar tint and selected-row color follow the current workspace.
+
+The model/runtime suite now totals46 passing tests (14core,9store,3session,20runtime). Six added cases cover atomic invalid edits, stable organization/Codable roundtrip, inactive workspaces, commit-before-publication, unchanged live generations/pending closes, and failed saves without engine effects. The source host compiled the edited Swift modules in29.90s; the guarded13-file client patch roundtrip/9mirrors and527ARM64-image dependency check passed. No engine API or document version changed. Actual source-host checks passed Cancel, blank-name validation, metadata-only saves with preserved IDs, switching with an existing pin, and same-provider restart showing Research/Ocean. Both runs completed normal Quit with exit0. Runtime evidence is recorded in `spikes/engine-native-slot/workspace-customization-evidence.json`.
+
+The standalone preview retains its earlier UI; this editor is in the Chromium-connected sidebar. Multiple engine Profiles, workspace deletion/reordering, folders, split ownership and the remaining compatibility gates are separate work.

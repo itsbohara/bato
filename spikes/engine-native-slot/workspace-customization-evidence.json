@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Provisional Chromium-connected native sidebar workspace metadata editing",
+  "implementation": {
+    "entry_point": "Edit\u2026 below workspace picker",
+    "draft": "Native sheet, captured workspace UUID, name and six named color choices; existing custom color retained",
+    "commit": "Validated atomic name/color update before publication; no engine selection/creation/close",
+    "schema_change": false,
+    "engine_api_change": false
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 46,
+      "core": 14,
+      "store": 9,
+      "session": 3,
+      "runtime": 20,
+      "new_cases": 6,
+      "result": "passed"
+    },
+    "incremental_build_seconds": 29.9,
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "independent_review": "No actionable defects reported"
+  },
+  "runs": [
+    {
+      "id": "workspace-customization-v1",
+      "exit_code": 0,
+      "observations": [
+        "Cancel discarded draft and preserved exact organization bytes",
+        "Blank name kept sheet open with inline error and focused name field",
+        "Renamed empty Workspace 2 to Research and selected Ocean (#527FAD)",
+        "Saved document differed only in current workspace name/color; IDs, entries, selection unchanged",
+        "Switch to Personal loaded existing pin under its stable UUID",
+        "Changed Personal to Sage (#6D8B70) while actual page remained selected and visible",
+        "Switched back to Research; standard application-menu Quit completed loop, detached once and completed CEF shutdown",
+        "Final organization exactly matched expected metadata edits with original active workspace, entries and IDs"
+      ]
+    },
+    {
+      "id": "workspace-customization-v2",
+      "exit_code": 0,
+      "observations": [
+        "Same dedicated engine Profile and mock Keychain provider on restart",
+        "Research restored as active; native editor showed Research and Ocean",
+        "Cancel and final normal application-menu Quit left organization bytes exactly unchanged",
+        "Only initial placeholder browser created; inactive pin stayed unloaded",
+        "One detach, message-loop return and CEF shutdown completed"
+      ]
+    }
+  ],
+  "limits": [
+    "UI save-failure behavior reviewed; failed commit verified with fake engine, not disk fault injected into live host",
+    "Arbitrary custom hex preservation covered by code path/review; runtime used named palette",
+    "Standalone BatoShell preview does not expose this editor",
+    "Multi-Profile binding, workspace removal/reordering, folders, splits and existing host acceptance gates remain separate work",
+    "No extension tests performed; no production foundation or daily-use claim"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/workspace-customization-*; profiles and screenshots remain outside Git"
+}

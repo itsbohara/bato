@@ -1,5 +1,16 @@
 # Resume Bato
 
+## Latest workspace customization checkpoint2026-10-31
+
+Workspace name/color editing is complete in Chromium-connected native sidebar (Edit… below picker). Native sheet captures workspace UUID, private draft, six named colors plus preserved existing custom value, blank-name inline validation, Save/Cancel. Atomic BrowserState.updateWorkspace + PageRuntime metadata update commits before publication without create/select/close/reconcile. Current workspace tint and row selection follow saved color. No schema/engine ABI change; standalone BatoShell preview UI unchanged.
+
+46Swift tests pass(14core/9store/3session/20runtime),6newcases; independent review no actionable defect. Guarded13clientfile reverse/forward/hash roundtrip/9mirrors/21overlayfiles passed, incremental build29.90s,527ARM64artifactimages passed. Current staged source/binary match. Canonical edits require mirror staging+manifest regeneration before later source builds.
+
+Runtime customization-v1 passed Cancel/exactunchangedbytes, blankname inline validation, Workspace2→Research/Ocean metadata-only save preserving IDs/entries/selections, Personal existingpin load and Sage color save with page open. Switch back Research, normalQuit2browsers/1detach/loop+CEFshutdown/exit0. Same-provider v2restart restored Research/Ocean editor, onlyanchorbrowser created/inactivepinunloaded. Cancel+finalnormalQuit preserved exactorganizationbytes,1detach/loop+shutdown/exit0. Noownedbrowser/buildrunning. Raw SSDlogs/workspace-customization-*; source evidence spikes/engine-native-slot/workspace-customization-evidence.json. UI savefault not injected; fakeengine savefailure tested. No extension work.
+
+Knownclean mockworkspace-v3profile/state now2workspaces(Personal Sage with1pin;Research Ocean empty active),0temps. EVERYrestartmockKeychain. CUAbindingsworkspaceCustom/workspaceCustomRestart point EXITEDapps; configuredlaunchbeforegetApp. Wrapper tmp/launch-workspace-customization-v{1,2}.py cannot rerun same log;new bounded wrapper/log needed. Fixture18765live. Continue application features; do not repeat extension matrix. Useful next slice explicit saved-entry actions(update saved URL/unpin/remove), folders or workspace lifecycle; keep engine Profile creation isolated until bound contexts supported.
+
+
 ## Latest keyboard checkpoint2026-10-31
 
 Page-focused CmdW is now narrowly verified. Read spikes/engine-native-slot/keyboard-evidence.json and WORKSPACE-RESULTS.md follow-up; prior workspace evidence remains historical. Local AppKit keyDown/keyUp/flagsChanged monitoring handles exact CmdT/W only for active owned key window/knownmanagedpage or protectedanchor, sheet/modal/lifecycle checks, physical-sequence repeat suppression, deactivation+detach cleanup. Chromium menu targets/actions stay original. Embedded NativeWorkspaceController opts out of NSView-tree shortcut fallback; default API behavior unchanged for othercallers. CEF command hook checks rawactiveID and managed/anchoridentity atcaptureANDpostedexecution, droppingobsoletecommands.21overlayfiles/9mirrors/8exports unchanged; noenginepatchchange.

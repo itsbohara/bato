@@ -28,6 +28,87 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func workspaceCustomizationCommitsWithoutPageEffectsOrClosingChanges() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Current")
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        #expect(runtime.closeEntry(id))
+        let selections = engine.selections
+        var publications: [BrowserState] = []
+        runtime.onStateChange = { candidate in
+            // Publication follows the successful persistent commit.
+            #expect(committed.last == candidate)
+            publications.append(candidate)
+        }
+
+        #expect(runtime.updateWorkspace(state.activeWorkspaceID, name: " Research ", color: "#a1b2c3"))
+        #expect(runtime.updateWorkspace(other, name: "Work", color: "#000000"))
+        #expect(committed.count == 2)
+        #expect(publications == committed)
+        #expect(runtime.state.currentWorkspace.name == "Research")
+        #expect(runtime.state.currentWorkspace.color == "#A1B2C3")
+        #expect(runtime.state.currentWorkspace.activeEntryID == id)
+        #expect(runtime.livePages == [id: page])
+        #expect(runtime.pendingClose == [page])
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes == [page])
+
+        // A cancelled page close still operates on the same page after editing.
+        runtime.receive(.closeCancelled(page))
+        #expect(runtime.pendingClose.isEmpty)
+        #expect(runtime.state.currentWorkspace.activeEntryID == id)
+    }
+
+    @Test func workspaceCustomizationDoesNotLoadAnUnloadedSelection() throws {
+        var state = BrowserState.initial()
+        _ = try state.addTab(url: start, title: "Unloaded")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.updateWorkspace(state.activeWorkspaceID, name: "Work", color: "#123456"))
+        #expect(engine.created.isEmpty)
+        #expect(engine.selections.isEmpty)
+        #expect(engine.closes.isEmpty)
+        #expect(runtime.livePages.isEmpty)
+    }
+
+    @Test func failedWorkspaceCustomizationKeepsCommittedStateAndPage() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Current")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saveAttempts = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in
+            saveAttempts += 1
+            throw Failure.disk
+        })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+
+        #expect(!runtime.updateWorkspace(state.activeWorkspaceID, name: "Work", color: "#123456"))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(saveAttempts == 1)
+        #expect(runtime.state == state)
+        #expect(publications == 0)
+        #expect(runtime.livePages == [id: page])
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.closes.isEmpty)
+
+        #expect(!runtime.updateWorkspace(state.activeWorkspaceID, name: " ", color: "#123456"))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saveAttempts == 1)
+        #expect(runtime.state == state)
+        #expect(publications == 0)
+    }
+
     @Test func restoreIsLazyAndSelectionReusesPages() throws {
         var state = BrowserState.initial()
         let first = try state.addTab(url: start, title: "First")

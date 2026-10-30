@@ -19,7 +19,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var workspaceIDs: [UUID] = []
     private var hasStarted = false
-    private let accent = NSColor(srgbRed: 0.66, green: 0.40, blue: 0.43, alpha: 1)
+    private var workspaceEditor: WorkspaceEditor?
+    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 
     /// Load failures throw without replacing the existing document. The factory
     /// receives the organization Profile to bind to an explicit engine context.
@@ -132,7 +133,15 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
         }
         workspaceAdd.setAccessibilityLabel("New workspace")
+        let workspaceEdit = ActionButton(title: "Edit…") { [weak self] in self?.editWorkspace() }
+        workspaceEdit.setAccessibilityLabel("Edit workspace")
+        workspaceEdit.setAccessibilityIdentifier("bato-edit-workspace")
+        workspaceEdit.toolTip = "Edit workspace name and color"
         let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
+        let workspaceControls = NSStackView(views: [workspaceRow, workspaceEdit])
+        workspaceControls.orientation = .vertical
+        workspaceControls.alignment = .leading
+        workspaceControls.spacing = 5
         workspaceRow.orientation = .horizontal
         workspaceRow.spacing = 6
         workspacePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -142,7 +151,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 
-        let stack = NSStackView(views: [heading, address, scroll, workspaceRow, profileLabel, statusLabel])
+        let stack = NSStackView(views: [heading, address, scroll, workspaceControls, profileLabel, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 13
@@ -155,7 +164,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             address.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            workspaceRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            workspaceControls.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            workspaceRow.widthAnchor.constraint(equalTo: workspaceControls.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 70)
         ])
@@ -166,6 +176,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private func render() {
         let state = runtime.state
         let workspace = state.currentWorkspace
+        root.layer?.backgroundColor = accent.withAlphaComponent(0.09).cgColor
         for view in entries.arrangedSubviews {
             entries.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -272,6 +283,33 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         render()
     }
 
+    private func editWorkspace() {
+        guard hasStarted, workspaceEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let workspace = runtime.state.currentWorkspace
+        requestNativeFocus?()
+        // Capture the identity now: later page callbacks must not redirect an
+        // already-open editor to a different workspace.
+        let editor = WorkspaceEditor(name: workspace.name, color: workspace.color) { [weak self] name, color in
+            guard let self else { return "The workspace is no longer available." }
+            guard self.runtime.updateWorkspace(workspace.id, name: name, color: color) else {
+                switch self.runtime.lastError {
+                case .saveFailed: return "Changes couldn’t be saved. Reopen Bato to reload organization."
+                case .unsupportedProfile: return "This Profile isn’t connected to the browser yet."
+                default: return "The workspace couldn’t be updated. Check its name and try again."
+                }
+            }
+            self.render()
+            return nil
+        }
+        workspaceEditor = editor
+        guard let sheet = editor.window else { workspaceEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.workspaceEditor = nil
+        }
+        editor.focusName()
+    }
+
     @objc private func workspaceChanged() {
         let index = workspacePicker.indexOfSelectedItem
         guard workspaceIDs.indices.contains(index) else { return }
@@ -335,4 +373,119 @@ private final class ActionMenuItem: NSMenuItem {
     }
     required init(coder: NSCoder) { fatalError("Not supported") }
     @objc private func runAction() { invoke() }
+}
+
+/// Uses a sheet-local draft: Cancel never publishes organization changes.
+@MainActor
+private final class WorkspaceEditor: NSWindowController {
+    private let nameField = NSTextField(string: "")
+    private let colorPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let save: (String, String) -> String?
+    private var colors: [String] = []
+
+    init(name: String, color: String, save: @escaping (String, String) -> String?) {
+        self.save = save
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "Edit workspace"
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        nameField.stringValue = name
+        nameField.setAccessibilityLabel("Workspace name")
+        nameField.setAccessibilityIdentifier("bato-workspace-name")
+        nameField.cell?.sendsActionOnEndEditing = false
+        colorPicker.setAccessibilityLabel("Workspace color")
+        colorPicker.setAccessibilityIdentifier("bato-workspace-color")
+        let palette = [("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
+                       ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
+        for (title, value) in palette {
+            colorPicker.addItem(withTitle: title)
+            colors.append(value)
+        }
+        if let index = colors.firstIndex(where: { $0.caseInsensitiveCompare(color) == .orderedSame }) {
+            colorPicker.selectItem(at: index)
+            // Preserve the original stored representation unless changed.
+            colors[index] = color
+        } else {
+            colorPicker.addItem(withTitle: "Current color (\(color))")
+            colors.append(color)
+            colorPicker.selectItem(at: colors.count - 1)
+        }
+        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.textColor = .systemRed
+        errorLabel.setAccessibilityIdentifier("bato-workspace-edit-error")
+        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
+        cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityIdentifier("bato-workspace-edit-cancel")
+        let apply = ActionButton(title: "Save") { [weak self] in self?.saveDraft() }
+        apply.keyEquivalent = "\r"
+        apply.setAccessibilityIdentifier("bato-workspace-edit-save")
+        window.defaultButtonCell = apply.cell as? NSButtonCell
+        let spacer = NSView()
+        let buttons = NSStackView(views: [spacer, cancel, apply])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [NSTextField(labelWithString: "Name"), nameField,
+                                      NSTextField(labelWithString: "Color"), colorPicker,
+                                      errorLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView?.addSubview(stack)
+        if let content = window.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+                nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            ])
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func focusName() {
+        window?.makeFirstResponder(nameField)
+        nameField.selectText(nil)
+    }
+
+    private func saveDraft() {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            errorLabel.stringValue = "Enter a workspace name."
+            focusName()
+            return
+        }
+        let index = colorPicker.indexOfSelectedItem
+        guard colors.indices.contains(index) else { return }
+        if let error = save(name, colors[index]) {
+            errorLabel.stringValue = error
+        } else {
+            dismiss(.OK)
+        }
+    }
+
+    private func dismiss(_ response: NSApplication.ModalResponse) {
+        guard let window, let parent = window.sheetParent else { return }
+        parent.endSheet(window, returnCode: response)
+        window.orderOut(nil)
+    }
+}
+
+@MainActor
+private func workspaceColor(_ hex: String) -> NSColor {
+    // Documents are validated before presentation; fallback is defensive only.
+    guard hex.count == 7, hex.hasPrefix("#"), let value = UInt32(hex.dropFirst(), radix: 16) else {
+        return .controlAccentColor
+    }
+    return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
+                   green: CGFloat((value >> 8) & 255) / 255,
+                   blue: CGFloat(value & 255) / 255, alpha: 1)
 }

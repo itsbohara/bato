@@ -16,6 +16,58 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertNil(state.currentWorkspace.activeEntryID)
     }
 
+    func testWorkspaceCustomizationPreservesOrganizationAndRoundTrips() throws {
+        var state = BrowserState.initial()
+        let workspaceID = state.activeWorkspaceID
+        let favorite = try state.addTab(url: saved, title: "Favorite")
+        try state.favoriteEntry(favorite)
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        _ = try state.addTab(url: navigated, title: "Temporary")
+        _ = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        let before = state
+
+        try state.updateWorkspace(workspaceID, name: "  Research \n", color: "#a1b2c3")
+        var expected = before
+        expected.workspaces[0].name = "Research"
+        expected.workspaces[0].color = "#A1B2C3"
+        XCTAssertEqual(state, expected)
+        let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+        try restored.validate()
+        XCTAssertEqual(restored, expected)
+    }
+
+    func testInvalidWorkspaceCustomizationIsAtomic() throws {
+        var state = BrowserState.initial()
+        let id = state.activeWorkspaceID
+        let before = state
+        XCTAssertThrowsError(try state.updateWorkspace(id, name: " \n ", color: "#123456")) { error in
+            XCTAssertEqual(error as? BrowserStateError, .emptyName)
+        }
+        XCTAssertEqual(state, before)
+        for color in ["123456", "#123", "#12345G", "#12345678", " #123456"] {
+            XCTAssertThrowsError(try state.updateWorkspace(id, name: "Changed", color: color)) { error in
+                XCTAssertEqual(error as? BrowserStateError, .invalidColor)
+            }
+            XCTAssertEqual(state, before)
+        }
+        XCTAssertThrowsError(try state.updateWorkspace(UUID(), name: "Changed", color: "#123456")) { error in
+            XCTAssertEqual(error as? BrowserStateError, .missingWorkspace)
+        }
+        XCTAssertEqual(state, before)
+    }
+
+    func testEditingInactiveWorkspaceDoesNotActivateIt() throws {
+        var state = BrowserState.initial()
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        let before = state
+        try state.updateWorkspace(other, name: "Work", color: "#000000")
+        var expected = before
+        expected.workspaces[1].name = "Work"
+        expected.workspaces[1].color = "#000000"
+        XCTAssertEqual(state, expected)
+    }
+
     func testSavedURLSurvivesNavigationAndCloseWithoutDeletingPin() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: saved, title: "Start")
