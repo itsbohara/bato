@@ -6,16 +6,16 @@
  #include "tests/cefsimple/simple_app.h"
 +#include "tests/cefsimple/native_slot_client.h"
  #include "tests/cefsimple/simple_handler.h"
- 
+
  // Receives notifications from the application.
 @@ -220,6 +221,15 @@
      // CEF has initialized.
      CefRefPtr<SimpleApp> app(new SimpleApp);
- 
+
 +    if (command_line->HasSwitch("bato-native-slot")) {
 +      if (!command_line->HasSwitch("bato-native-reservation") ||
 +          !command_line->HasSwitch("bato-native-quit") ||
-+          !BatoRegisterNativeSlotClient()) {
++          !BatoRegisterNativeSlotClient(command_line)) {
 +        fprintf(stderr, "Bato native slot requires reservation, native Quit and matching ABI\n");
 +        return 1;
 +      }
@@ -29,24 +29,31 @@
 @@ -2189,6 +2189,10 @@
          cflags_c = invoker.cflags_c
        }
- 
+
 +      if (defined(invoker.ldflags)) {
 +        ldflags = invoker.ldflags
 +      }
 +
        info_plist_target = ":${app_name}_plist"
- 
+
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,26 @@
+@@ -2313,6 +2317,33 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
- 
+
 +  # Bato experiment only: Chromium's Mac toolchain intentionally lacks a Swift
 +  # tool. A contained action builds one application-owned library with Xcode.
 +  action("bato_native_slot_swift") {
 +    testonly = true
 +    script = "tests/cefsimple/compile_native_slot.py"
-+    inputs = [ "tests/cefsimple/NativeSlot.swift" ]
++    inputs = [
++      "tests/cefsimple/NativeSlot.swift",
++      "tests/cefsimple/WorkspaceSlot.swift",
++      "tests/cefsimple/bato/BatoCore/BrowserState.swift",
++      "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
++      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
++    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
 +      rebase_path(inputs[0], root_build_dir),
@@ -64,7 +71,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2360,19 @@
+@@ -2336,12 +2367,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -87,14 +94,21 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,458 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
++#include <map>
++#include <set>
++#include <string>
++#include "include/base/cef_callback.h"
 +#include "include/cef_browser.h"
++#include "include/cef_command_line.h"
++#include "include/cef_id_mappers.h"
 +#include "include/cef_parser.h"
 +#include "include/cef_task.h"
 +#include "include/internal/bato_native_slot.h"
++#include "include/wrapper/cef_closure_task.h"
 +#include "tests/cefsimple/native_slot_client.h"
 +
 +extern "C" void* BatoSwiftNativeSlotCreate(uint64_t token);
@@ -103,22 +117,249 @@
 +extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
 +                                              int (*advance)(uint64_t, int),
 +                                              int (*navigate)(uint64_t, const char*));
++extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
++    int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
++    int (*close)(uint64_t, int), int (*active)(uint64_t),
++    int (*native_focus)(uint64_t), int (*command_id)(int));
++extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
++extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
++    int kind, const char* url, const char* title);
 +
 +namespace {
 +using ActiveBrowserId = decltype(&bato_native_slot_active_browser_id_v1);
++using NewTab = decltype(&bato_native_slot_new_tab_v1);
++using RequestClose = decltype(&bato_native_slot_request_close_v1);
 +ActiveBrowserId g_active_browser_id = nullptr;
++NewTab g_new_tab = nullptr;
++RequestClose g_request_close = nullptr;
++bool g_workspace_enabled = false;
++int g_initial_browser_id = 0;
 +
-+// Synchronous native action only. The Swift UTF-8 pointer is copied before it
-+// leaves this call; no URL, credentials or field contents are logged.
++struct BoundPage {
++  CefRefPtr<CefBrowser> browser;
++  std::string url;
++  std::string title;
++};
++struct WorkspaceSlot {
++  CefRefPtr<CefBrowser> anchor;
++  CefRefPtr<CefRequestContext> context;
++  std::map<int, BoundPage> pages;
++  std::set<int> pending_close;
++};
++// Main-thread-only process storage. Entries and all CEF refs are explicitly
++// released on detach; a process-lifetime container avoids exit-time CEF calls.
++std::map<uint64_t, WorkspaceSlot>& WorkspaceSlots() {
++  static auto* slots = new std::map<uint64_t, WorkspaceSlot>;
++  return *slots;
++}
++
++bool ValidDestination(const char* utf8_url) {
++  if (!utf8_url) return false;
++  CefURLParts parts;
++  if (!CefParseURL(CefString(utf8_url), parts)) return false;
++  const auto scheme = CefString(&parts.scheme).ToString();
++  return (scheme == "http" || scheme == "https") && parts.host.length != 0 &&
++      parts.username.length == 0 && parts.password.length == 0;
++}
++
++bool SameWindow(CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
++  NSView* first_view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(first->GetHost()->GetWindowHandle());
++  NSView* second_view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(second->GetHost()->GetWindowHandle());
++  return first_view && second_view && first_view.window &&
++      first_view.window == second_view.window;
++}
++
++CefRefPtr<CefBrowser> CurrentPeer(uint64_t token, const WorkspaceSlot& slot) {
++  CefRefPtr<CefBrowser> peer = slot.anchor;
++  if (!peer || !peer->IsValid()) {
++    const int identifier = g_active_browser_id(token);
++    if (identifier <= 0) return nullptr;
++    peer = CefBrowserHost::GetBrowserByIdentifier(identifier);
++  }
++  return peer && peer->IsValid() && slot.context &&
++      peer->GetHost()->GetRequestContext()->IsSame(slot.context) ? peer : nullptr;
++}
++
++WorkspaceSlot* AvailableSlot(uint64_t token) {
++  if (!g_workspace_enabled || !NSThread.isMainThread ||
++      !CefCurrentlyOn(TID_UI) || !g_active_browser_id) return nullptr;
++  const int identifier = g_active_browser_id(token);
++  if (identifier <= 0) return nullptr;
++  auto found = WorkspaceSlots().find(token);
++  if (found == WorkspaceSlots().end()) return nullptr;
++  auto active = CefBrowserHost::GetBrowserByIdentifier(identifier);
++  if (!active || !active->IsValid()) return nullptr;
++  auto& slot = found->second;
++  if (!slot.context) {
++    // Only the initial browser can seed the original blank anchor. A new tab
++    // can also briefly have an empty URL, so emptiness alone is insufficient.
++    if (identifier != g_initial_browser_id) return nullptr;
++    auto frame = active->GetMainFrame();
++    if (!frame) return nullptr;
++    const auto initial_url = frame->GetURL().ToString();
++    if (!initial_url.empty() && initial_url != "about:blank") return nullptr;
++    slot.anchor = active;
++    slot.context = active->GetHost()->GetRequestContext();
++  }
++  // An anchor closed by Chrome does not change the bound engine Profile. A real
++  // page may prove same-window ownership, but must never become the blank anchor.
++  if (!active->GetHost()->GetRequestContext()->IsSame(slot.context)) return nullptr;
++  return &slot;
++}
++
++// 0 is the protected placeholder; negative means Chrome-owned/unavailable.
++int ActiveWorkspacePage(uint64_t token) {
++  auto* slot = AvailableSlot(token);
++  if (!slot) return -1;
++  const int identifier = g_active_browser_id(token);
++  if (slot->anchor && slot->anchor->GetIdentifier() == identifier) return 0;
++  return slot->pages.contains(identifier) ? identifier : -1;
++}
++
++int WorkspaceCommandId(int command) {
++  if (!CefCurrentlyOn(TID_UI)) return -1;
++  return cef_id_for_command_id_name(command == 1 ? "IDC_NEW_TAB" : "IDC_CLOSE_TAB");
++}
++
++void PostPageState(uint64_t token, int identifier, BoundPage& page) {
++  // Strings are copied before posting; no borrowed callback buffers escape.
++  const auto url = page.url;
++  const auto title = page.title;
++  CefRefPtr<CefBrowser> browser = page.browser;
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int identifier, CefRefPtr<CefBrowser> browser,
++         const std::string& url, const std::string& title) {
++        auto slot = WorkspaceSlots().find(token);
++        if (slot == WorkspaceSlots().end()) return;
++        auto found = slot->second.pages.find(identifier);
++        if (found == slot->second.pages.end() ||
++            !found->second.browser->IsSame(browser)) return;
++        BatoSwiftWorkspacePageEvent(token, identifier, 1, url.c_str(), title.c_str());
++      }, token, identifier, browser, url, title));
++}
++
++int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
++  if (!ValidDestination(utf8_url) || !g_new_tab) return 0;
++  auto* slot = AvailableSlot(token);
++  if (!slot) return 0;
++  // Copy URL and retain the same-window peer/context across Chrome callbacks.
++  const CefString url(utf8_url);
++  CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
++  CefRefPtr<CefRequestContext> context = slot->context;
++  if (!peer) return 0;
++  const int identifier = g_new_tab(token);
++  auto browser = identifier > 0 ? CefBrowserHost::GetBrowserByIdentifier(identifier) : nullptr;
++  auto current_slot = WorkspaceSlots().find(token);
++  if (!browser || !browser->IsValid() || current_slot == WorkspaceSlots().end() ||
++      browser->IsSame(peer) || !SameWindow(peer, browser) ||
++      !browser->GetHost()->GetRequestContext()->IsSame(context)) return 0;
++  auto frame = browser->GetMainFrame();
++  if (!frame || !frame->IsValid()) return 0;
++  auto& pages = current_slot->second.pages;
++  if (pages.contains(identifier)) return 0;
++  auto [found, inserted] = pages.emplace(identifier, BoundPage{browser, url.ToString(), ""});
++  if (!inserted) return 0;
++  frame->LoadURL(url);
++  // Navigation can reenter client code. Never keep an iterator across it.
++  auto still_live = WorkspaceSlots().find(token);
++  if (still_live == WorkspaceSlots().end()) return 0;
++  auto bound = still_live->second.pages.find(identifier);
++  if (bound == still_live->second.pages.end()) return 0;
++  // Bato's Swift generation binding is established when this call returns.
++  PostPageState(token, identifier, bound->second);
++  return identifier;
++}
++
++int SelectWorkspacePage(uint64_t token, int identifier) {
++  auto* slot = AvailableSlot(token);
++  if (!slot) return 0;
++  CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
++  CefRefPtr<CefRequestContext> context = slot->context;
++  if (!peer) return 0;
++  CefRefPtr<CefBrowser> browser = slot->anchor;
++  if (identifier != 0) {
++    auto found = slot->pages.find(identifier);
++    if (found == slot->pages.end()) return 0;
++    browser = found->second.browser;
++  } else if (!browser) {
++    // The user can close the blank tab through Chrome UI. Replace it lazily;
++    // the engine's new-tab gate refuses shutdown/window-close transitions.
++    if (!g_new_tab) return 0;
++    const int replacement = g_new_tab(token);
++    browser = replacement > 0 ? CefBrowserHost::GetBrowserByIdentifier(replacement) : nullptr;
++    auto current_slot = WorkspaceSlots().find(token);
++    if (!browser || !browser->IsValid() || current_slot == WorkspaceSlots().end() ||
++        !SameWindow(peer, browser) ||
++        !browser->GetHost()->GetRequestContext()->IsSame(context)) return 0;
++    auto frame = browser->GetMainFrame();
++    if (!frame || !frame->IsValid()) return 0;
++    current_slot->second.anchor = browser;
++    frame->LoadURL("about:blank");
++    // No borrowed map reference survives navigation or focus callbacks.
++    auto still_live = WorkspaceSlots().find(token);
++    if (still_live == WorkspaceSlots().end() || !still_live->second.anchor ||
++        !still_live->second.anchor->IsSame(browser)) return 0;
++  }
++  if (!browser || !browser->IsValid() || !SameWindow(peer, browser) ||
++      !browser->GetHost()->GetRequestContext()->IsSame(context)) return 0;
++  browser->GetHost()->SetFocus(true);
++  return 1;
++}
++
++int CloseWorkspacePage(uint64_t token, int identifier) {
++  auto* slot = AvailableSlot(token);
++  if (!slot || !g_request_close) return 0;
++  auto found = slot->pages.find(identifier);
++  if (found == slot->pages.end()) return 0;
++  if (!slot->pending_close.insert(identifier).second) return 1;
++  const bool accepted = g_request_close(token, identifier) == 1;
++  if (!accepted) {
++    auto still_live = WorkspaceSlots().find(token);
++    if (still_live != WorkspaceSlots().end()) still_live->second.pending_close.erase(identifier);
++  }
++  return accepted ? 1 : 0;
++}
++
++void PostLifecycleEvent(uint64_t token, int identifier, int kind) {
++  // A lifecycle callback may run inside TabStripModel mutation. Swift can
++  // select a tab, so deliver only after the engine's callback stack unwinds.
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int identifier, int kind) {
++        if (WorkspaceSlots().contains(token))
++          BatoSwiftWorkspacePageEvent(token, identifier, kind, "", "");
++      }, token, identifier, kind));
++}
++
++void CloseCancelled(void*, uint64_t token, int identifier) {
++  auto slot = WorkspaceSlots().find(token);
++  if (slot == WorkspaceSlots().end() || !slot->second.pages.contains(identifier) ||
++      slot->second.pending_close.erase(identifier) == 0) return;
++  PostLifecycleEvent(token, identifier, 3);
++}
++
++void ActiveChanged(void*, uint64_t token, int identifier) {
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int identifier) {
++        // Several tab-strip changes can occur before this task runs. Ignore
++        // older notifications rather than restoring a superseded selection.
++        auto slot = WorkspaceSlots().find(token);
++        if (slot == WorkspaceSlots().end() || !g_active_browser_id ||
++            g_active_browser_id(token) != identifier) return;
++        int selected = identifier;
++        if (slot->second.anchor && slot->second.anchor->GetIdentifier() == identifier) {
++          selected = 0;
++        } else if (!slot->second.pages.contains(identifier)) {
++          return;  // Untracked Chrome pages do not select a Bato entry.
++        }
++        BatoSwiftWorkspacePageEvent(token, selected, 6, "", "");
++      }, token, identifier));
++}
++
++// Synchronous diagnostic action only. No URL, credentials or field text logged.
 +int NavigateCurrentPage(uint64_t token, const char* utf8_url) {
 +  if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
-+      !g_active_browser_id || !utf8_url) return 0;
++      !g_active_browser_id || !ValidDestination(utf8_url)) return 0;
 +  const CefString url(utf8_url);
-+  CefURLParts parts;
-+  if (!CefParseURL(url, parts)) return 0;
-+  const auto scheme = CefString(&parts.scheme).ToString();
-+  if ((scheme != "http" && scheme != "https") || parts.host.length == 0 ||
-+      parts.username.length != 0 || parts.password.length != 0) return 0;
 +  const int identifier = g_active_browser_id(token);
 +  if (identifier <= 0) return 0;
 +  auto browser = CefBrowserHost::GetBrowserByIdentifier(identifier);
@@ -126,20 +367,129 @@
 +  auto frame = browser->GetMainFrame();
 +  if (!frame || !frame->IsValid()) return 0;
 +  frame->LoadURL(url);
-+  return 1;  // Request submitted; this does not report successful page load.
++  return 1;
 +}
 +
-+void* Create(void*, uint64_t token) { return BatoSwiftNativeSlotCreate(token); }
-+void Detached(void*, uint64_t token) { BatoSwiftNativeSlotDetached(token); }
++void* Create(void*, uint64_t token) {
++  if (g_workspace_enabled) WorkspaceSlots().try_emplace(token);
++  return BatoSwiftNativeSlotCreate(token);
++}
++void Detached(void*, uint64_t token) {
++  WorkspaceSlots().erase(token);
++  BatoSwiftNativeSlotDetached(token);
++}
 +void* FocusTarget(void*, uint64_t token) { return BatoSwiftNativeSlotFocusTarget(token); }
++}  // namespace
++
++void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
++  const int identifier = browser->GetIdentifier();
++  if (g_initial_browser_id == 0) g_initial_browser_id = identifier;
++  if (identifier != g_initial_browser_id) return;
++  // OnAfterCreated precedes SetBrowser/tab-strip attachment. Only the posted
++  // task may inspect the active window identity or request lazy restoration.
++  CefPostTask(TID_UI, base::BindOnce(
++      [](CefRefPtr<CefBrowser> browser) {
++        if (!browser->IsValid() || !g_active_browser_id) return;
++        auto frame = browser->GetMainFrame();
++        if (!frame) return;
++        const auto initial_url = frame->GetURL().ToString();
++        if (!initial_url.empty() && initial_url != "about:blank") return;
++        const int identifier = browser->GetIdentifier();
++        for (auto& [token, slot] : WorkspaceSlots()) {
++          if (slot.context || g_active_browser_id(token) != identifier) continue;
++          slot.anchor = browser;
++          slot.context = browser->GetHost()->GetRequestContext();
++          PostLifecycleEvent(token, 0, 7);
++        }
++      }, browser));
 +}
 +
-+bool BatoRegisterNativeSlotClient() {
-+  if (![NSThread isMainThread]) {
-+    return false;
++void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
++                                        const CefString& url) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
++  const int identifier = browser->GetIdentifier();
++  for (auto& [token, slot] : WorkspaceSlots()) {
++    auto found = slot.pages.find(identifier);
++    if (found == slot.pages.end()) continue;
++    found->second.url = url.ToString();
++    PostPageState(token, identifier, found->second);
++    return;
 +  }
-+  // This is the declared, matching experiment ABI at the exact bundle loaded
-+  // by CefScopedLibraryLoader. No private symbol names or window discovery.
++}
++
++void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
++                                      const CefString& title) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
++  const int identifier = browser->GetIdentifier();
++  for (auto& [token, slot] : WorkspaceSlots()) {
++    auto found = slot.pages.find(identifier);
++    if (found == slot.pages.end()) continue;
++    found->second.title = title.ToString();
++    PostPageState(token, identifier, found->second);
++    return;
++  }
++}
++
++void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
++  const int identifier = browser->GetIdentifier();
++  for (auto& [token, slot] : WorkspaceSlots()) {
++    if (slot.anchor && slot.anchor->IsSame(browser)) {
++      slot.anchor = nullptr;
++      // Keep the original Profile identity for safe lazy anchor replacement.
++      PostLifecycleEvent(token, 0, 5);
++    }
++    auto found = slot.pages.find(identifier);
++    if (found == slot.pages.end()) continue;
++    const bool requested = slot.pending_close.erase(identifier) != 0;
++    // Drop all refs/bindings before Swift can synchronously select/create again.
++    slot.pages.erase(found);
++    PostLifecycleEvent(token, identifier, requested ? 2 : 4);
++    return;
++  }
++}
++
++bool BatoWorkspaceIsAnchor(CefRefPtr<CefBrowser> browser) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI) || !browser) return false;
++  for (const auto& [token, slot] : WorkspaceSlots()) {
++    if (slot.anchor && slot.anchor->IsSame(browser)) return true;
++  }
++  return false;
++}
++
++bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return false;
++  int command = 0;
++  if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB")) command = 1;
++  if (command_id == cef_id_for_command_id_name("IDC_CLOSE_TAB")) command = 2;
++  if (!command || !browser || !browser->IsValid()) return false;
++  for (const auto& [token, slot] : WorkspaceSlots()) {
++    auto* available = AvailableSlot(token);
++    if (!available) continue;
++    auto peer = CurrentPeer(token, *available);
++    if (!peer || !SameWindow(peer, browser) ||
++        !browser->GetHost()->GetRequestContext()->IsSame(available->context)) continue;
++    int identifier = browser->GetIdentifier();
++    if (command == 2) {
++      if (available->anchor && available->anchor->IsSame(browser)) {
++        identifier = 0;  // Closing the blank placeholder never closes a Bato entry.
++      } else if (!available->pages.contains(identifier)) {
++        return false;  // Let Chrome close its own untracked tab.
++      }
++    }
++    CefPostTask(TID_UI, base::BindOnce(
++        [](uint64_t token, int command, int identifier) {
++          if (WorkspaceSlots().contains(token))
++            BatoSwiftWorkspaceCommand(token, command, identifier);
++        }, token, command, identifier));
++    return true;
++  }
++  return false;
++}
++
++bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
++  if (![NSThread isMainThread] || !command_line) return false;
 +  NSString* path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
 +      @"Contents/Frameworks/Chromium Embedded Framework.framework"];
 +  NSString* binary = [[path stringByAppendingPathComponent:@"Chromium Embedded Framework"]
@@ -155,12 +505,40 @@
 +      dlsym(loaded, "bato_native_slot_focus_browser_v1"));
 +  auto advance = reinterpret_cast<decltype(&bato_native_slot_advance_focus_v1)>(
 +      dlsym(loaded, "bato_native_slot_advance_focus_v1"));
++  auto native_focus = reinterpret_cast<decltype(&bato_native_slot_focus_native_v1)>(
++      dlsym(loaded, "bato_native_slot_focus_native_v1"));
 +  auto active_browser_id = reinterpret_cast<ActiveBrowserId>(
 +      dlsym(loaded, "bato_native_slot_active_browser_id_v1"));
-+  dlclose(loaded);  // CefScopedLibraryLoader retains the framework until shutdown.
++  auto new_tab = reinterpret_cast<NewTab>(dlsym(loaded, "bato_native_slot_new_tab_v1"));
++  auto request_close = reinterpret_cast<RequestClose>(
++      dlsym(loaded, "bato_native_slot_request_close_v1"));
++  auto register_pages = reinterpret_cast<decltype(&bato_native_slot_register_page_callbacks_v1)>(
++      dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
++  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
 +    return false;
++  }
++  const auto directory = command_line->GetSwitchValue("bato-workspace-state").ToString();
++  g_workspace_enabled = command_line->HasSwitch("bato-workspace-state");
++  if (g_workspace_enabled) {
++    if (directory.empty() || directory.front() != '/' || !new_tab || !native_focus ||
++        !request_close || !register_pages ||
++        command_line->GetSwitchValue("url").ToString() != "about:blank") {
++      fprintf(stderr, "{\"event\":\"workspace-client-configuration-refused\"}\n");
++      return false;
++    }
++    BatoPageCallbacksV1 page_callbacks = {};
++    page_callbacks.size = sizeof(page_callbacks);
++    page_callbacks.version = 1;
++    page_callbacks.close_cancelled = CloseCancelled;
++    page_callbacks.active_changed = ActiveChanged;
++    if (register_pages(&page_callbacks) != 1) return false;
++    g_new_tab = new_tab;
++    g_request_close = request_close;
++    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
++                                 SelectWorkspacePage, CloseWorkspacePage,
++                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId);
 +  }
 +  BatoNativeSlotCallbacksV1 callbacks = {};
 +  callbacks.size = sizeof(callbacks);
@@ -177,15 +555,26 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,16 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
++#include "include/cef_browser.h"
++#include "include/cef_command_line.h"
 +// Called once after loading the matching framework, before CefInitialize.
-+bool BatoRegisterNativeSlotClient();
++bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line);
++// All hooks run on the CEF UI thread. Strings are copied before deferred delivery.
++bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id);
++bool BatoWorkspaceIsAnchor(CefRefPtr<CefBrowser> browser);
++void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser);
++void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
++                                        const CefString& url);
++void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
++                                      const CefString& title);
++void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,43 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -202,18 +591,36 @@
 +        raise SystemExit('Refusing unexpected native-slot Swift source/output')
 +    output.parent.mkdir(parents=True, exist_ok=True)
 +    sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
++    modules = output.parent / 'bato-modules'
++    modules.mkdir(exist_ok=True)
++    common = ['xcrun', 'swiftc', '-parse-as-library', '-target', 'arm64-apple-macos13.0',
++              '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
++              '-I', str(modules)]
++    objects = []
++    for name, filename in [('BatoCore', 'BrowserState.swift'),
++                           ('BatoPersistence', 'OrganizationStore.swift'),
++                           ('BatoRuntime', 'PageRuntime.swift'),
++                           ('BatoBrowserUI', 'NativeWorkspaceController.swift')]:
++        module_source = source.parent / 'bato' / name / filename
++        obj = modules / (name + '.o')
++        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
++                                 '-emit-object', '-emit-module', '-module-name', name,
++                                 '-emit-module-path', str(modules / (name + '.swiftmodule')),
++                                 str(module_source), '-o', str(obj)], check=True)
++        objects.append(str(obj))
 +    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-emit-library',
 +                    '-module-name', 'BatoNativeSlot', '-target', 'arm64-apple-macos13.0',
 +                    '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
 +                    '-Xlinker', '-install_name', '-Xlinker', '@rpath/libBatoNativeSlot.dylib',
-+                    str(source), '-o', str(output)], check=True)
++                    '-I', str(modules), str(source), str(source.parent / 'WorkspaceSlot.swift'),
++                    *objects, '-o', str(output)], check=True)
 +
 +
 +if __name__ == '__main__':
 +    main()
 --- /dev/null
 +++ b/cef/tests/cefsimple/NativeSlot.swift
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,155 @@
 +import AppKit
 +
 +private typealias FocusBrowser = @convention(c) (UInt64) -> Int32
@@ -337,8 +744,11 @@
 +}
 +
 +@_cdecl("BatoSwiftNativeSlotCreate")
-+public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
++@MainActor public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
 +    precondition(Thread.isMainThread)
++    if workspaceModeEnabled() {
++        return createWorkspaceSlot(token)
++    }
 +    guard slots[token] == nil else { return nil }
 +    let slot = Slot(token: token)
 +    slots[token] = slot
@@ -346,15 +756,1500 @@
 +}
 +
 +@_cdecl("BatoSwiftNativeSlotFocusTarget")
-+public func focusTarget(_ token: UInt64) -> UnsafeMutableRawPointer? {
++@MainActor public func focusTarget(_ token: UInt64) -> UnsafeMutableRawPointer? {
 +    precondition(Thread.isMainThread)
++    if workspaceModeEnabled() {
++        return focusWorkspaceSlot(token)
++    }
 +    guard let slot = slots[token] else { return nil }
 +    return Unmanaged.passUnretained(slot.field).toOpaque()
 +}
 +
 +@_cdecl("BatoSwiftNativeSlotDetached")
-+public func detached(_ token: UInt64) {
++@MainActor public func detached(_ token: UInt64) {
 +    precondition(Thread.isMainThread)
++    if workspaceModeEnabled() {
++        detachWorkspaceSlot(token)
++        report("slot-client-detached", token: token)
++        return
++    }
 +    guard slots.removeValue(forKey: token) != nil else { return }
 +    report("slot-client-detached", token: token, count: slots.count)
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/WorkspaceSlot.swift
+@@ -0,0 +1,240 @@
++import AppKit
++import BatoCore
++import BatoRuntime
++import BatoBrowserUI
++
++private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
++private typealias CommandID = @convention(c) (Int32) -> Int32
++private typealias ActivePage = @convention(c) (UInt64) -> Int32
++private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
++@MainActor private var workspaceDirectory: URL?
++@MainActor private var createPage: CreatePage?
++@MainActor private var selectPage: PageAction?
++@MainActor private var closePage: PageAction?
++@MainActor private var activePage: ActivePage?
++@MainActor private var nativeFocus: ActivePage?
++@MainActor private var commandID: CommandID?
++@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
++
++@MainActor private final class WorkspaceEngine: PageEngine {
++    let supportedProfileIDs: Set<UUID>
++    let token: UInt64
++    var pages: [Int32: LivePage] = [:]
++    var onEvent: ((PageEvent) -> Void)?
++    var onAnchorLost: (() -> Void)?
++    init(token: UInt64, profileID: UUID) {
++        self.token = token
++        supportedProfileIDs = [profileID]
++    }
++    func create(_ page: LivePage, url: URL) -> Bool {
++        guard supportedProfileIDs.contains(page.profileID) else { return false }
++        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
++        guard id > 0, pages[id] == nil else { return false }
++        pages[id] = page
++        return true
++    }
++    func select(_ page: LivePage?) {
++        let id: Int32
++        if let page {
++            guard let found = pages.first(where: { $0.value == page }) else {
++                _ = selectPage?(token, 0)
++                return
++            }
++            id = found.key
++        } else { id = 0 }
++        _ = selectPage?(token, id)
++    }
++    func requestClose(_ page: LivePage) {
++        guard let id = pages.first(where: { $0.value == page })?.key else { return }
++        if closePage?(token, id) != 1 { onEvent?(.closeCancelled(page)) }
++    }
++    func receive(id: Int32, kind: Int32, url: String, title: String) {
++        if kind == 5 || kind == 7 { onAnchorLost?(); return }
++        if kind == 6 && id == 0 { onEvent?(.selectionCleared); return }
++        guard let page = pages[id] else { return }
++        switch kind {
++        case 6: onEvent?(.selected(page))
++        case 1:
++            guard let address = URL(string: url) else { return }
++            onEvent?(.navigation(page, url: address, title: title))
++        case 2:
++            pages.removeValue(forKey: id)
++            onEvent?(.closed(page))
++        case 3: onEvent?(.closeCancelled(page))
++        case 4:
++            pages.removeValue(forKey: id)
++            onEvent?(.unloaded(page))
++        default: break
++        }
++    }
++}
++
++@MainActor private final class AttachedWorkspaceRoot: NSView {
++    var onAttach: (() -> Void)?
++    override var isFlipped: Bool { true }
++    override func viewDidMoveToWindow() {
++        super.viewDidMoveToWindow()
++        guard window != nil else { return }
++        // CEF completes tab/window attachment after the slot factory returns.
++        DispatchQueue.main.async { [weak self] in
++            guard let self, self.window != nil else { return }
++            self.onAttach?()
++        }
++    }
++}
++
++@MainActor private final class WorkspaceSlot {
++    let root = AttachedWorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
++    var controller: NativeWorkspaceController?
++    var engine: WorkspaceEngine?
++    var menuRouter: WorkspaceMenuRouter?
++    init(token: UInt64, directory: URL) {
++        do {
++            let controller = try NativeWorkspaceController(directory: directory) { profileID in
++                let engine = WorkspaceEngine(token: token, profileID: profileID)
++                self.engine = engine
++                return engine
++            }
++            self.controller = controller
++            controller.requestNativeFocus = { _ = nativeFocus?(token) }
++            engine?.onEvent = { [weak controller] event in controller?.receive(event) }
++            engine?.onAnchorLost = { [weak controller] in _ = controller?.runtime.start() }
++            controller.root.translatesAutoresizingMaskIntoConstraints = false
++            root.addSubview(controller.root)
++            NSLayoutConstraint.activate([
++                controller.root.leadingAnchor.constraint(equalTo: root.leadingAnchor),
++                controller.root.trailingAnchor.constraint(equalTo: root.trailingAnchor),
++                controller.root.topAnchor.constraint(equalTo: root.topAnchor),
++                controller.root.bottomAnchor.constraint(equalTo: root.bottomAnchor)
++            ])
++            let router = WorkspaceMenuRouter(token: token, root: root)
++            menuRouter = router
++            root.onAttach = { [weak controller, weak router] in
++                controller?.start()
++                router?.install()
++            }
++        } catch {
++            let message = NSTextField(wrappingLabelWithString:
++                "Organization unavailable. Its existing file has been left intact. Close Bato and check the file before reopening.")
++            message.frame = NSRect(x: 14, y: 24, width: 232, height: 130)
++            root.addSubview(message)
++        }
++    }
++}
++
++@_cdecl("BatoSwiftWorkspaceConfigure")
++@MainActor public func configureWorkspace(_ directory: UnsafePointer<CChar>?,
++    _ create: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32,
++    _ select: @escaping @convention(c) (UInt64, Int32) -> Int32,
++    _ close: @escaping @convention(c) (UInt64, Int32) -> Int32,
++    _ active: @escaping @convention(c) (UInt64) -> Int32,
++    _ focus: @escaping @convention(c) (UInt64) -> Int32,
++    _ command: @escaping @convention(c) (Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    guard let directory else { return }
++    let path = String(cString: directory)
++    guard path.hasPrefix("/"), workspaceDirectory == nil else { return }
++    workspaceDirectory = URL(fileURLWithPath: path, isDirectory: true)
++    createPage = create
++    selectPage = select
++    closePage = close
++    activePage = active
++    nativeFocus = focus
++    commandID = command
++}
++
++@MainActor func workspaceModeEnabled() -> Bool { workspaceDirectory != nil }
++
++@MainActor func createWorkspaceSlot(_ token: UInt64) -> UnsafeMutableRawPointer? {
++    guard let directory = workspaceDirectory, workspaceSlots.isEmpty else { return nil }
++    let slot = WorkspaceSlot(token: token, directory: directory)
++    workspaceSlots[token] = slot
++    return Unmanaged.passUnretained(slot.root).toOpaque()
++}
++@MainActor func focusWorkspaceSlot(_ token: UInt64) -> UnsafeMutableRawPointer? {
++    guard let slot = workspaceSlots[token] else { return nil }
++    return Unmanaged.passUnretained(slot.controller?.focusTarget ?? slot.root).toOpaque()
++}
++@MainActor func detachWorkspaceSlot(_ token: UInt64) {
++    workspaceSlots[token]?.menuRouter?.restore()
++    workspaceSlots.removeValue(forKey: token)
++}
++
++@_cdecl("BatoSwiftWorkspacePageEvent")
++@MainActor public func workspacePageEvent(_ token: UInt64, _ browserID: Int32, _ kind: Int32,
++                                        _ url: UnsafePointer<CChar>?, _ title: UnsafePointer<CChar>?) {
++    precondition(Thread.isMainThread)
++    workspaceSlots[token]?.engine?.receive(id: browserID, kind: kind,
++        url: url.map { String(cString: $0) } ?? "", title: title.map { String(cString: $0) } ?? "")
++}
++
++@_cdecl("BatoSwiftWorkspaceCommand")
++@MainActor public func workspaceCommand(_ token: UInt64, _ command: Int32, _ browserID: Int32) {
++    precondition(Thread.isMainThread)
++    guard let controller = workspaceSlots[token]?.controller else { return }
++    if command == 1 { controller.newTab() }
++    if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
++        controller.receive(.selected(page))
++        if controller.runtime.state.currentWorkspace.activeEntryID == page.entryID {
++            controller.closeSelection()
++        }
++    }
++}
++
++
++/// Cocoa menu key equivalents can bypass CEF's per-browser command hook.
++/// Override only standard T/W items while this one workspace owns the key window.
++@MainActor private final class WorkspaceMenuRouter: NSObject, NSMenuItemValidation {
++    private let token: UInt64
++    private weak var root: NSView?
++    private var originals: [(NSMenuItem, AnyObject?, Selector?, Int32)] = []
++    init(token: UInt64, root: NSView) { self.token = token; self.root = root }
++    func install() {
++        guard originals.isEmpty, let menu = NSApp.mainMenu else { return }
++        let newTag = commandID?(1) ?? -1
++        let closeTag = commandID?(2) ?? -1
++        func visit(_ menu: NSMenu) {
++            for item in menu.items {
++                if let submenu = item.submenu { visit(submenu) }
++                let modifiers = item.keyEquivalentModifierMask.intersection([.command, .shift, .control, .option])
++                let command: Int32
++                if newTag > 0 && item.tag == newTag { command = 1 }
++                else if closeTag > 0 && item.tag == closeTag { command = 2 }
++                else if modifiers == .command && item.keyEquivalent == "t" { command = 1 }
++                else if modifiers == .command && item.keyEquivalent == "w" { command = 2 }
++                else { continue }
++                originals.append((item, item.target as AnyObject?, item.action, command))
++                item.target = self
++                item.action = #selector(dispatch(_:))
++            }
++        }
++        visit(menu)
++    }
++    func restore() {
++        for (item, target, action, _) in originals where (item.target as AnyObject?) === self {
++            item.target = target
++            item.action = action
++        }
++        originals.removeAll()
++    }
++    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
++    @objc private func dispatch(_ item: NSMenuItem) {
++        // Menu tracking can temporarily change the key window and restore its
++        // responder after the action. Resolve/focus after that stack unwinds.
++        DispatchQueue.main.async { [weak self, weak item] in
++            guard let self, let item else { return }
++            self.perform(item)
++        }
++    }
++    private func perform(_ item: NSMenuItem) {
++        guard let original = originals.first(where: { $0.0 === item }) else { return }
++        let active = activePage?(token) ?? -1
++        guard let window = root?.window,
++              (NSApp.keyWindow === window || NSApp.mainWindow === window), active >= 0 else {
++            if let action = original.2 { NSApp.sendAction(action, to: original.1, from: item) }
++            return
++        }
++        if original.3 == 1 { workspaceCommand(token, 1, active) }
++        if original.3 == 2, active > 0 { workspaceCommand(token, 2, active) }
++    }
++}
+--- a/cef/tests/cefsimple/simple_handler.cc
++++ b/cef/tests/cefsimple/simple_handler.cc
+@@ -3,6 +3,7 @@
+ // can be found in the LICENSE file.
+
+ #include "tests/cefsimple/simple_handler.h"
++#include "tests/cefsimple/native_slot_client.h"
+
+ #include <cstdio>
+ #include <sstream>
+@@ -59,6 +60,7 @@
+     int command_id,
+     cef_window_open_disposition_t disposition) {
+   CEF_REQUIRE_UI_THREAD();
++  if (BatoWorkspaceChromeCommand(browser, command_id)) return true;
+   if (!NativeQuitExperimentEnabled() ||
+       command_id != cef_id_for_command_id_name("IDC_EXIT")) {
+     return false;
+@@ -103,9 +105,17 @@
+   fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
+ }
+
++void SimpleHandler::OnAddressChange(CefRefPtr<CefBrowser> browser,
++                                    CefRefPtr<CefFrame> frame,
++                                    const CefString& url) {
++  CEF_REQUIRE_UI_THREAD();
++  if (frame && frame->IsMain()) BatoWorkspaceBrowserAddressChanged(browser, url);
++}
++
+ void SimpleHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
+                                   const CefString& title) {
+   CEF_REQUIRE_UI_THREAD();
++  BatoWorkspaceBrowserTitleChanged(browser, title);
+
+   if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
+     // Set the title of the window using the Views framework.
+@@ -133,6 +143,7 @@
+             "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
+             browser_list_.size());
+   }
++  BatoWorkspaceBrowserCreated(browser);
+ }
+
+ bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
+@@ -153,6 +164,7 @@
+
+ void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
+   CEF_REQUIRE_UI_THREAD();
++  BatoWorkspaceBrowserClosed(browser);
+
+   // Remove from the list of existing browsers.
+   BrowserList::iterator bit = browser_list_.begin();
+@@ -177,6 +189,18 @@
+   }
+ }
+
++bool SimpleHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
++                                   CefRefPtr<CefFrame> frame,
++                                   CefRefPtr<CefRequest> request,
++                                   bool user_gesture,
++                                   bool is_redirect) {
++  CEF_REQUIRE_UI_THREAD();
++  // The organization's unloaded placeholder must never become an untracked
++  // website or acquire a beforeunload handler through Chrome's omnibox.
++  return frame && frame->IsMain() && request && BatoWorkspaceIsAnchor(browser) &&
++      request->GetURL().ToString() != "about:blank";
++}
++
+ void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
+                                 CefRefPtr<CefFrame> frame,
+                                 ErrorCode errorCode,
+--- a/cef/tests/cefsimple/simple_handler.h
++++ b/cef/tests/cefsimple/simple_handler.h
+@@ -13,7 +13,8 @@
+                       public CefCommandHandler,
+                       public CefDisplayHandler,
+                       public CefLifeSpanHandler,
+-                      public CefLoadHandler {
++                      public CefLoadHandler,
++                      public CefRequestHandler {
+  public:
+   explicit SimpleHandler(bool is_alloy_style);
+   ~SimpleHandler() override;
+@@ -26,6 +27,7 @@
+   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
++  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+
+   // CefCommandHandler methods (opt-in diagnostic only).
+   bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
+@@ -33,6 +35,9 @@
+                        cef_window_open_disposition_t disposition) override;
+
+   // CefDisplayHandler methods:
++  void OnAddressChange(CefRefPtr<CefBrowser> browser,
++                       CefRefPtr<CefFrame> frame,
++                       const CefString& url) override;
+   void OnTitleChange(CefRefPtr<CefBrowser> browser,
+                      const CefString& title) override;
+
+@@ -40,6 +45,13 @@
+   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
+   bool DoClose(CefRefPtr<CefBrowser> browser) override;
+   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
++
++  // CefRequestHandler methods:
++  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
++                      CefRefPtr<CefFrame> frame,
++                      CefRefPtr<CefRequest> request,
++                      bool user_gesture,
++                      bool is_redirect) override;
+
+   // CefLoadHandler methods:
+   void OnLoadError(CefRefPtr<CefBrowser> browser,
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
+@@ -0,0 +1,316 @@
++import Foundation
++
++public enum EntryKind: String, Codable, Sendable {
++    case favorite, pinned, temporary
++}
++
++public struct PageEntry: Identifiable, Codable, Equatable, Sendable {
++    public var id: UUID
++    public var title: String
++    public var savedURL: URL?
++    public var lastURL: URL
++    public var kind: EntryKind
++
++    public init(id: UUID = UUID(), title: String, savedURL: URL? = nil, lastURL: URL, kind: EntryKind) {
++        self.id = id
++        self.title = title
++        self.savedURL = savedURL
++        self.lastURL = lastURL
++        self.kind = kind
++    }
++}
++
++public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
++    public var id: UUID
++    public var name: String
++    public var favorites: [PageEntry]
++
++    public init(id: UUID = UUID(), name: String, favorites: [PageEntry] = []) {
++        self.id = id
++        self.name = name
++        self.favorites = favorites
++    }
++}
++
++public struct Workspace: Identifiable, Codable, Equatable, Sendable {
++    public var id: UUID
++    public var profileID: UUID
++    public var name: String
++    public var color: String
++    public var pins: [PageEntry]
++    public var tabs: [PageEntry]
++    public var activeEntryID: UUID?
++
++    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
++        self.id = id
++        self.profileID = profileID
++        self.name = name
++        self.color = color
++        self.pins = pins
++        self.tabs = tabs
++        self.activeEntryID = activeEntryID
++    }
++}
++
++public enum BrowserStateError: Error, Equatable, LocalizedError {
++    case unsupportedVersion(Int)
++    case emptyName
++    case invalidURL
++    case invalidColor
++    case duplicateIdentity
++    case missingProfile
++    case missingWorkspace
++    case invalidEntryOwnership
++    case invalidSavedURL
++    case missingEntry
++    case invalidSelection
++
++    public var errorDescription: String? {
++        switch self {
++        case .unsupportedVersion: "This organization was saved by an unsupported version of Bato."
++        case .emptyName: "Profiles and workspaces need a name."
++        case .invalidURL: "Enter a complete HTTP or HTTPS address."
++        case .invalidColor: "The workspace color must be a six-digit hex color."
++        case .duplicateIdentity: "The organization contains duplicate identifiers."
++        case .missingProfile: "The workspace's Profile could not be found."
++        case .missingWorkspace: "The selected workspace could not be found."
++        case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
++        case .invalidSavedURL: "The saved page destination is invalid."
++        case .missingEntry: "The selected page could not be found."
++        case .invalidSelection: "The selected page does not belong to this workspace or its Profile."
++        }
++    }
++}
++
++/// Organization only. Live engine pages and their loaded/unloaded state belong to the runtime adapter.
++public struct BrowserState: Codable, Equatable, Sendable {
++    public var version: Int
++    public var profiles: [BrowserProfile]
++    public var workspaces: [Workspace]
++    public var activeWorkspaceID: UUID
++
++    public init(version: Int = 1, profiles: [BrowserProfile], workspaces: [Workspace], activeWorkspaceID: UUID) {
++        self.version = version
++        self.profiles = profiles
++        self.workspaces = workspaces
++        self.activeWorkspaceID = activeWorkspaceID
++    }
++
++    public static func initial() -> BrowserState {
++        let profile = BrowserProfile(name: "Personal")
++        let workspace = Workspace(profileID: profile.id, name: "Personal")
++        return BrowserState(profiles: [profile], workspaces: [workspace], activeWorkspaceID: workspace.id)
++    }
++
++    /// Use only after validation, including immediately after decoding persisted state.
++    public var currentWorkspace: Workspace {
++        guard let workspace = workspaces.first(where: { $0.id == activeWorkspaceID }) else {
++            preconditionFailure("Validate BrowserState before accessing its current workspace")
++        }
++        return workspace
++    }
++
++    public var visibleEntries: [PageEntry] {
++        let workspace = currentWorkspace
++        let favorites = profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
++        return favorites + workspace.pins + workspace.tabs
++    }
++
++    public func validate() throws {
++        guard version == 1 else { throw BrowserStateError.unsupportedVersion(version) }
++        var identities = Set<UUID>()
++        func claim(_ id: UUID) throws {
++            guard identities.insert(id).inserted else { throw BrowserStateError.duplicateIdentity }
++        }
++        func validateEntry(_ entry: PageEntry, kind: EntryKind) throws {
++            try claim(entry.id)
++            guard entry.kind == kind else { throw BrowserStateError.invalidEntryOwnership }
++            try Self.validateURL(entry.lastURL)
++            if kind == .temporary {
++                guard entry.savedURL == nil else { throw BrowserStateError.invalidSavedURL }
++            } else {
++                guard let savedURL = entry.savedURL else { throw BrowserStateError.invalidSavedURL }
++                try Self.validateURL(savedURL)
++            }
++        }
++        for profile in profiles {
++            try claim(profile.id)
++            try Self.validateName(profile.name)
++            for entry in profile.favorites { try validateEntry(entry, kind: .favorite) }
++        }
++        let profileIDs = Set(profiles.map(\.id))
++        for workspace in workspaces {
++            try claim(workspace.id)
++            try Self.validateName(workspace.name)
++            guard profileIDs.contains(workspace.profileID) else { throw BrowserStateError.missingProfile }
++            guard workspace.color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
++                throw BrowserStateError.invalidColor
++            }
++            for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
++            for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
++            if let activeID = workspace.activeEntryID {
++                let favorites = profiles.first(where: { $0.id == workspace.profileID })!.favorites
++                guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == activeID }) else {
++                    throw BrowserStateError.invalidSelection
++                }
++            }
++        }
++        guard workspaces.contains(where: { $0.id == activeWorkspaceID }) else {
++            throw BrowserStateError.missingWorkspace
++        }
++    }
++
++    @discardableResult
++    public mutating func addProfile(name: String) throws -> UUID {
++        try transact { draft in
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateName(name)
++            let profile = BrowserProfile(name: name)
++            draft.profiles.append(profile)
++            return profile.id
++        }
++    }
++
++    @discardableResult
++    public mutating func addWorkspace(name: String, profileID: UUID) throws -> UUID {
++        try transact { draft in
++            guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateName(name)
++            let workspace = Workspace(profileID: profileID, name: name)
++            draft.workspaces.append(workspace)
++            return workspace.id
++        }
++    }
++
++    public mutating func activateWorkspace(_ id: UUID) throws {
++        try transact { draft in
++            guard draft.workspaces.contains(where: { $0.id == id }) else { throw BrowserStateError.missingWorkspace }
++            draft.activeWorkspaceID = id
++        }
++    }
++
++    @discardableResult
++    public mutating func addTab(url: URL, title: String) throws -> UUID {
++        try transact { draft in
++            try Self.validateURL(url)
++            let entry = PageEntry(title: title, lastURL: url, kind: .temporary)
++            let workspace = draft.currentWorkspaceIndex
++            draft.workspaces[workspace].tabs.append(entry)
++            draft.workspaces[workspace].activeEntryID = entry.id
++            return entry.id
++        }
++    }
++
++    public mutating func selectEntry(_ id: UUID) throws {
++        try transact { draft in
++            guard draft.visibleEntries.contains(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
++            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
++        }
++    }
++
++    public mutating func pinEntry(_ id: UUID) throws {
++        try transact { draft in
++            guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
++            if entry.kind == .pinned { return }
++            draft.removeEntry(id)
++            entry.kind = .pinned
++            entry.savedURL = entry.savedURL ?? entry.lastURL
++            let workspace = draft.currentWorkspaceIndex
++            draft.workspaces[workspace].pins.append(entry)
++            draft.workspaces[workspace].activeEntryID = id
++        }
++    }
++
++    public mutating func favoriteEntry(_ id: UUID) throws {
++        try transact { draft in
++            guard var entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
++            if entry.kind == .favorite { return }
++            draft.removeEntry(id)
++            entry.kind = .favorite
++            entry.savedURL = entry.savedURL ?? entry.lastURL
++            let profile = draft.currentProfileIndex
++            draft.profiles[profile].favorites.append(entry)
++            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
++        }
++    }
++
++    /// Closing saved entries keeps their identity/order and restores their saved destination for reopening.
++    public mutating func closeEntry(_ id: UUID) throws {
++        try transact { draft in
++            guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
++            if entry.kind == .temporary {
++                draft.removeEntry(id)
++            } else {
++                draft.updateEntry(id) { $0.lastURL = $0.savedURL! }
++                draft.clearSelections(id)
++            }
++        }
++    }
++
++    /// Engine callbacks may update an entry in an inactive workspace without changing selection.
++    public mutating func recordNavigation(entryID: UUID, url: URL, title: String) throws {
++        try transact { draft in
++            try Self.validateURL(url)
++            guard draft.allEntries.contains(where: { $0.id == entryID }) else { throw BrowserStateError.missingEntry }
++            draft.updateEntry(entryID) { entry in
++                entry.lastURL = url
++                entry.title = title
++            }
++        }
++    }
++
++    private var currentWorkspaceIndex: Int { workspaces.firstIndex(where: { $0.id == activeWorkspaceID })! }
++    private var currentProfileIndex: Int { profiles.firstIndex(where: { $0.id == currentWorkspace.profileID })! }
++    private var allEntries: [PageEntry] { profiles.flatMap(\.favorites) + workspaces.flatMap { $0.pins + $0.tabs } }
++
++    private mutating func transact<T>(_ mutation: (inout BrowserState) throws -> T) throws -> T {
++        try validate()
++        var draft = self
++        let result = try mutation(&draft)
++        try draft.validate()
++        self = draft
++        return result
++    }
++
++    private mutating func clearSelections(_ id: UUID) {
++        for index in workspaces.indices where workspaces[index].activeEntryID == id {
++            workspaces[index].activeEntryID = nil
++        }
++    }
++
++    private mutating func removeEntry(_ id: UUID) {
++        for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }
++        for index in workspaces.indices {
++            workspaces[index].pins.removeAll { $0.id == id }
++            workspaces[index].tabs.removeAll { $0.id == id }
++        }
++        clearSelections(id)
++    }
++
++    private mutating func updateEntry(_ id: UUID, _ update: (inout PageEntry) -> Void) {
++        for profile in profiles.indices {
++            for entry in profiles[profile].favorites.indices where profiles[profile].favorites[entry].id == id {
++                update(&profiles[profile].favorites[entry])
++            }
++        }
++        for workspace in workspaces.indices {
++            for entry in workspaces[workspace].pins.indices where workspaces[workspace].pins[entry].id == id {
++                update(&workspaces[workspace].pins[entry])
++            }
++            for entry in workspaces[workspace].tabs.indices where workspaces[workspace].tabs[entry].id == id {
++                update(&workspaces[workspace].tabs[entry])
++            }
++        }
++    }
++
++    private static func validateName(_ name: String) throws {
++        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BrowserStateError.emptyName }
++    }
++
++    private static func validateURL(_ url: URL) throws {
++        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
++              let host = url.host, !host.isEmpty,
++              url.user == nil, url.password == nil else { throw BrowserStateError.invalidURL }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift
+@@ -0,0 +1,196 @@
++import Foundation
++import Darwin
++
++/// A single local organization document. Engine-owned browser data is never stored here.
++/// Call `load` before saving; a changed on-disk document requires an explicit reload.
++public final class OrganizationStore<State: Codable> {
++    public enum StoreError: Error, LocalizedError, Equatable {
++        case loadRequired
++        case conflict
++        case unsafeFile
++        case corruptState
++        case invalidState
++        case fileOperationFailed
++
++        public var errorDescription: String? {
++            switch self {
++            case .loadRequired: "Load organization before saving changes."
++            case .conflict: "Organization changed outside this session. Reload before saving."
++            case .unsafeFile: "Organization storage contains an unsupported file type."
++            case .corruptState: "Organization could not be decoded. The existing document was preserved."
++            case .invalidState: "Organization is invalid or uses an unsupported format."
++            case .fileOperationFailed: "Organization could not be read or saved."
++            }
++        }
++    }
++
++    private let directory: URL
++    private let validate: (State) throws -> Void
++    private var loaded = false
++    private var knownBytes: Data?
++
++    public init(directory: URL, validate: @escaping (State) throws -> Void) {
++        self.directory = directory
++        self.validate = validate
++    }
++
++    public func load() throws -> State? {
++        loaded = false
++        return try withLock {
++            try checkRegularOrAbsent(backupURL)
++            let bytes = try readDocument()
++            let state: State?
++            if let bytes {
++                let decoded: State
++                do { decoded = try JSONDecoder().decode(State.self, from: bytes) }
++                catch { throw StoreError.corruptState }
++                do { try validate(decoded) }
++                catch { throw StoreError.invalidState }
++                state = decoded
++            } else {
++                state = nil
++            }
++            knownBytes = bytes
++            loaded = true
++            return state
++        }
++    }
++
++    public func save(_ state: State) throws {
++        guard loaded else { throw StoreError.loadRequired }
++        do { try validate(state) }
++        catch { throw StoreError.invalidState }
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++        let bytes: Data
++        do { bytes = try encoder.encode(state) }
++        catch { throw StoreError.invalidState }
++
++        try withLock {
++            try checkRegularOrAbsent(backupURL)
++            let current = try readDocument()
++            guard current == knownBytes else { throw StoreError.conflict }
++            // Keep the previous successfully loaded document before replacing it.
++            // Backup failure aborts the save, preserving the current document.
++            if let current {
++                try atomicWrite(current, to: backupURL)
++            }
++            try atomicWrite(bytes, to: documentURL)
++            knownBytes = bytes
++        }
++    }
++
++    private var documentURL: URL { directory.appendingPathComponent("organization.json") }
++    private var backupURL: URL { directory.appendingPathComponent("organization.last-good.json") }
++
++    private func withLock<T>(_ body: () throws -> T) throws -> T {
++        try prepareDirectory()
++        let lockURL = directory.appendingPathComponent("organization.lock")
++        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
++        guard descriptor >= 0 else {
++            if errno == ELOOP { throw StoreError.unsafeFile }
++            throw StoreError.fileOperationFailed
++        }
++        defer { Darwin.close(descriptor) }
++        var info = stat()
++        guard fstat(descriptor, &info) == 0 else { throw StoreError.fileOperationFailed }
++        guard info.st_mode & S_IFMT == S_IFREG else { throw StoreError.unsafeFile }
++        guard flock(descriptor, LOCK_EX) == 0 else { throw StoreError.fileOperationFailed }
++        defer { _ = flock(descriptor, LOCK_UN) }
++        return try body()
++    }
++
++    private func prepareDirectory() throws {
++        var info = stat()
++        if lstat(directory.path, &info) == 0 {
++            guard info.st_mode & S_IFMT == S_IFDIR else { throw StoreError.unsafeFile }
++            return
++        }
++        guard errno == ENOENT else { throw StoreError.fileOperationFailed }
++        do {
++            try FileManager.default.createDirectory(
++                at: directory, withIntermediateDirectories: true,
++                attributes: [.posixPermissions: 0o700])
++        } catch { throw StoreError.fileOperationFailed }
++        // Recheck if another cooperating process created the directory first.
++        guard lstat(directory.path, &info) == 0 else { throw StoreError.fileOperationFailed }
++        guard info.st_mode & S_IFMT == S_IFDIR else { throw StoreError.unsafeFile }
++    }
++
++    private func checkRegularOrAbsent(_ url: URL) throws {
++        var info = stat()
++        if lstat(url.path, &info) == 0 {
++            guard info.st_mode & S_IFMT == S_IFREG else { throw StoreError.unsafeFile }
++        } else if errno != ENOENT {
++            throw StoreError.fileOperationFailed
++        }
++    }
++
++    private func readDocument() throws -> Data? {
++        try checkRegularOrAbsent(documentURL)
++        let descriptor = open(documentURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++        if descriptor < 0 {
++            if errno == ENOENT { return nil }
++            if errno == ELOOP { throw StoreError.unsafeFile }
++            throw StoreError.fileOperationFailed
++        }
++        defer { Darwin.close(descriptor) }
++        var info = stat()
++        guard fstat(descriptor, &info) == 0 else { throw StoreError.fileOperationFailed }
++        guard info.st_mode & S_IFMT == S_IFREG else { throw StoreError.unsafeFile }
++        var bytes = Data()
++        var buffer = [UInt8](repeating: 0, count: 16_384)
++        while true {
++            let count = Darwin.read(descriptor, &buffer, buffer.count)
++            if count == 0 { return bytes }
++            if count < 0 {
++                if errno == EINTR { continue }
++                throw StoreError.fileOperationFailed
++            }
++            bytes.append(contentsOf: buffer.prefix(count))
++        }
++    }
++
++    private func atomicWrite(_ bytes: Data, to url: URL) throws {
++        try checkRegularOrAbsent(url)
++        let temporary = directory.appendingPathComponent(".organization-\(UUID().uuidString).tmp")
++        let descriptor = open(
++            temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++            S_IRUSR | S_IWUSR)
++        guard descriptor >= 0 else { throw StoreError.fileOperationFailed }
++        var descriptorOpen = true
++        defer {
++            if descriptorOpen { Darwin.close(descriptor) }
++            _ = unlink(temporary.path)
++        }
++
++        try bytes.withUnsafeBytes { buffer in
++            guard let base = buffer.baseAddress else { return }
++            var offset = 0
++            while offset < buffer.count {
++                let count = Darwin.write(descriptor, base.advanced(by: offset), buffer.count - offset)
++                if count < 0 {
++                    if errno == EINTR { continue }
++                    throw StoreError.fileOperationFailed
++                }
++                guard count > 0 else { throw StoreError.fileOperationFailed }
++                offset += count
++            }
++        }
++        guard fsync(descriptor) == 0 else { throw StoreError.fileOperationFailed }
++        let closeResult = Darwin.close(descriptor)
++        descriptorOpen = false
++        guard closeResult == 0 else { throw StoreError.fileOperationFailed }
++        // Permissions and all fallible preparation happen before this commit point.
++        // After replacement succeeds, callers must adopt the committed document.
++        guard rename(temporary.path, url.path) == 0 else { throw StoreError.fileOperationFailed }
++
++        // Directory metadata synchronization is best effort: a failure cannot undo
++        // the committed rename and must not be reported as an uncommitted save.
++        let directoryDescriptor = open(directory.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++        if directoryDescriptor >= 0 {
++            _ = fsync(directoryDescriptor)
++            Darwin.close(directoryDescriptor)
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
+@@ -0,0 +1,264 @@
++import Foundation
++import BatoCore
++
++/// Process-local identity. A fresh generation is required every time an entry is loaded.
++public struct LivePage: Hashable, Sendable {
++    public let entryID: UUID
++    public let profileID: UUID
++    public let generation: UUID
++
++    public init(entryID: UUID, profileID: UUID, generation: UUID = UUID()) {
++        self.entryID = entryID
++        self.profileID = profileID
++        self.generation = generation
++    }
++}
++
++public enum PageEvent: Sendable {
++    case navigation(LivePage, url: URL, title: String)
++    case closed(LivePage)
++    case closeCancelled(LivePage)
++    case creationFailed(LivePage)
++    /// Unsolicited window/application teardown unloads a page without deleting
++    /// the saved session entry. Explicit page close uses `closed` instead.
++    case unloaded(LivePage)
++    case selected(LivePage)
++    case selectionCleared
++}
++
++/// All calls and events use the main actor. Acceptance of create means the adapter
++/// owns this token until a terminal event, including while creation is pending.
++/// The adapter reports failed creation as creationFailed, not closed.
++@MainActor
++public protocol PageEngine: AnyObject {
++    var supportedProfileIDs: Set<UUID> { get }
++    func create(_ page: LivePage, url: URL) -> Bool
++    /// nil hides any previously visible page. A token whose creation is pending
++    /// shows blank/loading content until ready, never a previously selected page.
++    func select(_ page: LivePage?)
++    func requestClose(_ page: LivePage)
++}
++
++public enum PageRuntimeError: Error, Equatable {
++    case unsupportedProfile
++    case creationRejected
++    case saveFailed
++    case invalidCommand
++}
++
++/// Coordinates committed organization with an engine, without serializing engine
++/// handles. Commit must save successfully before returning; it must not publish a
++/// candidate and then throw. Live page closures can be cancelled by the engine.
++@MainActor
++public final class PageRuntime {
++    public private(set) var state: BrowserState
++    public private(set) var livePages: [UUID: LivePage] = [:]
++    public private(set) var pendingClose: Set<LivePage> = []
++    public private(set) var lastError: PageRuntimeError?
++    public var onStateChange: ((BrowserState) -> Void)?
++    private let engine: any PageEngine
++    private let commit: (BrowserState) throws -> Void
++
++    public init(state: BrowserState, engine: any PageEngine,
++                commit: @escaping (BrowserState) throws -> Void) throws {
++        try state.validate()
++        guard engine.supportedProfileIDs.contains(state.currentWorkspace.profileID) else {
++            throw PageRuntimeError.unsupportedProfile
++        }
++        self.state = state
++        self.engine = engine
++        self.commit = commit
++    }
++
++    /// Explicit so clients can finish callback wiring before creation begins.
++    @discardableResult
++    public func start() -> Bool { showSelection() }
++
++    @discardableResult
++    public func addTab(url: URL, title: String) -> Bool {
++        change { _ = try $0.addTab(url: url, title: title) }
++    }
++
++    @discardableResult
++    public func selectEntry(_ id: UUID) -> Bool {
++        change { try $0.selectEntry(id) }
++    }
++
++    @discardableResult
++    public func activateWorkspace(_ id: UUID) -> Bool {
++        change { try $0.activateWorkspace(id) }
++    }
++
++    @discardableResult
++    public func addWorkspace(name: String) -> Bool {
++        change { candidate in
++            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID)
++            try candidate.activateWorkspace(id)
++        }
++    }
++
++    @discardableResult
++    public func pinEntry(_ id: UUID) -> Bool {
++        change { try $0.pinEntry(id) }
++    }
++
++    @discardableResult
++    public func favoriteEntry(_ id: UUID) -> Bool {
++        change { try $0.favoriteEntry(id) }
++    }
++
++    /// Unloaded entries close immediately after committing. Loaded entries remain
++    /// in the organization until the matching engine closed event is received.
++    @discardableResult
++    public func closeEntry(_ id: UUID) -> Bool {
++        guard state.visibleEntries.contains(where: { $0.id == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        guard let page = livePages[id] else {
++            return change { try $0.closeEntry(id) }
++        }
++        guard pendingClose.insert(page).inserted else { return true }
++        engine.requestClose(page)
++        return true
++    }
++
++    public func receive(_ event: PageEvent) {
++        switch event {
++        case let .selected(page):
++            guard livePages[page.entryID] == page else { return }
++            if state.currentWorkspace.activeEntryID == page.entryID { return }
++            let accepted = change { candidate in
++                if !candidate.visibleEntries.contains(where: { $0.id == page.entryID }) {
++                    guard let owner = candidate.workspaces.first(where: {
++                        $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
++                    }) else { throw PageRuntimeError.invalidCommand }
++                    try candidate.activateWorkspace(owner.id)
++                }
++                try candidate.selectEntry(page.entryID)
++            }
++            if !accepted { engine.select(selectedLivePage) }
++        case .selectionCleared:
++            guard state.currentWorkspace.activeEntryID != nil else { return }
++            let accepted = change { candidate in
++                guard let index = candidate.workspaces.firstIndex(where: { $0.id == candidate.activeWorkspaceID }) else {
++                    throw PageRuntimeError.invalidCommand
++                }
++                candidate.workspaces[index].activeEntryID = nil
++            }
++            if !accepted { engine.select(selectedLivePage) }
++        case let .unloaded(page):
++            guard livePages[page.entryID] == page else { return }
++            livePages.removeValue(forKey: page.entryID)
++            pendingClose.remove(page)
++            engine.select(selectedLivePage)
++        case let .creationFailed(page):
++            guard livePages[page.entryID] == page else { return }
++            livePages.removeValue(forKey: page.entryID)
++            pendingClose.remove(page)
++            lastError = .creationRejected
++            engine.select(selectedLivePage)
++        case let .navigation(page, url, title):
++            guard livePages[page.entryID] == page else { return }
++            // BrowserState validates URL scheme, host and embedded credentials.
++            // Unsupported engine/internal URLs are ignored, never navigated back.
++            var candidate = state
++            guard (try? candidate.recordNavigation(entryID: page.entryID, url: url, title: title)) != nil else { return }
++            _ = save(candidate)
++        case let .closeCancelled(page):
++            guard livePages[page.entryID] == page else { return }
++            pendingClose.remove(page)
++        case let .closed(page):
++            guard livePages[page.entryID] == page else { return }
++            livePages.removeValue(forKey: page.entryID)
++            pendingClose.remove(page)
++            // The entry may belong to a workspace that is no longer active.
++            // Apply close in its owner workspace, then restore current selection.
++            var candidate = state
++            let active = candidate.activeWorkspaceID
++            if let owner = candidate.workspaces.first(where: {
++                $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
++            }) {
++                try? candidate.activateWorkspace(owner.id)
++            } else if let owner = candidate.workspaces.first(where: { $0.profileID == page.profileID }) {
++                try? candidate.activateWorkspace(owner.id)
++            }
++            do {
++                try candidate.closeEntry(page.entryID)
++                try candidate.activateWorkspace(active)
++                _ = save(candidate)
++            } catch {
++                lastError = .invalidCommand
++            }
++            engine.select(selectedLivePage)
++            // A failed save leaves the committed entry unloaded. Do not recreate
++            // it automatically after a physical engine close.
++        }
++    }
++
++    private var selectedLivePage: LivePage? {
++        state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }
++    }
++
++    private func change(_ mutate: (inout BrowserState) throws -> Void) -> Bool {
++        var candidate = state
++        do {
++            try mutate(&candidate)
++            try candidate.validate()
++            guard engine.supportedProfileIDs.contains(candidate.currentWorkspace.profileID) else {
++                lastError = .unsupportedProfile
++                return false
++            }
++        } catch {
++            lastError = .invalidCommand
++            return false
++        }
++        guard save(candidate) else { return false }
++        return showSelection()
++    }
++
++    private func save(_ candidate: BrowserState) -> Bool {
++        do {
++            try commit(candidate)
++            state = candidate
++            lastError = nil
++            onStateChange?(candidate)
++            return true
++        } catch {
++            lastError = .saveFailed
++            return false
++        }
++    }
++
++    private func showSelection() -> Bool {
++        let workspace = state.currentWorkspace
++        guard engine.supportedProfileIDs.contains(workspace.profileID) else {
++            lastError = .unsupportedProfile
++            return false
++        }
++        guard let id = workspace.activeEntryID,
++              let entry = state.visibleEntries.first(where: { $0.id == id }) else {
++            engine.select(nil)
++            return true
++        }
++        if let page = livePages[id] {
++            engine.select(page)
++            return true
++        }
++        let page = LivePage(entryID: id, profileID: workspace.profileID)
++        livePages[id] = page
++        guard engine.create(page, url: entry.lastURL) else {
++            if livePages[id] == page { livePages.removeValue(forKey: id) }
++            lastError = .creationRejected
++            engine.select(selectedLivePage)
++            return false
++        }
++        // Creation may synchronously report failure/closure through the sink.
++        if livePages[id] == page {
++            // A synchronous callback can commit navigation, whose observer can
++            // select another entry. Never restore the older selection afterward.
++            engine.select(selectedLivePage)
++        }
++        return livePages[id] == page
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
+@@ -0,0 +1,331 @@
++import AppKit
++import BatoCore
++import BatoPersistence
++import BatoRuntime
++
++/// The native sidebar only. Chromium owns page views, origin UI and browser data.
++/// The caller must wire the engine's event sink before calling `start()`.
++@MainActor
++public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
++    public let root: NSView
++    public let runtime: PageRuntime
++    public var requestNativeFocus: (() -> Void)?
++    public var focusTarget: NSView { addressField }
++
++    private let addressField = NSTextField(string: "")
++    private let entries = SidebarEntries()
++    private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
++    private let profileLabel = NSTextField(labelWithString: "")
++    private let statusLabel = NSTextField(wrappingLabelWithString: "")
++    private var workspaceIDs: [UUID] = []
++    private var hasStarted = false
++    private let accent = NSColor(srgbRed: 0.66, green: 0.40, blue: 0.43, alpha: 1)
++
++    /// Load failures throw without replacing the existing document. The factory
++    /// receives the organization Profile to bind to an explicit engine context.
++    /// It must not infer engine isolation from this UUID alone.
++    public init(directory: URL, makeEngine: (UUID) throws -> any PageEngine) throws {
++        let store = OrganizationStore<BrowserState>(directory: directory, validate: { try $0.validate() })
++        let state: BrowserState
++        if let restored = try store.load() {
++            state = restored
++        } else {
++            state = BrowserState.initial()
++            try store.save(state)
++        }
++        let engine = try makeEngine(state.currentWorkspace.profileID)
++        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
++        root = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
++        super.init()
++        configureView()
++        runtime.onStateChange = { [weak self] _ in self?.render() }
++        render()
++    }
++
++    /// Call only after attaching the root and wiring the engine callback sink.
++    public func start() {
++        guard !hasStarted else { return }
++        hasStarted = true
++        _ = runtime.start()
++        render()
++    }
++
++    public func receive(_ event: PageEvent) {
++        runtime.receive(event)
++        render()
++    }
++
++    /// Focuses native address entry. Host menu commands may call this method.
++    public func newTab() {
++        requestNativeFocus?()
++        root.window?.makeFirstResponder(addressField)
++        addressField.selectText(nil)
++    }
++
++    public func closeSelection() {
++        guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
++        perform { runtime.closeEntry(id) }
++    }
++
++    private func configureView() {
++        root.wantsLayer = true
++        root.layer?.backgroundColor = accent.withAlphaComponent(0.09).cgColor
++        root.setAccessibilityIdentifier("bato-workspace-sidebar")
++        if let view = root as? WorkspaceRoot {
++            view.newTab = { [weak self] in self?.newTab() }
++            view.closeSelection = { [weak self] in self?.closeSelection() }
++        }
++
++        let title = NSTextField(labelWithString: "bato")
++        title.font = .systemFont(ofSize: 24, weight: .bold)
++        let build = NSTextField(labelWithString: "Development build")
++        build.font = .systemFont(ofSize: 10)
++        build.textColor = .secondaryLabelColor
++        let heading = NSStackView(views: [title, build])
++        heading.orientation = .vertical
++        heading.alignment = .leading
++        heading.spacing = 2
++
++        addressField.placeholderString = "Website address"
++        addressField.setAccessibilityLabel("New tab address")
++        addressField.setAccessibilityIdentifier("bato-new-tab-address")
++        addressField.delegate = self
++        addressField.target = self
++        addressField.action = #selector(submitAddress)
++        // Return submits through the explicit action. Merely moving focus to a
++        // page/tab must not resubmit the cleared address or show a false error.
++        addressField.cell?.sendsActionOnEndEditing = false
++        let add = ActionButton(title: "New tab") { [weak self] in self?.submitAddress() }
++        add.setAccessibilityIdentifier("bato-new-tab")
++        let address = NSStackView(views: [addressField, add])
++        address.orientation = .vertical
++        address.alignment = .leading
++        address.spacing = 7
++        addressField.widthAnchor.constraint(equalTo: address.widthAnchor).isActive = true
++
++        entries.orientation = .vertical
++        entries.alignment = .leading
++        entries.spacing = 9
++        entries.translatesAutoresizingMaskIntoConstraints = false
++        let scroll = NSScrollView()
++        scroll.drawsBackground = false
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.documentView = entries
++        NSLayoutConstraint.activate([
++            entries.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
++            entries.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
++            entries.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
++        ])
++
++        workspacePicker.target = self
++        workspacePicker.action = #selector(workspaceChanged)
++        workspacePicker.setAccessibilityLabel("Workspace")
++        workspacePicker.setAccessibilityIdentifier("bato-workspace-picker")
++        workspacePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        let workspaceAdd = ActionButton(title: "+") { [weak self] in
++            guard let self else { return }
++            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
++        }
++        workspaceAdd.setAccessibilityLabel("New workspace")
++        let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
++        workspaceRow.orientation = .horizontal
++        workspaceRow.spacing = 6
++        workspacePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        profileLabel.font = .systemFont(ofSize: 11)
++        profileLabel.textColor = .secondaryLabelColor
++        statusLabel.font = .systemFont(ofSize: 11)
++        statusLabel.textColor = .secondaryLabelColor
++        statusLabel.setAccessibilityIdentifier("bato-workspace-status")
++
++        let stack = NSStackView(views: [heading, address, scroll, workspaceRow, profileLabel, statusLabel])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 13
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        root.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
++            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
++            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
++            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
++            address.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            workspaceRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 70)
++        ])
++        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
++        scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
++    }
++
++    private func render() {
++        let state = runtime.state
++        let workspace = state.currentWorkspace
++        for view in entries.arrangedSubviews {
++            entries.removeArrangedSubview(view)
++            view.removeFromSuperview()
++        }
++        let favorites = state.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
++        addSection("Favorites", pages: favorites)
++        addSection("Pinned", pages: workspace.pins)
++        addSection("Tabs", pages: workspace.tabs)
++        workspaceIDs = state.workspaces.map(\.id)
++        workspacePicker.removeAllItems()
++        workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
++        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
++        profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
++        switch runtime.lastError {
++        case .none:
++            statusLabel.stringValue = runtime.pendingClose.isEmpty ? "" : "Waiting for page to close…"
++        case .unsupportedProfile:
++            statusLabel.stringValue = "This Profile isn’t connected to the browser yet."
++        case .creationRejected:
++            statusLabel.stringValue = "The page couldn’t open. Select it to try again."
++        case .saveFailed:
++            statusLabel.stringValue = "Changes couldn’t be saved. Reopen Bato to reload organization."
++        case .invalidCommand:
++            statusLabel.stringValue = "This action couldn’t be completed."
++        }
++    }
++
++    private func addSection(_ title: String, pages: [PageEntry]) {
++        let label = NSTextField(labelWithString: title.uppercased())
++        label.font = .systemFont(ofSize: 10, weight: .semibold)
++        label.textColor = .secondaryLabelColor
++        entries.addArrangedSubview(label)
++        if pages.isEmpty {
++            let empty = NSTextField(labelWithString: title == "Tabs" ? "Your tabs appear here" : "No \(title.lowercased()) yet")
++            empty.font = .systemFont(ofSize: 11)
++            empty.textColor = .tertiaryLabelColor
++            entries.addArrangedSubview(empty)
++        }
++        for page in pages {
++            let select = ActionButton(title: page.title.isEmpty ? (page.lastURL.host ?? "Page") : page.title) { [weak self] in
++                guard let self else { return }
++                self.perform { self.runtime.selectEntry(page.id) }
++            }
++            select.bezelStyle = .recessed
++            select.alignment = .left
++            select.setButtonType(.momentaryPushIn)
++            select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++            select.setContentHuggingPriority(.defaultLow, for: .horizontal)
++            (select.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
++            select.setAccessibilityIdentifier("bato-page-\(page.id.uuidString)")
++            select.toolTip = page.lastURL.host
++            if page.kind == .temporary {
++                let menu = NSMenu()
++                menu.addItem(ActionMenuItem(title: "Pin Tab") { [weak self] in
++                    guard let self else { return }
++                    self.perform { self.runtime.pinEntry(page.id) }
++                })
++                menu.addItem(ActionMenuItem(title: "Add to Favorites") { [weak self] in
++                    guard let self else { return }
++                    self.perform { self.runtime.favoriteEntry(page.id) }
++                })
++                select.menu = menu
++            }
++            let close = ActionButton(title: "×") { [weak self] in
++                guard let self else { return }
++                self.perform { self.runtime.closeEntry(page.id) }
++            }
++            close.setAccessibilityLabel(page.kind == .temporary ? "Close \(select.title)" : "Unload \(select.title)")
++            close.toolTip = page.kind == .temporary ? "Close tab" : "Unload saved page"
++            close.isEnabled = !runtime.pendingClose.contains(where: { $0.entryID == page.id })
++            let row = NSStackView(views: [select, close])
++            row.orientation = .horizontal
++            row.spacing = 3
++            row.wantsLayer = true
++            row.layer?.cornerRadius = 7
++            row.layer?.backgroundColor = runtime.state.currentWorkspace.activeEntryID == page.id
++                ? accent.withAlphaComponent(0.17).cgColor : NSColor.clear.cgColor
++            entries.addArrangedSubview(row)
++            row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++            close.widthAnchor.constraint(equalToConstant: 28).isActive = true
++        }
++    }
++
++    private func perform(_ command: () -> Bool) {
++        guard hasStarted else { return }
++        _ = command()
++        render()
++    }
++
++    @objc private func submitAddress() {
++        guard hasStarted else { return }
++        let text = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        let value = text.contains("://") ? text : "https://" + text
++        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
++              url.host?.isEmpty == false, url.user == nil, url.password == nil else {
++            statusLabel.stringValue = "Enter a website address using HTTP or HTTPS."
++            return
++        }
++        let before = runtime.state
++        _ = runtime.addTab(url: url, title: url.host ?? "New tab")
++        // Creation can fail after a successful organization commit. Clear only
++        // when that commit added the entry; preserve text on a failed save.
++        if runtime.state != before { addressField.stringValue = "" }
++        render()
++    }
++
++    @objc private func workspaceChanged() {
++        let index = workspacePicker.indexOfSelectedItem
++        guard workspaceIDs.indices.contains(index) else { return }
++        perform { runtime.activateWorkspace(workspaceIDs[index]) }
++    }
++}
++
++@MainActor
++private final class SidebarEntries: NSStackView {
++    // NSClipView uses the document's coordinate direction when its height is
++    // shorter than the viewport. Top-origin content stays below address entry
++    // instead of being bottom-aligned above the workspace footer.
++    override var isFlipped: Bool { true }
++}
++
++@MainActor
++private final class WorkspaceRoot: NSView {
++    var newTab: (() -> Void)?
++    var closeSelection: (() -> Void)?
++    override var isFlipped: Bool { true }
++    override func isAccessibilityElement() -> Bool { true }
++    override func accessibilityRole() -> NSAccessibility.Role? { .group }
++    override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
++    override func performKeyEquivalent(with event: NSEvent) -> Bool {
++        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
++        guard modifiers == .command else { return super.performKeyEquivalent(with: event) }
++        switch event.charactersIgnoringModifiers?.lowercased() {
++        case "t": newTab?(); return true
++        case "w": closeSelection?(); return true
++        default: return super.performKeyEquivalent(with: event)
++        }
++    }
++}
++
++@MainActor
++private final class ActionButton: NSButton {
++    private let invoke: () -> Void
++    init(title: String, invoke: @escaping () -> Void) {
++        self.invoke = invoke
++        super.init(frame: .zero)
++        self.title = title
++        bezelStyle = .rounded
++        target = self
++        action = #selector(runAction)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    @objc private func runAction() { invoke() }
++}
++
++@MainActor
++private final class ActionMenuItem: NSMenuItem {
++    private let invoke: () -> Void
++    init(title: String, invoke: @escaping () -> Void) {
++        self.invoke = invoke
++        super.init(title: title, action: nil, keyEquivalent: "")
++        target = self
++        action = #selector(runAction)
++    }
++    required init(coder: NSCoder) { fatalError("Not supported") }
++    @objc private func runAction() { invoke() }
 +}

@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "engine_patch_sha256": "73af033126867aec3b4a3d0896c953d9bc9b35d2e23865d036ff5949c5da9f74",
+  "client_patch_sha256": "ba0538798516a28e2d78d26645a5052a4e6ec7c1a5f245a259e5106ad0310fe5",
+  "overlay_files": 21,
+  "source_mirrors": 9,
+  "exports_verified": 8,
+  "artifact_images_checked": 527,
+  "final_build_seconds": 174.91,
+  "swift_tests": 40,
+  "overlay_guard_tests": 6,
+  "engine_patch_tests": 2,
+  "client_patch_roundtrip": true,
+  "v3": {
+    "fresh_native_create": true,
+    "layout_top_origin": true,
+    "quit_exit_code": 0,
+    "restart_stable_entry_and_rendered_page": true,
+    "native_cmd_t_focus": true,
+    "saved_vs_live_url_independent": true,
+    "chrome_tab_selection_sync": true,
+    "cmd_w_from_native_focus_saved_reset": true,
+    "default_beforeunload_cancel": true,
+    "activity_after_cancel": [
+      0,
+      1
+    ],
+    "leave_removes_only_temporary_entry": true,
+    "saved_pin_reload": true,
+    "new_empty_workspace_selects_blank": true,
+    "final_quit_exit_code": 0,
+    "detach_count": 1,
+    "loop_returned": true,
+    "cef_shutdown_completed": true,
+    "organization_equal_before_after_quit": true,
+    "final_state": {
+      "workspaces": 2,
+      "pins": 1,
+      "temporary_entries": 0,
+      "active_workspace_empty": true
+    }
+  },
+  "open_cases": [
+    "page-focused CmdW had no effect",
+    "Chrome tab-X preserves organization entry",
+    "broader lazy restore and anchor-loss acceptance",
+    "fullscreen/untracked tabs and additional windows",
+    "split ownership and remaining extension gates",
+    "production signing/Keychain and supported OS versions"
+  ]
+}

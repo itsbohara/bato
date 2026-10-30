@@ -68,7 +68,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,279 @@
+@@ -49,3 +49,425 @@
  }
  
  }  // namespace cef
@@ -76,15 +76,23 @@
 +// Bato native-slot experiment. All storage and callbacks are UI-thread only.
 +#include <map>
 +#include "base/no_destructor.h"
++#include "base/supports_user_data.h"
 +#include "base/command_line.h"
 +#include "cef/libcef/browser/context.h"
 +#include "cef/libcef/browser/chrome/browser_delegate.h"
 +#include "cef/libcef/browser/chrome/chrome_browser_host_impl.h"
 +#include "cef/include/internal/bato_native_slot.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/browser/lifetime/browser_shutdown.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "chrome/browser/ui/unload_controller.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "components/tabs/public/tab_interface.h"
 +#include "components/web_modal/web_contents_modal_dialog_manager.h"
 +#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
 +#include "ui/base/cocoa/views_hostable.h"
 +#include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 +#include "ui/views/controls/native/native_view_host.h"
@@ -93,6 +101,7 @@
 +
 +namespace {
 +BatoNativeSlotCallbacksV1 g_slot_callbacks = {};
++BatoPageCallbacksV1 g_page_callbacks = {};
 +uint64_t g_slot_generation = 0;
 +bool g_slot_registration_closed = false;
 +class SlotAdapter;
@@ -163,6 +172,21 @@
 +  BatoSlotRoot* __strong root_;
 +  Host* host_ = nullptr;
 +};
++void NotifyActivePage(uint64_t token, content::WebContents* contents);
++class SlotTabObserver final : public TabStripModelObserver {
++ public:
++  SlotTabObserver(TabStripModel* model, uint64_t token) : token_(token) {
++    model->AddObserver(this);
++  }
++  void OnTabStripModelChanged(TabStripModel* model,
++                             const TabStripModelChange& change,
++                             const TabStripSelectionChange& selection) override {
++    if (selection.active_tab_changed()) NotifyActivePage(token_, selection.new_contents);
++  }
++ private:
++  const uint64_t token_;
++  // The base observer tracks model destruction and removes itself on teardown.
++};
 +struct SlotState {
 +  gfx::Rect bounds;
 +  uint64_t token = 0;
@@ -170,6 +194,7 @@
 +  bool transitioning = false;
 +  views::NativeViewHost* host = nullptr;  // BrowserView owns this child.
 +  std::unique_ptr<SlotAdapter> adapter;
++  std::unique_ptr<SlotTabObserver> tab_observer;
 +  id __strong will_enter;
 +  id __strong will_exit;
 +  id __strong did_enter;
@@ -195,13 +220,76 @@
 +  auto* manager = contents ? web_modal::WebContentsModalDialogManager::FromWebContents(contents) : nullptr;
 +  return manager && manager->IsDialogActive();
 +}
++bool SlotClosing(BrowserView* view) {
++  // Refuse unsupported lifecycle topology rather than creating/reselecting pages
++  // during global Quit, window beforeunload, irreversible delete or close-all.
++  if (browser_shutdown::IsTryingToQuit()) return true;
++  const auto* unload = UnloadController::From(view->browser());
++  return !unload || unload->is_attempting_to_close_browser() ||
++      unload->is_delete_scheduled() || view->browser()->GetTabStripModel()->closing_all();
++}
 +BrowserView* FindSlot(uint64_t token) {
 +  for (const auto& [view, state] : Slots()) {
 +    if (state.token == token && state.host && !state.transitioning &&
-+        state.host->GetVisible() && !SlotBlocked(view)) return view;
++        state.host->GetVisible() && !SlotBlocked(view) && !SlotClosing(view)) return view;
 +  }
 +  return nullptr;
 +}
++void NotifyActivePage(uint64_t token, content::WebContents* contents) {
++  // Never publish automatic close-all/Quit selection into saved organization.
++  for (const auto& [view, state] : Slots()) {
++    if (state.token != token || !state.adapter || SlotClosing(view)) continue;
++    const auto callbacks = g_page_callbacks;
++    if (!callbacks.active_changed) return;
++    auto browser = contents ? ChromeBrowserHostImpl::GetBrowserForContents(contents) : nullptr;
++    const int identifier = browser ? browser->GetIdentifier() : 0;
++    if (identifier <= 0) return;  // Skip transient insertion/no-active host states.
++    // Client posts this notification before making any tab-strip mutations.
++    callbacks.active_changed(callbacks.context, token, identifier);
++    return;  // No access to SlotState after potentially reentrant client code.
++  }
++}
++CefRefPtr<ChromeBrowserHostImpl> BrowserInSlot(BrowserView* view, int identifier) {
++  auto* tabs = view->browser()->GetTabStripModel();
++  for (int index = 0; index < tabs->count(); ++index) {
++    auto browser = ChromeBrowserHostImpl::GetBrowserForContents(tabs->GetWebContentsAt(index));
++    if (browser && browser->GetIdentifier() == identifier) return browser;
++  }
++  return nullptr;
++}
++
++// WebContents owns the observer, so its destruction cannot leave a dangling
++// observer map. One observer is installed for each explicit close request.
++const char kPageCloseObserverKey[] = "bato-native-slot-close-observer";
++class PageCloseObserver final : public base::SupportsUserData::Data,
++                                public content::WebContentsObserver {
++ public:
++  PageCloseObserver(content::WebContents* contents, uint64_t token, int browser_id)
++      : content::WebContentsObserver(contents), token_(token), browser_id_(browser_id) {}
++  void BeforeUnloadFired(bool proceed) override {
++    if (!proceed) Cancelled();
++  }
++  void BeforeUnloadDialogCancelled() override { Cancelled(); }
++ private:
++  void Cancelled() {
++    if (!pending_) return;
++    pending_ = false;  // Disarm before a callback that can synchronously re-enter.
++    // Modal state can still be clearing here; do not use FindSlot's input guard.
++    bool attached = false;
++    for (const auto& [view, state] : Slots()) {
++      if (state.token == token_ && state.adapter) { attached = true; break; }
++    }
++    const auto callbacks = g_page_callbacks;
++    if (attached && callbacks.close_cancelled) {
++      // No access to this object after invoking client code, which can destroy it.
++      callbacks.close_cancelled(callbacks.context, token_, browser_id_);
++    }
++  }
++  const uint64_t token_;
++  const int browser_id_;
++  bool pending_ = true;
++};
++
 +void ObserveFullscreen(BrowserView* view, SlotState& state) {
 +  NSWindow* window = view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
 +  NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
@@ -253,6 +341,59 @@
 +  auto browser = ChromeBrowserHostImpl::GetBrowserForContents(contents);
 +  return browser ? browser->GetIdentifier() : 0;
 +}
++extern "C" CEF_EXPORT int bato_native_slot_register_page_callbacks_v1(
++    const BatoPageCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_page_callbacks.version ||
++      g_slot_registration_closed || (CefContext::Get() && CefContext::Get()->initialized()) ||
++      !callbacks || callbacks->size != sizeof(BatoPageCallbacksV1) ||
++      callbacks->version != 1 || !callbacks->close_cancelled ||
++      !callbacks->active_changed) return 0;
++  g_page_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_new_tab_v1(uint64_t token) {
++  if (!NSThread.isMainThread || browser_shutdown::IsTryingToQuit()) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view || !view->GetActiveWebContents()) return 0;
++  // FindSlot also refuses creation/recovery while this window is closing.
++  auto anchor = ChromeBrowserHostImpl::GetBrowserForContents(view->GetActiveWebContents());
++  if (!anchor || !anchor->CanExecuteChromeCommand(IDC_NEW_TAB)) return 0;
++  // The pinned normal-window command invokes this synchronous helper. Its
++  // returned contents is the inserted tab, not an inferred later callback.
++  auto* contents = &chrome::NewTab(view->browser(), NewTabTypes::kNewTabCommand);
++  BrowserView* current = FindSlot(token);  // Client callbacks may re-enter.
++  if (!current || current != view ||
++      current->browser()->GetTabStripModel()->GetIndexOfWebContents(contents) ==
++          TabStripModel::kNoTab) return 0;
++  auto created = ChromeBrowserHostImpl::GetBrowserForContents(contents);
++  return created && created->GetIdentifier() != anchor->GetIdentifier()
++      ? created->GetIdentifier() : 0;
++}
++extern "C" CEF_EXPORT int bato_native_slot_request_close_v1(
++    uint64_t token, int browser_id) {
++  if (!NSThread.isMainThread || !g_page_callbacks.close_cancelled) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view) return 0;
++  auto browser = BrowserInSlot(view, browser_id);
++  if (!browser) return 0;
++  auto* contents = browser->GetWebContents();
++  if (!contents) return 0;
++  contents->SetUserData(&kPageCloseObserverKey,
++      std::make_unique<PageCloseObserver>(contents, token, browser_id));
++  browser->CloseBrowser(false);  // Preserve the default dialog and beforeunload.
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT()) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view || !view->GetFocusManager()) return 0;
++  auto* host = Slots().at(view).host;
++  host->RequestFocus();  // NativeViewHost::OnFocus enters ViewsHostable focus.
++  // Focus callbacks can re-enter client code and destroy the original window.
++  BrowserView* current = FindSlot(token);
++  if (!current || !current->GetFocusManager()) return 0;
++  return current->GetFocusManager()->GetFocusedView() == Slots().at(current).host ? 1 : 0;
++}
 +extern "C" CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token) {
 +  if (!NSThread.isMainThread) return 0;
 +  BrowserView* view = FindSlot(token);
@@ -289,6 +430,7 @@
 +    }
 +    const uint64_t token = state.token;
 +    const bool attached = !!state.adapter;
++    state.tab_observer.reset();  // Stop selection events before native teardown.
 +    if (state.host) {
 +      state.host->SetVisible(false);
 +      state.host->Detach();
@@ -338,6 +480,10 @@
 +    state.host->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
 +    state.host->SetBoundsRect(state.bounds);
 +    state.host->Attach(gfx::NativeView(state.adapter->root()));
++    if (g_page_callbacks.version == 1) {
++      state.tab_observer = std::make_unique<SlotTabObserver>(
++          view->browser()->GetTabStripModel(), state.token);
++    }
 +    ObserveFullscreen(view, state);
 +    fprintf(stderr, "{\"event\":\"native-slot-attached\",\"token\":%llu}\n", (unsigned long long)state.token);
 +  }
@@ -470,7 +616,7 @@
          fullscreen);
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,52 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -497,6 +643,26 @@
 +// Returns the active page's process-local CEF browser identifier, or 0 when
 +// the slot is unavailable/blocked. Main thread only; never persist this value.
 +CEF_EXPORT int bato_native_slot_active_browser_id_v1(uint64_t token);
++// Page callbacks are separate from slot lifetime. Register once before
++// CefInitialize; function/context remain valid until CefShutdown returns.
++typedef struct BatoPageCallbacksV1 {
++  size_t size;
++  uint32_t version;
++  void* context;
++  void (*close_cancelled)(void* context, uint64_t token, int browser_id);
++  // Selection changed to a CEF page in this normal window; browser_id is > 0.
++  void (*active_changed)(void* context, uint64_t token, int browser_id);
++} BatoPageCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_page_callbacks_v1(const BatoPageCallbacksV1* callbacks);
++// Creates one normal tab in the known slot window; returns its process-local
++// CEF identifier after synchronous insertion, or 0 when creation is refused.
++CEF_EXPORT int bato_native_slot_new_tab_v1(uint64_t token);
++// Requests a normal, cancellable close only for a page in this slot window.
++// Returns request acceptance, not completed closure; use CEF OnBeforeClose.
++CEF_EXPORT int bato_native_slot_request_close_v1(uint64_t token, int browser_id);
++// Requests Views focus ownership for the native host. Returns 1 when the live
++// host owns Views focus; the client may then focus/select its editable field.
++CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
 +CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 +CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 +#ifdef __cplusplus

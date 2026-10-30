@@ -71,6 +71,22 @@ class NativeSlotTest(unittest.TestCase):
             slot.apply(self.root, layers)
         self.assertEqual(target.read_text(), 'new header\n')
 
+    def test_staged_repository_source_drift_is_refused(self):
+        repository = self.root / 'repository'
+        repository.mkdir()
+        original = repository / 'Page.swift'
+        original.write_text('new header\n')
+        manifest_path = self.artifacts / 'client.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['source_mirrors'] = {'Page.swift': 'new.h'}
+        manifest_path.write_text(json.dumps(manifest))
+        with mock.patch.object(slot, 'REPOSITORY', repository):
+            slot.load_layers(self.source)
+            original.write_text('newer application source\n')
+            with self.assertRaisesRegex(RuntimeError, 'staged source differs'):
+                slot.load_layers(self.source)
+        self.assertFalse((self.source / 'cef/new.h').exists())
+
     def test_tampered_patch_and_escaping_target_refused(self):
         patch = self.artifacts / 'engine.patch'
         patch.write_text(patch.read_text() + 'tampered')

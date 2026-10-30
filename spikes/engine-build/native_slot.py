@@ -13,6 +13,7 @@ import engine
 import runtime
 
 ARTIFACTS = engine.HERE.parent / 'engine-native-slot'
+REPOSITORY = engine.HERE.parent.parent
 RESERVATION_PATH = 'chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc'
 RESERVATION_BASE_SHA = '1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15'
 
@@ -53,6 +54,16 @@ def load_layers(source):
                     raise RuntimeError('Invalid native slot source hash')
             entry.update(relative=str(relative), target=target)
             entries.append(entry)
+        # Swift application sources are staged into the pinned engine tree.
+        # Refuse stale copies rather than silently compiling an older sidebar.
+        for repository_path, target_path in manifest.get('source_mirrors', {}).items():
+            original = REPOSITORY / repository_path
+            relative = Path(repository_path)
+            target = next((e for e in entries if e['path'] == target_path and e['root'] == 'cef'), None)
+            if (relative.is_absolute() or '..' in relative.parts or
+                    not original.resolve().is_relative_to(REPOSITORY.resolve()) or
+                    target is None or digest(original) != target['patched_sha256']):
+                raise RuntimeError('Native slot staged source differs: ' + repository_path)
         # All patches use Chromium-relative paths, even for embedded CEF files.
         headers = re.findall(r'^(?:--- a/|\+\+\+ b/)(.+)$', patch.read_text(), re.M)
         if not entries or set(headers) != {entry['relative'] for entry in entries}:

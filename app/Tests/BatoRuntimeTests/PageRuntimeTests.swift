@@ -279,4 +279,71 @@ struct PageRuntimeTests {
         #expect(runtime.livePages[id] == page)
         #expect(runtime.pendingClose.isEmpty)
     }
+    @Test func unsolicitedTeardownPreservesOrganizationAndRejectsLateCallbacks() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Preserved session")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in saves += 1 })
+        runtime.start()
+        let old = try #require(runtime.livePages[id])
+        runtime.receive(.unloaded(old))
+        #expect(runtime.state == state)
+        #expect(runtime.livePages.isEmpty)
+        #expect(engine.visible == nil)
+        #expect(saves == 0)
+        runtime.receive(.navigation(old, url: next, title: "Late"))
+        runtime.receive(.closed(old))
+        #expect(runtime.state == state)
+        #expect(saves == 0)
+        runtime.selectEntry(id)
+        #expect(runtime.livePages[id] != old)
+    }
+
+    @Test func engineTabSelectionAtomicallyRestoresOwnerWorkspace() throws {
+        var state = BrowserState.initial()
+        let owner = state.activeWorkspaceID
+        let first = try state.addTab(url: start, title: "First")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saved: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { saved.append($0) })
+        runtime.start()
+        let page = try #require(runtime.livePages[first])
+        runtime.addWorkspace(name: "Other")
+        let other = runtime.state.activeWorkspaceID
+        runtime.receive(.selected(page))
+        #expect(runtime.state.activeWorkspaceID == owner)
+        #expect(runtime.state.currentWorkspace.activeEntryID == first)
+        #expect(saved.last?.activeWorkspaceID != other)
+        #expect(engine.created.count == 1)
+        let count = saved.count
+        runtime.receive(.selected(page))
+        #expect(saved.count == count)
+        runtime.receive(.selectionCleared)
+        #expect(runtime.state.currentWorkspace.activeEntryID == nil)
+        #expect(runtime.state.visibleEntries.count == 1)
+        #expect(runtime.livePages[first] == page)
+    }
+
+    @Test func failedExternalSelectionRestoresCommittedEnginePage() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        let second = try state.addTab(url: next, title: "Second")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var fails = false
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in if fails { throw Failure.disk } })
+        runtime.start()
+        runtime.selectEntry(first)
+        let firstPage = try #require(runtime.livePages[first])
+        let secondPage = try #require(runtime.livePages[second])
+        fails = true
+        engine.visible = secondPage
+        runtime.receive(.selected(secondPage))
+        #expect(runtime.state.currentWorkspace.activeEntryID == first)
+        #expect(engine.visible == firstPage)
+        runtime.receive(.selectionCleared)
+        #expect(runtime.state.currentWorkspace.activeEntryID == first)
+        #expect(engine.visible == firstPage)
+    }
+
 }

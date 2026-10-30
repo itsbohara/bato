@@ -19,6 +19,11 @@ public enum PageEvent: Sendable {
     case closed(LivePage)
     case closeCancelled(LivePage)
     case creationFailed(LivePage)
+    /// Unsolicited window/application teardown unloads a page without deleting
+    /// the saved session entry. Explicit page close uses `closed` instead.
+    case unloaded(LivePage)
+    case selected(LivePage)
+    case selectionCleared
 }
 
 /// All calls and events use the main actor. Acceptance of create means the adapter
@@ -120,6 +125,33 @@ public final class PageRuntime {
 
     public func receive(_ event: PageEvent) {
         switch event {
+        case let .selected(page):
+            guard livePages[page.entryID] == page else { return }
+            if state.currentWorkspace.activeEntryID == page.entryID { return }
+            let accepted = change { candidate in
+                if !candidate.visibleEntries.contains(where: { $0.id == page.entryID }) {
+                    guard let owner = candidate.workspaces.first(where: {
+                        $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
+                    }) else { throw PageRuntimeError.invalidCommand }
+                    try candidate.activateWorkspace(owner.id)
+                }
+                try candidate.selectEntry(page.entryID)
+            }
+            if !accepted { engine.select(selectedLivePage) }
+        case .selectionCleared:
+            guard state.currentWorkspace.activeEntryID != nil else { return }
+            let accepted = change { candidate in
+                guard let index = candidate.workspaces.firstIndex(where: { $0.id == candidate.activeWorkspaceID }) else {
+                    throw PageRuntimeError.invalidCommand
+                }
+                candidate.workspaces[index].activeEntryID = nil
+            }
+            if !accepted { engine.select(selectedLivePage) }
+        case let .unloaded(page):
+            guard livePages[page.entryID] == page else { return }
+            livePages.removeValue(forKey: page.entryID)
+            pendingClose.remove(page)
+            engine.select(selectedLivePage)
         case let .creationFailed(page):
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)

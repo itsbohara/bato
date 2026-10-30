@@ -57,3 +57,7 @@ The client build adds one contained Swift library in the sample app's Frameworks
 The fourth export, `bato_native_slot_active_browser_id_v1`, returns the active page's process-local CEF identifier for a live, visible, unblocked slot. It returns zero otherwise. The new native destination field and **Navigate current page** button use that identifier with public `CefBrowserHost::GetBrowserByIdentifier` and `GetMainFrame()->LoadURL`. HTTP(S), a nonempty host and no nonempty username/password are required. The status distinguishes a submitted navigation request from refusal; it does not assert page load success. Neither destination text nor page titles are logged by this action.
 
 This diagnostic resolves the current page on each action. It does not map saved Bato entries to engine pages, create tabs, change organization storage or establish Profile isolation. The separate [application runtime coordinator and adapter contract](../../app/ENGINE-ADAPTER.md) cover that next integration.
+
+## Native workspace connection
+
+The opt-in workspace host now connects a real native organization sidebar to Chromium pages. Read [workspace results and retained failures](WORKSPACE-RESULTS.md) and [application host notes](../../app/CHROMIUM.md). The current matching framework/client resolves eight authored exports; historical diagnostic-only results above retain their original four-symbol scope. Source mirrors guard the four staged Swift modules before builds. Page-focused CmdW and broader host acceptance remain open.

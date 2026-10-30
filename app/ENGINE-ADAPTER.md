@@ -1,6 +1,6 @@
 # Chromium page adapter
 
-The organization preview remains separate from the source-built browser. `BatoRuntime` defines the next connection: stable organization IDs map to process-local `LivePage` generations, never persisted CEF identifiers. Its fake-engine tests establish coordinator behavior; they do not establish Chromium integration.
+The standalone organization preview remains separate from the source-built browser. The opt-in source host now connects `BatoBrowserUI` and `BatoRuntime` through a bounded adapter: stable organization IDs map to process-local `LivePage` generations, never persisted CEF identifiers. Its fake-engine tests establish coordinator behavior; they do not establish Chromium integration.
 
 ## Coordinator contract
 
@@ -18,8 +18,8 @@ The full adapter must bind a generation to one fixed browser identifier, verify 
 
 Do not bind or focus inline in `OnAfterCreated`: `ChromeBrowserDelegate::CreateBrowserHost` calls `Attach` and the callback before `SetBrowser` and before tab-strip insertion completes. Retain the reference and post reconciliation to the CEF UI thread. Main-frame `OnAddressChange` and `OnTitleChange` must copy callback strings and route them by the fixed binding, even when another page is active.
 
-`CreateBrowser` creates another normal window. Same-window tab creation needs a bounded checked `IDC_NEW_TAB` command and an unambiguous returned browser identity after dispatch. Do not guess which later `OnAfterCreated` belongs to a command. Source and runtime verification of that creation contract, close-cancellation notification, and blank/unloaded selection are still required before implementing the real `PageEngine` adapter. Do not substitute separate CEF windows or hide these limitations behind the organization preview.
+`CreateBrowser` creates another normal window. Same-window tab creation needs a bounded checked `IDC_NEW_TAB` command and an unambiguous returned browser identity after dispatch. Do not guess which later `OnAfterCreated` belongs to a command. The authored new-tab helper now returns the exact inserted WebContents identity. Close cancellation uses a WebContents-owned observer, and blank selection retains a protected placeholder tab. Runtime acceptance of the full workflow remains in progress; see CHROMIUM.md. Do not substitute separate CEF windows or hide these limitations behind the organization preview.
 
 ## Next acceptance
 
-Wire the actual native sidebar/session to the adapter, then demonstrate selected-entry creation, switching without accidental re-navigation, navigation/title persistence, saved reset, temporary close, beforeunload cancellation, and lazy clean restart. Restrict the first integration to one explicitly bound engine Profile. Multi-Profile isolation, native split ownership and remaining extension acceptance continue as separate gates.
+The first opt-in native sidebar/session connection now demonstrates selected-entry creation, external tab selection, navigation/title persistence, saved reset/reload, temporary close, default beforeunload cancellation and selected-entry clean restart. Complete page-focused keyboard routing and broader lazy/multiwindow/split acceptance next. Restrict the first integration to one explicitly bound engine Profile. Multi-Profile isolation, native split ownership and remaining extension acceptance continue as separate gates.

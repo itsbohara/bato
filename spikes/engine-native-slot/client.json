@@ -2,43 +2,96 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "9eabb41e48dc874c14c3c3e4d21b40c16960b91907eabe3d36febfe1d7d0b09d",
+  "patch_sha256": "ba0538798516a28e2d78d26645a5052a4e6ec7c1a5f245a259e5106ad0310fe5",
   "files": [
     {
       "root": "cef",
       "path": "tests/cefsimple/cefsimple_mac.mm",
       "original_sha256": "bae6c935e237922a603172bb397241a92eb8e09dd184932c235369c2566b22a8",
-      "patched_sha256": "6cab9121888d83d6729f3d19d091006df2c33b74f4464f69dfcd047c88547a21"
+      "patched_sha256": "8f023765b1c248cf70e1714a04f31723d2f70675a735c12c63e0e50dd1f1b674"
     },
     {
       "root": "cef",
       "path": "BUILD.gn",
       "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
-      "patched_sha256": "6452a5100362f5c6add3e81c838ca1cbf478a39cf490341c71a4526718b0e65f"
+      "patched_sha256": "3279b8f1af896fd88a9450314351448d2e359e564db936de4371ce420466e46f"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "295891d98b2d3ea29c8742489bd3d4bd21a98f4bcbf180b6c501f5c55c712ee6"
+      "patched_sha256": "0693fa607427d1fe2487799d587151e86d1eee399b0f915babefcf01ec585eaf"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.h",
       "original_sha256": null,
-      "patched_sha256": "c1c8a9d97920cd34629e6c35d93e4016c4f2133f2cd1aa6c2990a124450b6d92"
+      "patched_sha256": "49520d1732c179799012e44c9f565fe3bc55a651c9afd7cacbeeef908986757a"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "1a5d4690c79f0ef1ed42b9f0a49b18fe2b143588bf0c4aef4e8d0ae3defedc89"
+      "patched_sha256": "20042be07ec18623acb20583e31c5080b6bf38613eedd09583d0e73f2c7d60e2"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/NativeSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "6e7370e3fd3b0e7e3a7d15b03ed0e569cb6c572fbba659b11bafc4864f504a9e"
+      "patched_sha256": "237a942f7bd80d99e84b920a50909f326481e653a8a8b48d342a18f9d629f52b"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/WorkspaceSlot.swift",
+      "original_sha256": null,
+      "patched_sha256": "1d885f819bc604c32cbd06601d7753791f83932cd2f2345fcdbeedbbfdb28a01"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/simple_handler.cc",
+      "original_sha256": "85159e40770d0f4f3307647f961a2cf1e827a60054a8ef90324e6717842a1f2f",
+      "patched_sha256": "b4c39caa450fc4331e8a851a736e51172c4a0b4eb885dae50c9cdb0c51580da6"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/simple_handler.h",
+      "original_sha256": "904ddc8965cb3dbef7763c437cf128acc14812466785530a5c9acb363d7f60b1",
+      "patched_sha256": "080b8973d0dd818ba9c2f6c06c9295b67adbf3545dcb54fb1c687fb370324619"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
+      "original_sha256": null,
+      "patched_sha256": "00aa04343c76c7dd661b7080ee3b648573dd963d6c1612d4ecd779ec6e254ea3"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
+      "original_sha256": null,
+      "patched_sha256": "d62fa75b3f520cde895c3906cd301f4103a480f0214d1eb88384790457c44fe0"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
+      "original_sha256": null,
+      "patched_sha256": "0f5778277d305ffe9b78c133f3201d4e7180e2759e5c2c1c5d76fdf01e79477f"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
+      "original_sha256": null,
+      "patched_sha256": "55c84a201d9e462100dcdcc96ee71ac9743a7d0edba802e8c21d2b7c3be69c9f"
     }
-  ]
+  ],
+  "source_mirrors": {
+    "spikes/engine-native-slot/client/native_slot_client.mm": "tests/cefsimple/native_slot_client.mm",
+    "spikes/engine-native-slot/client/native_slot_client.h": "tests/cefsimple/native_slot_client.h",
+    "spikes/engine-native-slot/client/compile_native_slot.py": "tests/cefsimple/compile_native_slot.py",
+    "spikes/engine-native-slot/client/NativeSlot.swift": "tests/cefsimple/NativeSlot.swift",
+    "spikes/engine-native-slot/client/WorkspaceSlot.swift": "tests/cefsimple/WorkspaceSlot.swift",
+    "app/Sources/BatoCore/BrowserState.swift": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
+    "app/Sources/BatoPersistence/OrganizationStore.swift": "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
+    "app/Sources/BatoRuntime/PageRuntime.swift": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
+    "app/Sources/BatoBrowserUI/NativeWorkspaceController.swift": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift"
+  }
 }

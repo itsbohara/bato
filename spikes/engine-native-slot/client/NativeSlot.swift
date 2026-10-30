@@ -121,8 +121,11 @@ public func setActions(_ focus: @escaping @convention(c) (UInt64) -> Int32,
 }
 
 @_cdecl("BatoSwiftNativeSlotCreate")
-public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
+@MainActor public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
     precondition(Thread.isMainThread)
+    if workspaceModeEnabled() {
+        return createWorkspaceSlot(token)
+    }
     guard slots[token] == nil else { return nil }
     let slot = Slot(token: token)
     slots[token] = slot
@@ -130,15 +133,23 @@ public func create(_ token: UInt64) -> UnsafeMutableRawPointer? {
 }
 
 @_cdecl("BatoSwiftNativeSlotFocusTarget")
-public func focusTarget(_ token: UInt64) -> UnsafeMutableRawPointer? {
+@MainActor public func focusTarget(_ token: UInt64) -> UnsafeMutableRawPointer? {
     precondition(Thread.isMainThread)
+    if workspaceModeEnabled() {
+        return focusWorkspaceSlot(token)
+    }
     guard let slot = slots[token] else { return nil }
     return Unmanaged.passUnretained(slot.field).toOpaque()
 }
 
 @_cdecl("BatoSwiftNativeSlotDetached")
-public func detached(_ token: UInt64) {
+@MainActor public func detached(_ token: UInt64) {
     precondition(Thread.isMainThread)
+    if workspaceModeEnabled() {
+        detachWorkspaceSlot(token)
+        report("slot-client-detached", token: token)
+        return
+    }
     guard slots.removeValue(forKey: token) != nil else { return }
     report("slot-client-detached", token: token, count: slots.count)
 }
