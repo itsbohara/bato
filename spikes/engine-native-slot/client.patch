@@ -94,7 +94,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,460 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -470,19 +470,21 @@
 +    auto peer = CurrentPeer(token, *available);
 +    if (!peer || !SameWindow(peer, browser) ||
 +        !browser->GetHost()->GetRequestContext()->IsSame(available->context)) continue;
-+    int identifier = browser->GetIdentifier();
-+    if (command == 2) {
-+      if (available->anchor && available->anchor->IsSame(browser)) {
-+        identifier = 0;  // Closing the blank placeholder never closes a Bato entry.
-+      } else if (!available->pages.contains(identifier)) {
-+        return false;  // Let Chrome close its own untracked tab.
-+      }
-+    }
++    // A same-window callback is not sufficient authority to target a Bato page.
++    // Resolve the actual active tab, leaving Chrome-owned tabs to Chrome.
++    const int active_identifier = g_active_browser_id(token);
++    if (active_identifier <= 0 || browser->GetIdentifier() != active_identifier)
++      return false;
++    const int identifier = ActiveWorkspacePage(token);
++    if (identifier < 0) return false;
 +    CefPostTask(TID_UI, base::BindOnce(
-+        [](uint64_t token, int command, int identifier) {
-+          if (WorkspaceSlots().contains(token))
-+            BatoSwiftWorkspaceCommand(token, command, identifier);
-+        }, token, command, identifier));
++        [](uint64_t token, int command, int identifier, int active_identifier) {
++          // Selection can change before this task runs. Never reselect/close a
++          // background page on behalf of an obsolete command.
++          if (g_active_browser_id(token) != active_identifier ||
++              ActiveWorkspacePage(token) != identifier) return;
++          BatoSwiftWorkspaceCommand(token, command, identifier);
++        }, token, command, identifier, active_identifier));
 +    return true;
 +  }
 +  return false;
@@ -778,7 +780,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,249 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -868,10 +870,10 @@
 +    let root = AttachedWorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
 +    var controller: NativeWorkspaceController?
 +    var engine: WorkspaceEngine?
-+    var menuRouter: WorkspaceMenuRouter?
++    var menuRouter: WorkspaceKeyRouter?
 +    init(token: UInt64, directory: URL) {
 +        do {
-+            let controller = try NativeWorkspaceController(directory: directory) { profileID in
++            let controller = try NativeWorkspaceController(directory: directory, handlesKeyEquivalents: false) { profileID in
 +                let engine = WorkspaceEngine(token: token, profileID: profileID)
 +                self.engine = engine
 +                return engine
@@ -888,7 +890,7 @@
 +                controller.root.topAnchor.constraint(equalTo: root.topAnchor),
 +                controller.root.bottomAnchor.constraint(equalTo: root.bottomAnchor)
 +            ])
-+            let router = WorkspaceMenuRouter(token: token, root: root)
++            let router = WorkspaceKeyRouter(token: token, root: root)
 +            menuRouter = router
 +            root.onAttach = { [weak controller, weak router] in
 +                controller?.start()
@@ -963,60 +965,69 @@
 +}
 +
 +
-+/// Cocoa menu key equivalents can bypass CEF's per-browser command hook.
-+/// Override only standard T/W items while this one workspace owns the key window.
-+@MainActor private final class WorkspaceMenuRouter: NSObject, NSMenuItemValidation {
++/// Route physical T/W before Chromium's page-focused key-equivalent path.
++/// Leave Chromium's menu items intact for untracked tabs and menu commands.
++@MainActor private final class WorkspaceKeyRouter {
 +    private let token: UInt64
 +    private weak var root: NSView?
-+    private var originals: [(NSMenuItem, AnyObject?, Selector?, Int32)] = []
++    private var keyMonitor: Any?
++    private var acceptedKeys: Set<UInt16> = []
++    private var deactivationObserver: NSObjectProtocol?
 +    init(token: UInt64, root: NSView) { self.token = token; self.root = root }
 +    func install() {
-+        guard originals.isEmpty, let menu = NSApp.mainMenu else { return }
-+        let newTag = commandID?(1) ?? -1
-+        let closeTag = commandID?(2) ?? -1
-+        func visit(_ menu: NSMenu) {
-+            for item in menu.items {
-+                if let submenu = item.submenu { visit(submenu) }
-+                let modifiers = item.keyEquivalentModifierMask.intersection([.command, .shift, .control, .option])
-+                let command: Int32
-+                if newTag > 0 && item.tag == newTag { command = 1 }
-+                else if closeTag > 0 && item.tag == closeTag { command = 2 }
-+                else if modifiers == .command && item.keyEquivalent == "t" { command = 1 }
-+                else if modifiers == .command && item.keyEquivalent == "w" { command = 2 }
-+                else { continue }
-+                originals.append((item, item.target as AnyObject?, item.action, command))
-+                item.target = self
-+                item.action = #selector(dispatch(_:))
++        if keyMonitor == nil {
++            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
++                // AppKit delivers local event monitors on the main thread.
++                MainActor.assumeIsolated {
++                    guard let self else { return event }
++                    return self.routeKey(event)
++                }
 +            }
 +        }
-+        visit(menu)
++        if deactivationObserver == nil {
++            deactivationObserver = NotificationCenter.default.addObserver(
++                forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main
++            ) { [weak self] _ in
++                MainActor.assumeIsolated { self?.acceptedKeys.removeAll() }
++            }
++        }
 +    }
 +    func restore() {
-+        for (item, target, action, _) in originals where (item.target as AnyObject?) === self {
-+            item.target = target
-+            item.action = action
-+        }
-+        originals.removeAll()
++        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
++        keyMonitor = nil
++        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
++        deactivationObserver = nil
++        acceptedKeys.removeAll()
 +    }
-+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
-+    @objc private func dispatch(_ item: NSMenuItem) {
-+        // Menu tracking can temporarily change the key window and restore its
-+        // responder after the action. Resolve/focus after that stack unwinds.
-+        DispatchQueue.main.async { [weak self, weak item] in
-+            guard let self, let item else { return }
-+            self.perform(item)
++    private func routeKey(_ event: NSEvent) -> NSEvent? {
++        if event.type == .keyUp {
++            acceptedKeys.remove(event.keyCode)
++            return event
 +        }
-+    }
-+    private func perform(_ item: NSMenuItem) {
-+        guard let original = originals.first(where: { $0.0 === item }) else { return }
++        if event.type == .flagsChanged {
++            if !event.modifierFlags.contains(.command) { acceptedKeys.removeAll() }
++            return event
++        }
++        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
++        guard modifiers == .command,
++              let key = event.charactersIgnoringModifiers, key == "t" || key == "w",
++              NSApp.isActive, let window = root?.window,
++              event.window === window, NSApp.keyWindow === window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
++        // Keep suppressing an accepted physical sequence if its first close
++        // exposes an untracked Chrome tab. Repeats begun there still pass through.
++        if event.isARepeat { return acceptedKeys.contains(event.keyCode) ? nil : event }
++        acceptedKeys.remove(event.keyCode) // A new physical sequence supersedes stale state.
++        // The bridge also rejects blocked pages, slot transitions and closing
++        // windows. Negative means an untracked Chrome tab or unavailable slot.
 +        let active = activePage?(token) ?? -1
-+        guard let window = root?.window,
-+              (NSApp.keyWindow === window || NSApp.mainWindow === window), active >= 0 else {
-+            if let action = original.2 { NSApp.sendAction(action, to: original.1, from: item) }
-+            return
-+        }
-+        if original.3 == 1 { workspaceCommand(token, 1, active) }
-+        if original.3 == 2, active > 0 { workspaceCommand(token, 2, active) }
++        guard active >= 0 else { return event }
++        acceptedKeys.insert(event.keyCode)
++        if key == "t" { workspaceCommand(token, 1, active) }
++        if key == "w", active > 0 { workspaceCommand(token, 2, active) }
++        // CmdW on the protected blank anchor deliberately does nothing, matching
++        // the protected placeholder policy; it must never close the workspace's host window.
++        return nil
 +    }
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
@@ -1921,7 +1932,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,338 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -1948,7 +1959,9 @@
 +    /// Load failures throw without replacing the existing document. The factory
 +    /// receives the organization Profile to bind to an explicit engine context.
 +    /// It must not infer engine isolation from this UUID alone.
-+    public init(directory: URL, makeEngine: (UUID) throws -> any PageEngine) throws {
++    /// Hosts with their own scoped keyboard router must disable sidebar key equivalents.
++    public init(directory: URL, handlesKeyEquivalents: Bool = true,
++                makeEngine: (UUID) throws -> any PageEngine) throws {
 +        let store = OrganizationStore<BrowserState>(directory: directory, validate: { try $0.validate() })
 +        let state: BrowserState
 +        if let restored = try store.load() {
@@ -1959,7 +1972,9 @@
 +        }
 +        let engine = try makeEngine(state.currentWorkspace.profileID)
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
-+        root = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
++        let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
++        sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
++        root = sidebar
 +        super.init()
 +        configureView()
 +        runtime.onStateChange = { [weak self] _ in self?.render() }
@@ -2209,6 +2224,7 @@
 +
 +@MainActor
 +private final class WorkspaceRoot: NSView {
++    var keyEquivalentsEnabled = true
 +    var newTab: (() -> Void)?
 +    var closeSelection: (() -> Void)?
 +    override var isFlipped: Bool { true }
@@ -2217,7 +2233,9 @@
 +    override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
 +    override func performKeyEquivalent(with event: NSEvent) -> Bool {
 +        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
-+        guard modifiers == .command else { return super.performKeyEquivalent(with: event) }
++        guard keyEquivalentsEnabled, modifiers == .command else {
++            return super.performKeyEquivalent(with: event)
++        }
 +        switch event.charactersIgnoringModifiers?.lowercased() {
 +        case "t": newTab?(); return true
 +        case "w": closeSelection?(); return true

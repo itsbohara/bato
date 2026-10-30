@@ -24,7 +24,9 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     /// Load failures throw without replacing the existing document. The factory
     /// receives the organization Profile to bind to an explicit engine context.
     /// It must not infer engine isolation from this UUID alone.
-    public init(directory: URL, makeEngine: (UUID) throws -> any PageEngine) throws {
+    /// Hosts with their own scoped keyboard router must disable sidebar key equivalents.
+    public init(directory: URL, handlesKeyEquivalents: Bool = true,
+                makeEngine: (UUID) throws -> any PageEngine) throws {
         let store = OrganizationStore<BrowserState>(directory: directory, validate: { try $0.validate() })
         let state: BrowserState
         if let restored = try store.load() {
@@ -35,7 +37,9 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         }
         let engine = try makeEngine(state.currentWorkspace.profileID)
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
-        root = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
+        let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
+        sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
+        root = sidebar
         super.init()
         configureView()
         runtime.onStateChange = { [weak self] _ in self?.render() }
@@ -285,6 +289,7 @@ private final class SidebarEntries: NSStackView {
 
 @MainActor
 private final class WorkspaceRoot: NSView {
+    var keyEquivalentsEnabled = true
     var newTab: (() -> Void)?
     var closeSelection: (() -> Void)?
     override var isFlipped: Bool { true }
@@ -293,7 +298,9 @@ private final class WorkspaceRoot: NSView {
     override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
-        guard modifiers == .command else { return super.performKeyEquivalent(with: event) }
+        guard keyEquivalentsEnabled, modifiers == .command else {
+            return super.performKeyEquivalent(with: event)
+        }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "t": newTab?(); return true
         case "w": closeSelection?(); return true

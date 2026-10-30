@@ -373,19 +373,21 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
     auto peer = CurrentPeer(token, *available);
     if (!peer || !SameWindow(peer, browser) ||
         !browser->GetHost()->GetRequestContext()->IsSame(available->context)) continue;
-    int identifier = browser->GetIdentifier();
-    if (command == 2) {
-      if (available->anchor && available->anchor->IsSame(browser)) {
-        identifier = 0;  // Closing the blank placeholder never closes a Bato entry.
-      } else if (!available->pages.contains(identifier)) {
-        return false;  // Let Chrome close its own untracked tab.
-      }
-    }
+    // A same-window callback is not sufficient authority to target a Bato page.
+    // Resolve the actual active tab, leaving Chrome-owned tabs to Chrome.
+    const int active_identifier = g_active_browser_id(token);
+    if (active_identifier <= 0 || browser->GetIdentifier() != active_identifier)
+      return false;
+    const int identifier = ActiveWorkspacePage(token);
+    if (identifier < 0) return false;
     CefPostTask(TID_UI, base::BindOnce(
-        [](uint64_t token, int command, int identifier) {
-          if (WorkspaceSlots().contains(token))
-            BatoSwiftWorkspaceCommand(token, command, identifier);
-        }, token, command, identifier));
+        [](uint64_t token, int command, int identifier, int active_identifier) {
+          // Selection can change before this task runs. Never reselect/close a
+          // background page on behalf of an obsolete command.
+          if (g_active_browser_id(token) != active_identifier ||
+              ActiveWorkspacePage(token) != identifier) return;
+          BatoSwiftWorkspaceCommand(token, command, identifier);
+        }, token, command, identifier, active_identifier));
     return true;
   }
   return false;

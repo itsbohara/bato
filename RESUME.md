@@ -1,5 +1,17 @@
 # Resume Bato
 
+## Latest keyboard checkpoint2026-10-31
+
+Page-focused CmdW is now narrowly verified. Read spikes/engine-native-slot/keyboard-evidence.json and WORKSPACE-RESULTS.md follow-up; prior workspace evidence remains historical. Local AppKit keyDown/keyUp/flagsChanged monitoring handles exact CmdT/W only for active owned key window/knownmanagedpage or protectedanchor, sheet/modal/lifecycle checks, physical-sequence repeat suppression, deactivation+detach cleanup. Chromium menu targets/actions stay original. Embedded NativeWorkspaceController opts out of NSView-tree shortcut fallback; default API behavior unchanged for othercallers. CEF command hook checks rawactiveID and managed/anchoridentity atcaptureANDpostedexecution, droppingobsoletecommands.21overlayfiles/9mirrors/8exports unchanged; noenginepatchchange.
+
+Retain failures: baseline reproducedpagefocusednoeffect,normalQuit0. Keyboardv1 localmonitorpassedCancel/activity0→1/Leave,butuntrackedNTPclosewronglyremovedbackgroundmanagedentry. SourcefoundWorkspaceRoot.performKeyEquivalent walksNSViewtreeandcallsruntimeoldselection; hostnowdisablesit. CEFpostedstaleidentityalsoguarded, butcallbackbrowsernotprovenstale. Keyboardv2safebutuntrackedCmdWnoopbecausemenuoverridebrokeChromiumreservedrecognition; removeoverride. v2heldCmdW1200msclosedonlymanagedplainpageandkeptNTP/anchor; actualrepeatcountsnotinstrumented. AllrunsnormalQuit0; preservealllogs/states.
+
+Finalkeyboardv3: FileNewTabcreatesChrome-ownedtabandCmdWclosesit;nativeCmdTfocuspassed. Managedquitfixture+ChromeNTPthenCmdWclosedonlyNTP; organizationequalbeforeafter. ActualpageArm→CmdWdefaultdialog→Cancelpreservedstableentry,actualactivity0→1. RepeatCmdW→Leave removedonlyTemp. Finalorganizationexactlyequalsprerun:2workspaces/1inactivepin/0temps/activeemptyWorkspace2. StandardappmenuQuit1remainingbrowser/1detach/loop+CEFshutdown/exit0. Currentmockworkspace-v3profileandstateknownclean; EVERYrestartmockKeychain. Noownedbrowser/buildrunning. CUAbindingskeyboardApp/Fixed/Final/ReleaseareEXITED; launchconfiguredfirstbeforequery. Fixture18765checkedlive.
+
+Finalincrementalbuild25.63s,527ARM64artifactimagespassed,client13filepatchroundtrip/9mirrorspassed;6overlayguardtestspassedearlierfollowup. ChangedSwiftcompiledinactualengine; existing40Swifttestsnotrerunforthiskeyboardchange. Build/artifacts/rawlogs SSDlogs/workspace-keyboard-{baseline,v1,v2,v3}*. Nevercheckout/configure; stagecanonicalappsourcebeforeclientmanifestregen.
+
+Userreiterated2026-10-31: don'tspendtimeonextensiveextensiontests; dummyloginwasjustlocalfixture,noextensionworkthisfollowup. Continueapplicationfeaturesnext;documentremainingenginecompatibilitygateswithoutreopeningextensionmatrix. FilemenuNewTabstillChrome-ownedorganizationintegrationpending; modifiedkeys/layouts/fullscreen/split/multiwindow/anchorlossothergatesremain. Userwantsnotificationwhenreadytocompact.
+
 ## Latest workspace checkpoint2026-10-31
 
 The opt-in source host now connects BatoBrowserUI/AppKit, BatoRuntime, private organization storage and real same-window Chromium pages. Standalone BatoShell remains a separate organization preview. Read app/CHROMIUM.md and app/ENGINE-ADAPTER.md. One window/one explicit engine context only; Profile UUID alone is not isolation. Current overlay is21files (8engine+13client),9repository source mirrors and8authoredexports. Use native_slot.py check/build/artifacts, never checkout/configure. Source mirrors deliberately refuse stale staged application files.

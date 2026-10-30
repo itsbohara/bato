@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "engine_patch_sha256": "73af033126867aec3b4a3d0896c953d9bc9b35d2e23865d036ff5949c5da9f74",
+  "client_patch_sha256": "fe7df93b360877ffb908cf927453ef1f4d401a9bb5b63490c6b4395ce9c8b2e1",
+  "overlay_files": 21,
+  "source_mirrors": 9,
+  "final_build_seconds": 25.63,
+  "client_patch_roundtrip": true,
+  "overlay_guard_tests": 6,
+  "baseline": {
+    "page_focused_cmd_w_no_effect_reproduced": true,
+    "normal_quit_exit_code": 0
+  },
+  "iterations": {
+    "v1_beforeunload_cancel_and_leave": true,
+    "v1_untracked_cmd_w_closed_background_entry": true,
+    "v1_quit_exit_code": 0,
+    "v2_untracked_organization_safe_but_shortcut_no_effect": true,
+    "v2_held_cmd_w_1200ms_closed_only_managed_page": true,
+    "v2_default_dialog_reached_after_sidebar_opt_out": true,
+    "v2_quit_exit_code": 0
+  },
+  "final_v3": {
+    "cmd_t_native_focus": true,
+    "original_file_new_tab_creates_chrome_owned_tab": true,
+    "untracked_cmd_w_closes_only_chrome_tab": true,
+    "untracked_close_organization_unchanged": true,
+    "page_focused_cmd_w_default_beforeunload": true,
+    "cancel_preserves_stable_entry": true,
+    "activity_after_cancel": [
+      0,
+      1
+    ],
+    "repeated_cmd_w_leave_removes_temporary_entry": true,
+    "final_organization_equals_before_run": true,
+    "quit_exit_code": 0,
+    "detach_count": 1,
+    "loop_returned": true,
+    "cef_shutdown_completed": true
+  },
+  "limits": [
+    "No extension flows tested in this follow-up",
+    "File-menu New Tab remains Chrome-owned rather than creating an organization entry",
+    "Modified shortcuts, keyboard layouts and broader window/fullscreen/split behavior unpassed",
+    "Held-key trial did not instrument OS repeat-event counts",
+    "Remaining application and engine gates are unchanged"
+  ],
+  "artifact_images_checked": 527
+}

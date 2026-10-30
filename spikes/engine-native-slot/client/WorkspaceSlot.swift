@@ -87,10 +87,10 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
     let root = AttachedWorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
     var controller: NativeWorkspaceController?
     var engine: WorkspaceEngine?
-    var menuRouter: WorkspaceMenuRouter?
+    var menuRouter: WorkspaceKeyRouter?
     init(token: UInt64, directory: URL) {
         do {
-            let controller = try NativeWorkspaceController(directory: directory) { profileID in
+            let controller = try NativeWorkspaceController(directory: directory, handlesKeyEquivalents: false) { profileID in
                 let engine = WorkspaceEngine(token: token, profileID: profileID)
                 self.engine = engine
                 return engine
@@ -107,7 +107,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
                 controller.root.topAnchor.constraint(equalTo: root.topAnchor),
                 controller.root.bottomAnchor.constraint(equalTo: root.bottomAnchor)
             ])
-            let router = WorkspaceMenuRouter(token: token, root: root)
+            let router = WorkspaceKeyRouter(token: token, root: root)
             menuRouter = router
             root.onAttach = { [weak controller, weak router] in
                 controller?.start()
@@ -182,59 +182,68 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 }
 
 
-/// Cocoa menu key equivalents can bypass CEF's per-browser command hook.
-/// Override only standard T/W items while this one workspace owns the key window.
-@MainActor private final class WorkspaceMenuRouter: NSObject, NSMenuItemValidation {
+/// Route physical T/W before Chromium's page-focused key-equivalent path.
+/// Leave Chromium's menu items intact for untracked tabs and menu commands.
+@MainActor private final class WorkspaceKeyRouter {
     private let token: UInt64
     private weak var root: NSView?
-    private var originals: [(NSMenuItem, AnyObject?, Selector?, Int32)] = []
+    private var keyMonitor: Any?
+    private var acceptedKeys: Set<UInt16> = []
+    private var deactivationObserver: NSObjectProtocol?
     init(token: UInt64, root: NSView) { self.token = token; self.root = root }
     func install() {
-        guard originals.isEmpty, let menu = NSApp.mainMenu else { return }
-        let newTag = commandID?(1) ?? -1
-        let closeTag = commandID?(2) ?? -1
-        func visit(_ menu: NSMenu) {
-            for item in menu.items {
-                if let submenu = item.submenu { visit(submenu) }
-                let modifiers = item.keyEquivalentModifierMask.intersection([.command, .shift, .control, .option])
-                let command: Int32
-                if newTag > 0 && item.tag == newTag { command = 1 }
-                else if closeTag > 0 && item.tag == closeTag { command = 2 }
-                else if modifiers == .command && item.keyEquivalent == "t" { command = 1 }
-                else if modifiers == .command && item.keyEquivalent == "w" { command = 2 }
-                else { continue }
-                originals.append((item, item.target as AnyObject?, item.action, command))
-                item.target = self
-                item.action = #selector(dispatch(_:))
+        if keyMonitor == nil {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+                // AppKit delivers local event monitors on the main thread.
+                MainActor.assumeIsolated {
+                    guard let self else { return event }
+                    return self.routeKey(event)
+                }
             }
         }
-        visit(menu)
+        if deactivationObserver == nil {
+            deactivationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.acceptedKeys.removeAll() }
+            }
+        }
     }
     func restore() {
-        for (item, target, action, _) in originals where (item.target as AnyObject?) === self {
-            item.target = target
-            item.action = action
-        }
-        originals.removeAll()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
+        deactivationObserver = nil
+        acceptedKeys.removeAll()
     }
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
-    @objc private func dispatch(_ item: NSMenuItem) {
-        // Menu tracking can temporarily change the key window and restore its
-        // responder after the action. Resolve/focus after that stack unwinds.
-        DispatchQueue.main.async { [weak self, weak item] in
-            guard let self, let item else { return }
-            self.perform(item)
+    private func routeKey(_ event: NSEvent) -> NSEvent? {
+        if event.type == .keyUp {
+            acceptedKeys.remove(event.keyCode)
+            return event
         }
-    }
-    private func perform(_ item: NSMenuItem) {
-        guard let original = originals.first(where: { $0.0 === item }) else { return }
+        if event.type == .flagsChanged {
+            if !event.modifierFlags.contains(.command) { acceptedKeys.removeAll() }
+            return event
+        }
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        guard modifiers == .command,
+              let key = event.charactersIgnoringModifiers, key == "t" || key == "w",
+              NSApp.isActive, let window = root?.window,
+              event.window === window, NSApp.keyWindow === window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
+        // Keep suppressing an accepted physical sequence if its first close
+        // exposes an untracked Chrome tab. Repeats begun there still pass through.
+        if event.isARepeat { return acceptedKeys.contains(event.keyCode) ? nil : event }
+        acceptedKeys.remove(event.keyCode) // A new physical sequence supersedes stale state.
+        // The bridge also rejects blocked pages, slot transitions and closing
+        // windows. Negative means an untracked Chrome tab or unavailable slot.
         let active = activePage?(token) ?? -1
-        guard let window = root?.window,
-              (NSApp.keyWindow === window || NSApp.mainWindow === window), active >= 0 else {
-            if let action = original.2 { NSApp.sendAction(action, to: original.1, from: item) }
-            return
-        }
-        if original.3 == 1 { workspaceCommand(token, 1, active) }
-        if original.3 == 2, active > 0 { workspaceCommand(token, 2, active) }
+        guard active >= 0 else { return event }
+        acceptedKeys.insert(event.keyCode)
+        if key == "t" { workspaceCommand(token, 1, active) }
+        if key == "w", active > 0 { workspaceCommand(token, 2, active) }
+        // CmdW on the protected blank anchor deliberately does nothing, matching
+        // the protected placeholder policy; it must never close the workspace's host window.
+        return nil
     }
 }
