@@ -21,6 +21,9 @@ typedef struct BatoNativeSlotCallbacksV1 {
   void* (*focus_target)(void* context, uint64_t token);
 } BatoNativeSlotCallbacksV1;
 CEF_EXPORT int bato_native_slot_register_v1(const BatoNativeSlotCallbacksV1* callbacks);
+// Returns the active page's process-local CEF browser identifier, or 0 when
+// the slot is unavailable/blocked. Main thread only; never persist this value.
+CEF_EXPORT int bato_native_slot_active_browser_id_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 #ifdef __cplusplus

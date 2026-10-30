@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "980aefd9b9fb3d961669b749fcc0ec2b9c81b7ce6e8cbd5666a45404f21370da",
+  "patch_sha256": "9eabb41e48dc874c14c3c3e4d21b40c16960b91907eabe3d36febfe1d7d0b09d",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "e597636c2041a1b0543433b01b0eff0ff7ed0baee601a1f9c463740f1a136244"
+      "patched_sha256": "295891d98b2d3ea29c8742489bd3d4bd21a98f4bcbf180b6c501f5c55c712ee6"
     },
     {
       "root": "cef",
@@ -38,7 +38,7 @@
       "root": "cef",
       "path": "tests/cefsimple/NativeSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "15b6c439fd8bb22feaf16e15ab49f3293bf2bbfb36d69a45ce46e6530140a0dd"
+      "patched_sha256": "6e7370e3fd3b0e7e3a7d15b03ed0e569cb6c572fbba659b11bafc4864f504a9e"
     }
   ]
 }

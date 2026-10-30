@@ -2,6 +2,16 @@
 
 Checkpoint: 2026-10-29, after successful source compilation and unlocked runtime tests. Product/design approval, public MIT repository and subagent-driven development remain authorized. Continue engineering without repeating settled product questions.
 
+## Latest checkpoint2026-10-30: page coordination and native navigation
+
+`app/Sources/BatoRuntime` now owns a main-actor live-page coordinator with explicit start/lazy selection, generation tokens, commit-before-effects and engine-confirmed/cancelled close semantics.14 runtime tests plus prior23 all pass (37total). Independent review fixed wrong visible content after creation failure/physical-close save failure and preserved navigation during a cancelled close. It is not wired into BatoShell or a real PageEngine yet. Read app/ENGINE-ADAPTER.md for the exact pinned creation/event/lifecycle seam and remaining work.
+
+Native-slot overlay now exposes4 authored symbols, adding active_browser_id_v1. The native destination field/button resolves that identity and submits HTTP(S) navigation via public CEF APIs, without logging destination/title/text. Source/client manifests preserve original hashes; guarded incremental build passed63.52s,527ARM64images checked,4exports independently verified,5overlayguard+2patchtests passed. No checkout/configure. Same native_slot.py commands remain valid.
+
+Actual v1 navigation changed login→storage fixture; file URL and synthetic credentials were refused without page change. Interruption lost its terminal wrapper and browser; no clean-exit claim forv1. Preserve Profile/log. Freshv2 explicitly created2Chrome tabs: native action navigated active second tab to modal.html, first retained login.html, nativecounterworked. Normal menuQuit closed2browsers, detachedonce, loopreturned/shutdowncompleted, persistedexit0. No owned browser/build remains. Fixture18765 was restarted after interruption (session46249); verify availability before reuse. Synthetic mock Profiles navigation-v1/v2 under SSD runtime/profiles; same mock provider on every restart.
+
+Next connect actual sidebar/session to the real adapter: same-window tab creation with unambiguous identity, stable generation binding, copied main-frame URL/title callbacks, beforeunload cancellation and blank/unloaded selection. Restrict first adapter to one explicit engine Profile; model UUID is not isolation. Existing native navigation diagnostic targets current page each action and does not create Bato organization pages. Remaining extension/split/modal gates continue alongside application work.
+
 ## Provisional application slice authorized and started2026-10-30
 
 The user explicitly approved beginning application implementation alongside remaining compatibility checks. Do not restore the old “no application until all gates pass” sequencing or ask those decisions again. Requirements and daily-use readiness gates remain.

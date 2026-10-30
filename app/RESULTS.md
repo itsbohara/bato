@@ -26,3 +26,11 @@ All organization fixtures and generated bundles remain under the SSD workspace. 
 ## Next slice
 
 Connect the organization/session and native sidebar to the source-built Chromium adapter. Map stable page IDs to live engine pages, apply Profile ownership, and feed navigation/title/close events back through validated commands. Retain the saved destination independently from live navigation and preserve lazy restore. Then continue remaining extension/focused-split, pointer-divider and modal-input acceptance. The provisional shell does not select a production engine foundation.
+
+## Live-page coordinator follow-up
+
+On2026-10-30, added `BatoRuntime` with14 fake-engine tests. The complete package suite now passes37 tests:11 core,9 store,3 shell-session and14 runtime. Initialization has no engine effects; explicit start restores selection. The runtime loads only the selected entry, reuses loaded generations, rejects unsupported Profiles before effects, and persists changes before publication/creation. Engine-confirmed closure controls saved reset/temporary removal; cancellation retains organization, including navigation received while a close was pending. Invalid URLs and stale generation callbacks are ignored.
+
+Independent review caught stale visible content after failed creation and after physical closure followed by a failed save. Both paths now reconcile the engine's visible selection, including hiding it when the committed selected entry is unloaded. Tests cover these foreground/background failures and synchronous creation/navigation callbacks that change selection. Review found no remaining blockers in this coordinator slice.
+
+These are coordinator tests, not Chromium adapter acceptance. The organization preview remains unchanged and does not render pages. The separate source-built native-slot diagnostic now navigates actual Chromium pages; see its results and [the connection contract](ENGINE-ADAPTER.md). Same-window creation, stable binding, navigation/title callbacks, close cancellation, and unloaded-content selection must still be implemented in the real adapter.

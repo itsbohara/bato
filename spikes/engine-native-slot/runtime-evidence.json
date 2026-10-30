@@ -179,5 +179,37 @@
     "Bitwarden/MetaMask popup and all real extension focused-split-pane behavior; AdGuard single-pane popup passed",
     "Production Keychain, signing, performance and engine foundation"
   ],
-  "privacy": "Synthetic pages and mock Profiles only. Raw logs, Profiles and archived failed patches remain in dedicated SSD workspace; entered text is neither logged nor persisted by client."
+  "privacy": "Synthetic pages and mock Profiles only. Raw logs, Profiles and archived failed patches remain in dedicated SSD workspace; entered text is neither logged nor persisted by client.",
+  "page_navigation_followup": {
+    "date": "2026-10-30",
+    "patch_sha256": "74c3bee7b682a57925d98129c3acf3b39e6d37ad3ac95d634015d87ff00e3ebe",
+    "client_patch_sha256": "9eabb41e48dc874c14c3c3e4d21b40c16960b91907eabe3d36febfe1d7d0b09d",
+    "build_seconds": 63.52,
+    "build_exit_code": 0,
+    "artifact_images_checked": 527,
+    "declared_exports_verified": 4,
+    "v1": {
+      "native_login_to_storage_navigation": true,
+      "file_url_refused": true,
+      "synthetic_credentials_refused": true,
+      "terminal_exit_status": "unavailable after interruption; not a clean-exit pass"
+    },
+    "v2": {
+      "native_navigation_targets_active_second_tab": true,
+      "first_tab_destination_preserved": true,
+      "native_action_after_switch": true,
+      "browser_count": 2,
+      "detach_count": 1,
+      "message_loop_returned": true,
+      "cef_shutdown_completed": true,
+      "exit_code": 0
+    },
+    "limits": [
+      "current-page diagnostic only",
+      "no stable organization binding",
+      "no adapter page creation or closure",
+      "no Profile isolation claim",
+      "no new extension acceptance"
+    ]
+  }
 }

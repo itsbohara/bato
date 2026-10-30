@@ -33,6 +33,8 @@ The default Profile here is an organization record, not a new engine data direct
 
 `BatoCore` owns the Codable organization and validated transactional commands. `BatoPersistence` reads/writes the whole small document; versioning permits later migrations or a different backend. `BatoShell` owns the native preview and commit-before-publication session. Live engine pages and loaded/unloaded state are intentionally outside Codable organization.
 
+`BatoRuntime` now supplies the main-actor live-page coordinator for the upcoming engine adapter. It loads selected entries lazily, separates process-local generations from saved IDs, and waits for confirmed engine closure before changing organization. Its fake-engine tests cover persistence failures, cancelled closes and late callbacks. The preview does not use this coordinator yet; see [the exact adapter contract and remaining connection work](ENGINE-ADAPTER.md).
+
 The previous-good file is one rollback candidate. Seven daily backups, migration/pre-import snapshots, abnormal-exit recovery and an automatic recovery UI remain future slices. Directory metadata syncing is best effort; power-loss durability is not established. Locking coordinates cooperating local writers, not a hostile filesystem.
 
 Folders, saved splits, Peek, archive, import, blocker controls, Profile creation/settings UI, workspace customization, page rendering and extension integration remain unimplemented application features. Required engine/extension checks continue alongside application work, as authorized on2026-10-30. See [acceptance results](RESULTS.md) and [the work plan](../TASK.md).

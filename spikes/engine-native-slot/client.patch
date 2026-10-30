@@ -87,10 +87,13 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,87 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
++#include "include/cef_browser.h"
++#include "include/cef_parser.h"
++#include "include/cef_task.h"
 +#include "include/internal/bato_native_slot.h"
 +#include "tests/cefsimple/native_slot_client.h"
 +
@@ -98,9 +101,34 @@
 +extern "C" void* BatoSwiftNativeSlotFocusTarget(uint64_t token);
 +extern "C" void BatoSwiftNativeSlotDetached(uint64_t token);
 +extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
-+                                              int (*advance)(uint64_t, int));
++                                              int (*advance)(uint64_t, int),
++                                              int (*navigate)(uint64_t, const char*));
 +
 +namespace {
++using ActiveBrowserId = decltype(&bato_native_slot_active_browser_id_v1);
++ActiveBrowserId g_active_browser_id = nullptr;
++
++// Synchronous native action only. The Swift UTF-8 pointer is copied before it
++// leaves this call; no URL, credentials or field contents are logged.
++int NavigateCurrentPage(uint64_t token, const char* utf8_url) {
++  if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
++      !g_active_browser_id || !utf8_url) return 0;
++  const CefString url(utf8_url);
++  CefURLParts parts;
++  if (!CefParseURL(url, parts)) return 0;
++  const auto scheme = CefString(&parts.scheme).ToString();
++  if ((scheme != "http" && scheme != "https") || parts.host.length == 0 ||
++      parts.username.length != 0 || parts.password.length != 0) return 0;
++  const int identifier = g_active_browser_id(token);
++  if (identifier <= 0) return 0;
++  auto browser = CefBrowserHost::GetBrowserByIdentifier(identifier);
++  if (!browser || !browser->IsValid()) return 0;
++  auto frame = browser->GetMainFrame();
++  if (!frame || !frame->IsValid()) return 0;
++  frame->LoadURL(url);
++  return 1;  // Request submitted; this does not report successful page load.
++}
++
 +void* Create(void*, uint64_t token) { return BatoSwiftNativeSlotCreate(token); }
 +void Detached(void*, uint64_t token) { BatoSwiftNativeSlotDetached(token); }
 +void* FocusTarget(void*, uint64_t token) { return BatoSwiftNativeSlotFocusTarget(token); }
@@ -127,8 +155,10 @@
 +      dlsym(loaded, "bato_native_slot_focus_browser_v1"));
 +  auto advance = reinterpret_cast<decltype(&bato_native_slot_advance_focus_v1)>(
 +      dlsym(loaded, "bato_native_slot_advance_focus_v1"));
++  auto active_browser_id = reinterpret_cast<ActiveBrowserId>(
++      dlsym(loaded, "bato_native_slot_active_browser_id_v1"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains the framework until shutdown.
-+  if (!registration || !focus || !advance) {
++  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
 +    return false;
 +  }
@@ -138,7 +168,8 @@
 +  callbacks.create = Create;
 +  callbacks.detached = Detached;
 +  callbacks.focus_target = FocusTarget;
-+  BatoSwiftNativeSlotSetActions(focus, advance);
++  g_active_browser_id = active_browser_id;
++  BatoSwiftNativeSlotSetActions(focus, advance, NavigateCurrentPage);
 +  const bool registered = registration(&callbacks) == 1;
 +  fprintf(stderr, "{\"event\":\"slot-client-registration\",\"success\":%s}\n",
 +          registered ? "true" : "false");
@@ -182,11 +213,13 @@
 +    main()
 --- /dev/null
 +++ b/cef/tests/cefsimple/NativeSlot.swift
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,144 @@
 +import AppKit
 +
 +private typealias FocusBrowser = @convention(c) (UInt64) -> Int32
 +private typealias AdvanceFocus = @convention(c) (UInt64, Int32) -> Int32
++private typealias NavigateCurrentPage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
++private var navigateCurrentPage: NavigateCurrentPage?
 +private var focusBrowser: FocusBrowser?
 +private var advanceFocus: AdvanceFocus?
 +
@@ -211,6 +244,8 @@
 +    let root = SlotRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 400))
 +    let field = NSTextField(string: "Native field")
 +    private let status = NSTextField(labelWithString: "Native action count: 0")
++    private let navigationField = NSTextField(string: "")
++    private let navigationStatus = NSTextField(labelWithString: "Current-page navigation only")
 +    private var count = 0
 +
 +    init(token: UInt64) {
@@ -227,7 +262,16 @@
 +        let action = NSButton(title: "Native action", target: self, action: #selector(clicked))
 +        action.setAccessibilityIdentifier("bato-native-slot-action")
 +        let focus = NSButton(title: "Focus browser", target: self, action: #selector(focusPage))
-+        let stack = NSStackView(views: [title, status, field, action, focus])
++        navigationField.placeholderString = "https://example.com"
++        navigationField.setAccessibilityLabel("Current page destination")
++        navigationField.setAccessibilityIdentifier("bato-native-slot-destination")
++        let navigate = NSButton(title: "Navigate current page", target: self,
++                                action: #selector(navigatePage))
++        navigate.setAccessibilityIdentifier("bato-native-slot-navigate")
++        navigationStatus.font = .systemFont(ofSize: 11)
++        navigationStatus.setAccessibilityIdentifier("bato-native-slot-navigation-status")
++        let stack = NSStackView(views: [title, status, field, action, focus,
++                                        navigationField, navigate, navigationStatus])
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
 +        stack.spacing = 12
@@ -237,7 +281,8 @@
 +            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
 +            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 +            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
-+            field.widthAnchor.constraint(equalTo: stack.widthAnchor)
++            field.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            navigationField.widthAnchor.constraint(equalTo: stack.widthAnchor)
 +        ])
 +        report("slot-client-created", token: token)
 +    }
@@ -251,6 +296,14 @@
 +    @objc private func focusPage() {
 +        _ = focusBrowser?(token)
 +        report("slot-client-focus-browser-requested", token: token)
++    }
++
++    @objc private func navigatePage() {
++        let destination = navigationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        let submitted = destination.withCString { navigateCurrentPage?(token, $0) == 1 }
++        navigationStatus.stringValue = submitted ? "Navigation requested" : "Navigation refused"
++        report(submitted ? "slot-client-navigation-requested" : "slot-client-navigation-refused",
++               token: token)
 +    }
 +
 +    func control(_ control: NSControl, textView: NSTextView,
@@ -275,10 +328,12 @@
 +
 +@_cdecl("BatoSwiftNativeSlotSetActions")
 +public func setActions(_ focus: @escaping @convention(c) (UInt64) -> Int32,
-+                       _ advance: @escaping @convention(c) (UInt64, Int32) -> Int32) {
++                       _ advance: @escaping @convention(c) (UInt64, Int32) -> Int32,
++                       _ navigate: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32) {
 +    precondition(Thread.isMainThread)
 +    focusBrowser = focus
 +    advanceFocus = advance
++    navigateCurrentPage = navigate
 +}
 +
 +@_cdecl("BatoSwiftNativeSlotCreate")

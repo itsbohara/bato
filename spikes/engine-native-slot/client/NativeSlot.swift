@@ -2,6 +2,8 @@ import AppKit
 
 private typealias FocusBrowser = @convention(c) (UInt64) -> Int32
 private typealias AdvanceFocus = @convention(c) (UInt64, Int32) -> Int32
+private typealias NavigateCurrentPage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
+private var navigateCurrentPage: NavigateCurrentPage?
 private var focusBrowser: FocusBrowser?
 private var advanceFocus: AdvanceFocus?
 
@@ -26,6 +28,8 @@ private final class Slot: NSObject, NSTextFieldDelegate {
     let root = SlotRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 400))
     let field = NSTextField(string: "Native field")
     private let status = NSTextField(labelWithString: "Native action count: 0")
+    private let navigationField = NSTextField(string: "")
+    private let navigationStatus = NSTextField(labelWithString: "Current-page navigation only")
     private var count = 0
 
     init(token: UInt64) {
@@ -42,7 +46,16 @@ private final class Slot: NSObject, NSTextFieldDelegate {
         let action = NSButton(title: "Native action", target: self, action: #selector(clicked))
         action.setAccessibilityIdentifier("bato-native-slot-action")
         let focus = NSButton(title: "Focus browser", target: self, action: #selector(focusPage))
-        let stack = NSStackView(views: [title, status, field, action, focus])
+        navigationField.placeholderString = "https://example.com"
+        navigationField.setAccessibilityLabel("Current page destination")
+        navigationField.setAccessibilityIdentifier("bato-native-slot-destination")
+        let navigate = NSButton(title: "Navigate current page", target: self,
+                                action: #selector(navigatePage))
+        navigate.setAccessibilityIdentifier("bato-native-slot-navigate")
+        navigationStatus.font = .systemFont(ofSize: 11)
+        navigationStatus.setAccessibilityIdentifier("bato-native-slot-navigation-status")
+        let stack = NSStackView(views: [title, status, field, action, focus,
+                                        navigationField, navigate, navigationStatus])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -52,7 +65,8 @@ private final class Slot: NSObject, NSTextFieldDelegate {
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
-            field.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            field.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            navigationField.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
         report("slot-client-created", token: token)
     }
@@ -66,6 +80,14 @@ private final class Slot: NSObject, NSTextFieldDelegate {
     @objc private func focusPage() {
         _ = focusBrowser?(token)
         report("slot-client-focus-browser-requested", token: token)
+    }
+
+    @objc private func navigatePage() {
+        let destination = navigationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submitted = destination.withCString { navigateCurrentPage?(token, $0) == 1 }
+        navigationStatus.stringValue = submitted ? "Navigation requested" : "Navigation refused"
+        report(submitted ? "slot-client-navigation-requested" : "slot-client-navigation-refused",
+               token: token)
     }
 
     func control(_ control: NSControl, textView: NSTextView,
@@ -90,10 +112,12 @@ private var slots: [UInt64: Slot] = [:]
 
 @_cdecl("BatoSwiftNativeSlotSetActions")
 public func setActions(_ focus: @escaping @convention(c) (UInt64) -> Int32,
-                       _ advance: @escaping @convention(c) (UInt64, Int32) -> Int32) {
+                       _ advance: @escaping @convention(c) (UInt64, Int32) -> Int32,
+                       _ navigate: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32) {
     precondition(Thread.isMainThread)
     focusBrowser = focus
     advanceFocus = advance
+    navigateCurrentPage = navigate
 }
 
 @_cdecl("BatoSwiftNativeSlotCreate")

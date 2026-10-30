@@ -39,7 +39,7 @@ Initial integration evidence is published in [FEASIBILITY-RESULTS.md](FEASIBILIT
 2. Integrate the demonstrated normal-window split control and clean-restart URL reconstruction into the eventual native host. Prove divider resizing and real-extension focused-pane behavior; controller URL storage is not Bato saved pins. Investigate the first extension-controller close-all hang despite later clean exits. Do not build two Alloy panes merely because the CEF BrowserView count is limited.
 3. Exercise Bitwarden autofill with a disposable test vault and controlled HTTPS fixture; exercise MetaMask with an unfunded disposable wallet. Keep real secrets out of artifacts.
 4. Extend Profile tests to multiple contexts/workspaces, more storage types, extension state, and clean restart with one consistent application identity. Investigate the cross-sample cookie observation before making broad persistence claims.
-5. Select the foundation only after reviewing these results; then begin application slices below.
+5. Select the production foundation only after reviewing these results. The later user authorization permits provisional application slices below while compatibility work continues.
 
 The exact pinned extension API creates visible splits in normal Chrome windows. It redirects requested tab creation away from a populated Views popup and rejects moves back into it. Do not treat that test as a path combining Swift sidebar geometry with native split support. Engine-facing layout/type changes need an independently built framework and acceptance; the current prebuilt engine does not expose those seams.
 
@@ -51,7 +51,7 @@ The user selected the external SSD's personal folder on 2026-10-28. Dedicated en
 
 ## 3. Provisional personal alpha implementation (authorized2026-10-30)
 
-The user authorized application work alongside the remaining compatibility checks. First slice in `app/`: Swift state model, atomic organization store and native organization preview. It exercises saved/temporary entry semantics without rendering web pages. Next connect the model/sidebar to the source-built Chromium adapter; then implement workspace/Profile lifecycle, folders, split pairs/Peek, extensions, Arc import, built-in blocking, and daily-use essentials. Add recovery, migration, and restart acceptance checks. Make each slice reviewable before integration.
+The user authorized application work alongside the remaining compatibility checks. First slice in `app/`: Swift state model, atomic organization store and native organization preview. It exercises saved/temporary entry semantics without rendering web pages. `BatoRuntime` now coordinates lazy live pages, confirmed/cancelled closes and late callbacks, verified with14 fake-engine cases. A separate native-slot current-page navigation diagnostic passes actual Chromium navigation and tab targeting. Next connect the model/sidebar through the real adapter described in app/ENGINE-ADAPTER.md; then implement workspace/Profile lifecycle, folders, split pairs/Peek, extensions, Arc import, built-in blocking, and daily-use essentials. Add recovery, migration, and restart acceptance checks. Make each slice reviewable before integration.
 
 ## 4. Daily-use acceptance
 

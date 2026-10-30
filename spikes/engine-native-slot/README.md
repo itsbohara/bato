@@ -50,4 +50,10 @@ python3 spikes/engine-build/native_slot.py artifacts
 
 Both engine and client patches apply from Chromium src. The runner verifies source pins and all preserved Quit/helper/reservation guard hashes, refuses conflicting new files or mixed states, checks both patches before writing either, and uses the existing SSD lock, reserve guard and two-job build. It never runs checkout/configure. The original engine.py build/runtime preview correctly refuses the changed overlay; use this runner while it is applied. Existing mock Profiles must keep the same provider on restart.
 
-The client build adds one contained Swift library in the sample app's Frameworks folder. The pinned Mac toolchain lacks a Swift tool, so a scoped GN action invokes Xcode's compiler into the dedicated SSD output. Framework registration uses RTLD_NOLOAD on the exact already-loaded framework and only the three authored ABI symbols. No extra framework is loaded and no private symbol is guessed.
+The client build adds one contained Swift library in the sample app's Frameworks folder. The pinned Mac toolchain lacks a Swift tool, so a scoped GN action invokes Xcode's compiler into the dedicated SSD output. Framework registration uses RTLD_NOLOAD on the exact already-loaded framework and only the four authored ABI symbols. No extra framework is loaded and no private symbol is guessed.
+
+## Current-page navigation seam
+
+The fourth export, `bato_native_slot_active_browser_id_v1`, returns the active page's process-local CEF identifier for a live, visible, unblocked slot. It returns zero otherwise. The new native destination field and **Navigate current page** button use that identifier with public `CefBrowserHost::GetBrowserByIdentifier` and `GetMainFrame()->LoadURL`. HTTP(S), a nonempty host and no nonempty username/password are required. The status distinguishes a submitted navigation request from refusal; it does not assert page load success. Neither destination text nor page titles are logged by this action.
+
+This diagnostic resolves the current page on each action. It does not map saved Bato entries to engine pages, create tabs, change organization storage or establish Profile isolation. The separate [application runtime coordinator and adapter contract](../../app/ENGINE-ADAPTER.md) cover that next integration.
