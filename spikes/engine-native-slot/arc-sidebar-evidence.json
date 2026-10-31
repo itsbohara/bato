@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Arc-style native sidebar in the existing 260-point Chromium native slot",
+  "status": "passed \u2014 bounded native sidebar real-host acceptance",
+  "source_changes": [
+    "app/Sources/BatoBrowserUI/NativeWorkspaceController.swift"
+  ],
+  "behavior": {
+    "surface": "Opaque workspace tint with draw-time semantic system colors",
+    "hierarchy": "Compact branded/workspace header, address surface, New tab focus and Find page, section counts, bottom workspace/Profile footer",
+    "favorites": "Two-column native 62-point tiles",
+    "rows": "34-point pins and temporary tabs with native symbols, selected and hover states",
+    "close_controls": "Always present, keyboard/accessibility-labelled close or unload actions",
+    "long_titles": "Truncation with full title/address tooltips",
+    "focus": "Stable entry identity restores focused select/close control across row rebuild",
+    "appearance": "Redraw on effective-appearance and accessibility display-option changes",
+    "engine_api_change": false,
+    "schema_change": false,
+    "standalone_preview_change": false,
+    "keybinding_change": false
+  },
+  "verification": {
+    "source_review": "passed \u2014 no actionable defect found",
+    "swift_package_build_seconds": 5.34,
+    "source_host_build": "passed \u2014 final header correction accepted in v2",
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "overlay_checks": "passed",
+    "artifact_check": "527 ARM64 images passed at preceding Find Page checkpoint; no repeat for unchanged engine/dependencies",
+    "runtime_acceptance": "passed \u2014 current dark appearance,260-point normal-window layout and affected workflows in v1/v2",
+    "source_host_build_seconds": 27.84,
+    "source_host_build_steps": 2,
+    "compiler_log": "logs/arc-sidebar-header-compiler.log",
+    "initial_source_host_build_seconds": 28.38,
+    "initial_compiler_log": "logs/arc-sidebar-compiler.log",
+    "source_staged_binary_match": true,
+    "running_owned_processes": false
+  },
+  "runs": [
+    {
+      "id": "arc-sidebar-baseline",
+      "result": "baseline capture and normal Quit passed",
+      "exit_code": 0,
+      "observations": [
+        "Root verified one native detach, message-loop return and CEF shutdown"
+      ],
+      "capture": "logs/arc-sidebar-baseline.png"
+    },
+    {
+      "id": "arc-sidebar-v1",
+      "result": "functional acceptance passed; visual header issue retained for correction",
+      "exit_code": 0,
+      "observations": [
+        "Actual260-point dark-mode rich layout rendered3Favorites/2pins/2temporary tabs with long-title ellipsis and full accessibility help",
+        "Real modal fixture counter0\u21921; Library Favorite opened dummy-login as third browser; existing Favorite menu commands/enabled gates observed",
+        "Returning to modal reused counter1",
+        "Find Page no-match/Open-disabled/Escape preserved exact organization bytes",
+        "Footer Research showed empty local sections and shared Favorites; returning Personal reused modalcounter1",
+        "Normal application-menu Quit PID56626 exited0 with one detach, message-loop return and CEF shutdown"
+      ],
+      "visual_issue": "Header icons bunched; corrected by heading fill distribution, workspace-title low horizontal compression resistance and title-width bound to identity column; v2 accepted",
+      "captures": "logs/arc-sidebar-v1-*.png",
+      "final_organization_equality": "Root verified exact bytes through Find cancellation, workspace roundtrip and Quit"
+    },
+    {
+      "id": "arc-sidebar-v2",
+      "result": "passed final header and native new-tab/close workflow",
+      "exit_code": 0,
+      "observations": [
+        "Final header controls rendered right-aligned",
+        "New tab focused native address entry, accessibility-confirmed; typed local HTTP address plus arrow opened actual dummy-login fixture as third browser and increased temporary rows from2to3",
+        "New temporary row close removed it and restored2temporary rows",
+        "Returning modal fixture accepted real click counter0\u21921",
+        "Normal application-menu Quit PID64150 exited0 with one detach, message-loop return and CEF shutdown",
+        "Root verified final organization bytes exactly match pre-run document"
+      ],
+      "captures": [
+        "logs/arc-sidebar-v2-final.png",
+        "logs/arc-sidebar-v2-new-tab.png"
+      ]
+    }
+  ],
+  "synthetic_fixture": {
+    "organization_directory": "runtime/arc-sidebar-state-v1",
+    "engine_profile": "runtime/profiles/workspace-v3",
+    "mock_keychain_every_launch": true,
+    "favorites": 3,
+    "pins": 2,
+    "temporary_tabs": 2,
+    "workspaces": 2,
+    "includes_long_titles": true
+  },
+  "limits": [
+    "Runtime visual acceptance covers current dark appearance at260-point sidebar width in a normal window",
+    "Light-mode, short-window layout, general resizing, increased-contrast, hover appearance and row-focus restoration were not separately runtime-verified",
+    "Full browser chrome and rounded page geometry remain future engine integration",
+    "Sidebar resize/hide/reveal and Cmd+S are not implemented",
+    "No extension tests; remaining foundation and daily-use gates stay open"
+  ],
+  "raw_artifacts": "Dedicated SSD /Volumes/Mahesh/personal/bato-build/logs/arc-sidebar-*",
+  "next_step": "Proceed to coordinated engine-owned chrome/rounded page or sidebar geometry integration; preserve Chrome origin/extension UI and current modal/fullscreen/lifecycle guards.",
+  "checkpoint": "All owned browser/build processes finished; old CUA bindings point to exited processes."
+}
