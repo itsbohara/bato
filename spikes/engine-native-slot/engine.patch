@@ -32,7 +32,7 @@
    void OnWebContentsCreated(content::WebContents* new_contents) override;
 --- a/cef/libcef/browser/chrome/browser_util.h
 +++ b/cef/libcef/browser/chrome/browser_util.h
-@@ -10,12 +10,16 @@
+@@ -10,12 +10,18 @@
  #include "build/build_config.h"
  #include "chrome/browser/ui/browser.h"
  
@@ -44,6 +44,8 @@
  // Opt-in Bato experiment. Enter the normal macOS Chrome quit lifecycle inside
  // the framework; clients continue using the supported Chrome command API.
  void RequestNativeApplicationQuit();
++// Shared requested geometry for reservation/minimum sizing and native bounds.
++int NativeSidebarWidth(BrowserView* view, bool reservation);
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds);
 +void NativeSlotUpdate(BrowserView* view, bool teardown, bool hide);
  #endif
@@ -68,13 +70,14 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,484 @@
+@@ -49,3 +49,533 @@
  }
  
  }  // namespace cef
 +
 +// Bato native-slot experiment. All storage and callbacks are UI-thread only.
 +#include <map>
++#include <algorithm>
 +#include "base/no_destructor.h"
 +#include "base/supports_user_data.h"
 +#include "base/command_line.h"
@@ -106,6 +109,8 @@
 +bool g_slot_registration_closed = false;
 +class SlotAdapter;
 +bool SlotBlocked(BrowserView* view);
++bool NativeSlotFocusAllowed(BrowserView* view);
++bool SlotClosing(BrowserView* view);
 +}
 +
 +@interface BatoSlotRoot : NSView <ViewsHostable>
@@ -148,7 +153,7 @@
 +  }
 +  void ViewsHostableSetVisible(bool visible) override { root_.hidden = !visible; }
 +  void ViewsHostableMakeFirstResponder() override {
-+    if (blocked()) return;
++    if (blocked() || !NativeSlotFocusAllowed(view_)) return;
 +    BatoSlotRoot* __strong root = root_;
 +    const uint64_t token = token_;
 +    NSView* target = (__bridge NSView*)g_slot_callbacks.focus_target(
@@ -189,6 +194,8 @@
 +};
 +struct SlotState {
 +  gfx::Rect bounds;
++  int sidebar_width = 260;
++  int sidebar_mode = 1;  // 0: edge, 1: docked, 2: overlay.
 +  uint64_t token = 0;
 +  bool attempted = false;
 +  bool transitioning = false;
@@ -204,6 +211,13 @@
 +auto& Slots() {
 +  static base::NoDestructor<std::map<BrowserView*, SlotState>> slots;
 +  return *slots;
++}
++bool NativeSlotFocusAllowed(BrowserView* view) {
++  auto found = Slots().find(view);
++  return found != Slots().end() && found->second.sidebar_mode != 0 &&
++      found->second.host && found->second.host->GetVisible() &&
++      !found->second.transitioning && !view->IsFullscreen() &&
++      view->GetWidget() && view->GetWidget()->IsVisible() && !SlotClosing(view);
 +}
 +bool SlotEnabled() {
 +  auto* command = base::CommandLine::ForCurrentProcess();
@@ -266,7 +280,9 @@
 +BrowserView* FindSlot(uint64_t token) {
 +  for (const auto& [view, state] : Slots()) {
 +    if (state.token == token && state.host && !state.transitioning &&
-+        state.host->GetVisible() && !SlotBlocked(view) && !SlotClosing(view)) return view;
++        state.host->GetVisible() && view->GetWidget() &&
++        view->GetWidget()->IsVisible() && !view->IsFullscreen() &&
++        !SlotBlocked(view) && !SlotClosing(view)) return view;
 +    if (state.token == token) LogSlotRejection(view, state);
 +  }
 +  return nullptr;
@@ -444,7 +460,7 @@
 +extern "C" CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token) {
 +  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT()) return 0;
 +  BrowserView* view = FindSlot(token);
-+  if (!view || !view->GetFocusManager()) return 0;
++  if (!view || !view->GetFocusManager() || Slots().at(view).sidebar_mode == 0) return 0;
 +  auto* host = Slots().at(view).host;
 +  host->RequestFocus();  // NativeViewHost::OnFocus enters ViewsHostable focus.
 +  // Focus callbacks can re-enter client code and destroy the original window.
@@ -463,13 +479,46 @@
 +  if (!NSThread.isMainThread) return 0;
 +  BrowserView* view = FindSlot(token);
 +  if (!view) return 0;
++  if (Slots().at(view).sidebar_mode == 0 || !view->GetFocusManager()) return 0;
 +  auto* focus = view->GetFocusManager();
 +  focus->SetFocusedView(Slots().at(view).host);
 +  focus->AdvanceFocus(reverse != 0);
 +  return 1;
 +}
 +
++extern "C" CEF_EXPORT int bato_native_slot_set_sidebar_v1(
++    uint64_t token, int width, int mode) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || mode < 0 || mode > 2) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view) return 0;
++  auto& state = Slots().at(view);
++  const int clamped_width = std::clamp(width, 220, 400);
++  if (state.sidebar_width == clamped_width && state.sidebar_mode == mode) return 1;
++  // Relinquish native focus before collapsing its editable descendants.
++  if (mode == 0 && view->GetActiveWebContents()) view->GetActiveWebContents()->Focus();
++  // Focus can invoke native callbacks. Revalidate before touching the window.
++  if (FindSlot(token) != view) return 0;
++  Slots().at(view).sidebar_width = clamped_width;
++  Slots().at(view).sidebar_mode = mode;
++  fprintf(stderr, "{\"event\":\"native-sidebar-geometry\",\"width\":%d,\"mode\":%d}\n",
++          clamped_width, mode);
++  view->InvalidateLayout();
++  view->DeprecatedLayoutImmediately();
++  // Layout enters native client code. Only inspect a fresh lifetime lookup;
++  // a new modal block does not undo the already-accepted geometry request.
++  auto current = Slots().find(view);
++  return current != Slots().end() && current->second.token == token ? 1 : 0;
++}
++
 +namespace cef {
++int NativeSidebarWidth(BrowserView* view, bool reservation) {
++  CEF_REQUIRE_UIT();
++  auto found = Slots().find(view);
++  const int mode = found == Slots().end() ? 1 : found->second.sidebar_mode;
++  const int width = found == Slots().end() ? 260 : found->second.sidebar_width;
++  if (reservation) return mode == 1 ? width : 0;
++  return mode == 0 ? 6 : width;
++}
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds) {
 +  CEF_REQUIRE_UIT();
 +  g_slot_registration_closed = true;
@@ -547,6 +596,8 @@
 +    fprintf(stderr, "{\"event\":\"native-slot-attached\",\"token\":%llu}\n", (unsigned long long)state.token);
 +  }
 +  if (state.host) {
++    state.host->SetFocusBehavior(state.sidebar_mode == 0
++        ? views::View::FocusBehavior::NEVER : views::View::FocusBehavior::ALWAYS);
 +    state.host->SetBoundsRect(state.bounds);
 +    state.host->SetVisible(!SlotBlocked(view));
 +    state.host->DeprecatedLayoutImmediately();
@@ -571,17 +622,28 @@
      // Bato source-build experiment only. Keep Chrome's complete child layout
      // (toolbar, origin UI, extension anchors and split subtree) under its own
      // layout manager. This is not an AppKit hosting contract.
-@@ -133,8 +135,18 @@
+@@ -133,8 +135,28 @@
              BrowserWindowInterface::Type::TYPE_NORMAL &&
          (window_state == WindowState::kNormal ||
           window_state == WindowState::kMaximized)) {
-+      const gfx::Rect original_area = local_params.visual_client_area;
-       local_params.Inset(gfx::Insets::TLBR(44, 260, 0, 0));
+-      local_params.Inset(gfx::Insets::TLBR(44, 260, 0, 0));
 -    }
++      const gfx::Rect original_area = local_params.visual_client_area;
++      int sidebar_width = 260;
++      int reserved_width = 260;
++#if BUILDFLAG(ENABLE_CEF)
++      sidebar_width = cef::NativeSidebarWidth(&browser_view_.get(), false);
++      reserved_width = cef::NativeSidebarWidth(&browser_view_.get(), true);
++#endif
++      // Clamp both native and Chrome rectangles from this same client area.
++      const int available_width = std::max(0, original_area.width() - 320);
++      sidebar_width = std::min(sidebar_width, available_width);
++      reserved_width = std::min(reserved_width, available_width);
++      local_params.Inset(gfx::Insets::TLBR(44, reserved_width, 0, 0));
 +      // Use the same authoritative visual-client rectangle. Top margin avoids
 +      // frame-owned traffic lights; Chrome keeps all of its own child layout.
 +      native_slot_bounds = gfx::Rect(original_area.x(), original_area.y() + 44,
-+          std::min(260, original_area.width()), std::max(0, original_area.height() - 44));
++          sidebar_width, std::max(0, original_area.height() - 44));
 +    }
 +#if BUILDFLAG(ENABLE_CEF)
 +    if (auto* delegate = cef::BrowserForBWI(browser_view_->browser())->cef_delegate()) {
@@ -631,7 +693,7 @@
  
    // Destroy any remaining WebContents early on. Doing so may result in
    // calling back to one of the Views/LayoutManagers or supporting classes of
-@@ -4933,7 +4950,16 @@
+@@ -4933,7 +4950,20 @@
  
  gfx::Size BrowserView::GetMinimumSize() const {
    auto* const layout = GetBrowserViewLayout();
@@ -642,17 +704,31 @@
 +      base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-reservation") &&
 +      browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
 +      !IsFullscreen()) {
++#if BUILDFLAG(ENABLE_CEF)
++    minimum.Enlarge(cef::NativeSidebarWidth(const_cast<BrowserView*>(this), true), 44);
++#else
 +    minimum.Enlarge(260, 44);
++#endif
 +  }
 +#endif
 +  return minimum;
  }
  
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5018,11 @@
+@@ -4992,6 +5022,21 @@
    }
  
    LayoutSuperclass<views::View>(this);
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-slot") &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-reservation") &&
++      browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
++    // Use Chromium's existing propagation to native contents/DevTools/overlays.
++    // Split containers keep Chromium's own independent corner treatment.
++    multi_contents_view_->SetBackgroundRadii(
++        gfx::RoundedCornersF(IsFullscreen() ? 0.0f : 10.0f));
++  }
++#endif
 +#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
 +  if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
 +    delegate->NativeSlotUpdate(this, false, false);
@@ -661,7 +737,7 @@
  
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5640,11 @@
+@@ -5609,6 +5654,11 @@
  }
  
  void BrowserView::PrepareFullscreen(bool fullscreen) {
@@ -675,7 +751,7 @@
          fullscreen);
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,57 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -722,6 +798,11 @@
 +// Requests Views focus ownership for the native host. Returns 1 when the live
 +// host owns Views focus; the client may then focus/select its editable field.
 +CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
++// Main/CEF UI thread only. Per-window sidebar geometry: mode 0 retains a
++// six-point tracking edge, 1 docks/reserves width, 2 overlays without reservation.
++// Width is clamped to 220..400 points; host bounds may shrink in narrow windows.
++// Returns 1 after guarded layout acceptance, 0 for blocked/invalid tokens/modes.
++CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
 +CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 +CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 +#ifdef __cplusplus

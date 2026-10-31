@@ -14,7 +14,7 @@ The callback enters through the existing internal `cef::BrowserDelegate` virtual
 
 ## Geometry, lifecycle and refusal
 
-Both `--bato-native-slot` and `--bato-native-reservation` are required. The left region comes from the same original visual-client rectangle used by the reservation inset:260 points wide, below the44-point top margin. It does not infer geometry from a private NSView tree. Native minimum size includes these margins. Chrome retains ownership of toolbar, origin UI, tabs, split content and extension anchors.
+Both `--bato-native-slot` and `--bato-native-reservation` are required. The left region comes from the same original visual-client rectangle used by the reservation inset, below the44-point top margin. The workspace host now coordinates a220–400point docked width, a6point hidden edge and transient overlay with no page reservation; see [geometry results](GEOMETRY-RESULTS.md). It does not infer geometry from a private NSView tree. Native minimum size includes these margins. Chrome retains ownership of toolbar, origin UI, tabs, split content and extension anchors.
 
 Only normal local Chrome windows with a matching registered factory can attach. Views-hosted, popup/DevTools and remote-Cocoa application topologies are refused. An invalid or already parented factory view is refused. One attempt per window prevents repeated factory calls during layout; extra tabs and split members share their existing window's slot.
 
@@ -60,4 +60,4 @@ This diagnostic resolves the current page on each action. It does not map saved 
 
 ## Native workspace connection
 
-The opt-in workspace host now connects a real native organization sidebar to Chromium pages. Read [workspace results and retained failures](WORKSPACE-RESULTS.md) and [application host notes](../../app/CHROMIUM.md). The current matching framework/client resolves eight authored exports; historical diagnostic-only results above retain their original four-symbol scope. Source mirrors guard the four staged Swift modules before builds. Page-focused CmdW and broader host acceptance remain open.
+The opt-in workspace host now connects a real native organization sidebar to Chromium pages. Read [workspace results and retained failures](WORKSPACE-RESULTS.md) and [application host notes](../../app/CHROMIUM.md). The current matching framework/client resolves nine authored exports; historical diagnostic-only results above retain their original four-symbol scope. Source mirrors guard the four staged Swift modules before builds. Page-focused CmdW and broader host acceptance remain open.

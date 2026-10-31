@@ -1,6 +1,6 @@
 # Bato progress
 
-Updated 2026-10-31. Rough planning estimate: **30% of a usable V1**, with the polished Arc-style interface around **15–20%**. These estimates reflect feature coverage and remaining integration work, not elapsed time or a measured completion score. The current build is an engineering alpha, not a daily-use release.
+Updated 2026-11-01. Rough planning estimate: **30% of a usable V1**, with the polished Arc-style interface around **20–25%**. These estimates reflect feature coverage and remaining integration work, not elapsed time or a measured completion score. The current build is an engineering alpha, not a daily-use release.
 
 | Area | Current state | Remaining |
 | --- | --- | --- |
@@ -8,8 +8,8 @@ Updated 2026-10-31. Rough planning estimate: **30% of a usable V1**, with the po
 | Organization | Persistent workspaces, names/colors/order; shared Favorites; pins and temporary tabs; entry order and same-Profile transfers | Folders and broader workspace/Profile lifecycle |
 | Page coordination | Stable IDs; lazy creation; live-page reuse; saved/session URLs; confirmed/cancelled close | Broader crash/recovery and lifecycle coverage |
 | Find Page | Current-Profile search, atomic activation, unloaded opening and live reuse passed in the real host; sheet visibility defect resolved | Complete command-bar integration |
-| Arc-style interface | Adaptive workspace-colored sidebar, Favorites tiles, refined page rows and compact controls | Full browser chrome, rounded content area, site icons and broader visual polish |
-| Sidebar behavior | Fixed visible sidebar | Resizing, hiding, left-edge reveal and Cmd+S |
+| Arc-style interface | Adaptive workspace-colored sidebar, Favorites tiles, refined rows/controls and rounded Chromium content | Full browser chrome, site icons and broader visual polish |
+| Sidebar behavior | Coordinated dock/hide/reveal, Cmd+S, 220–400-point drag/keyboard resizing and accessible controls; bounded real-host checks passed | Persisted preferences, animation, broader window/transition acceptance |
 | Command bar | Native HTTP(S) address entry; separate Find Page picker | Floating Cmd+T bar, web search and browser commands |
 | Splits | Chromium split experiments | Bato ownership, divider integration and saved pairs |
 | Peek | Not implemented | Preview, dismiss and promote |
@@ -21,10 +21,12 @@ Updated 2026-10-31. Rough planning estimate: **30% of a usable V1**, with the po
 | Persistence and recovery | Atomic organization store, stale-write protection and previous-good backup | Migration, broader recovery and backup workflows |
 | Distribution | Developer source host only | Packaging, signing, updates, security/performance and daily-use readiness |
 
+Sidebar geometry milestone passed bounded real-host checks, including hidden page commands, native-sheet restoration and steady-fullscreen Cmd+S suppression. Geometry remains session-local. General window resizing/minimum size, rapid fullscreen transitions and independent button-free hover are not runtime-accepted; see `spikes/engine-native-slot/GEOMETRY-RESULTS.md`.
+
 ## Next milestones
 
-1. Integrate Arc-style browser chrome and rounded page geometry with sidebar resize/hide/reveal. The native sidebar visual milestone is complete; Chromium layout coordination remains.
-2. Complete command-bar workflows and folders, then Bato split/Peek integration.
+1. Complete floating Cmd+T command-bar/navigation/search workflows and remaining Arc-style chrome/site icons. Rounded page geometry and coordinated sidebar behavior are complete within recorded acceptance.
+2. Add folders, then Bato split/Peek integration.
 3. Add remaining Profile/import/blocking/essential workflows and release readiness.
 
 Use bounded subagents for implementation and review. Keep verification proportional: targeted model/runtime tests and a short real-host check for affected behavior; repeat heavy engine/dependency checks when engine integration or dependencies change, rather than for every metadata or visual edit. Keep remaining acceptance gates explicit without reopening the full extension matrix for unrelated application changes.

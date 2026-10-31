@@ -1,0 +1,154 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "scope": "Rounded Chromium page surface and coordinated native sidebar geometry",
+  "status": "passed — bounded real-host geometry acceptance",
+  "behavior": {
+    "width_points": {
+      "default": 260,
+      "minimum_requested": 220,
+      "maximum_requested": 400,
+      "actual_bounds": "Clamped with Chrome reservation to available client width minus320points"
+    },
+    "modes": {
+      "0": "Hidden with6point native tracking edge and no page reservation",
+      "1": "Docked with width reservation",
+      "2": "Transient overlay without page reservation"
+    },
+    "controls": [
+      "Native sidebar toggle",
+      "Sidebar menu Toggle Sidebar",
+      "ExactCmdS in owned keywindow",
+      "Trailing drag grip",
+      "Left/right width keys",
+      "Accessibility width actions",
+      "Leftedge reveal",
+      "CmdT reveal before native address focus"
+    ],
+    "rounding": "MultiContentsView10point background radii in opt-in normal window,0fullscreen; Chromium split policy retained",
+    "geometry_persistence": false,
+    "animation": false,
+    "organization_schema_change": false,
+    "engine_export_count": 9,
+    "workspace_configure_arguments": 10,
+    "guards": "Physical host visibility,modal,sheet,webdialog,fullscreen transition and lifecycle guards retained; hidden nativefocus/traversal disabled"
+  },
+  "verification": {
+    "engine_source_review": "passed; no actionable findings",
+    "client_source_review": "passed; no blocking findings",
+    "swift_package_build_seconds": 6.2,
+    "swift_package_build_log": "logs/sidebar-geometry-swift-build.log",
+    "native_slot_patch_tests": {
+      "passed": 2
+    },
+    "engine_roundtrip_files": 8,
+    "client_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "overlay_checks": "passed",
+    "source_host_build": "passed final client correction",
+    "source_host_build_log": "logs/sidebar-geometry-fullscreen-build.log",
+    "artifact_check": "passed527ARM64images",
+    "runtime_acceptance": "passed bounded v1 geometry and v2 steady-fullscreen shortcut correction",
+    "source_staged_binary_match": true,
+    "source_host_build_seconds": 27.82,
+    "source_host_build_steps": 2,
+    "compiler_log": "logs/sidebar-geometry-fullscreen-compiler.log",
+    "artifact_log": "logs/sidebar-geometry-artifacts.log",
+    "initial_source_host_build_seconds": 107.93,
+    "initial_source_host_build_steps": 20,
+    "initial_compiler_log": "logs/sidebar-geometry-compiler.log",
+    "owned_browser_or_build_running": false,
+    "fixture_server_port": 18765,
+    "new_model_or_runtime_tests": 0,
+    "extension_retest": false
+  },
+  "runs": [
+    {
+      "id": "sidebar-geometry-v1",
+      "result": "bounded geometry cases passed; fullscreen Cmd+S failure retained and repaired in v2",
+      "pid": 93177,
+      "exit_code": 0,
+      "observations": [
+        "Dark normal-window rounded rendering; modalcounter0→1",
+        "AXWiden260→280;drag340;dragminimum220;Right230;dragmaximum400;drag300",
+        "CmdS hidden6pointedge removed contentAXdescendants",
+        "Pointer entry viaCUAclick into6pointedge revealedoverlay;Chrome toolbar/pagegeometry unchanged fromhidden mode",
+        "Outside activityclick dismissedoverlay andcounter1→2 exactlyonce;pageCmdSdocked",
+        "Headerhide;hiddenCmdTrevealedoverlay andfocusednativeaddress;localHTTPlogin createdthirdbrowser andtemporaryentry",
+        "Outsidecollapse thenhiddenCmdW closedactualtemporarypage,returnedmodal,restored2temporaryentries andexactorganization",
+        "FindPagesheetfromoverlay;CmdSleftsheetunchanged;Escaperestore;outsidecounter2→3",
+        "Fullscreen suppressednativehost/reservation;exitrestored300pointdocked/rounding/pagecounter3",
+        "NormalappmenuQuit;one detach/loopreturn/CEFshutdown;finalorganizationexactbeforebytes"
+      ],
+      "failure": {
+        "case": "FullscreenCmdS",
+        "observed": "Fell through toChromeSavePage because fullscreen detachesnative root",
+        "repair": "Retainweakownedwindow andconsumeCmdSwhilefullscreen",
+        "status": "repaired; steady-fullscreen v2 passed",
+        "synthetic_saved_output": "tmp/sidebar-geometry-v1-saved-fixture; created by Chrome Save Page and moved from Downloads to SSD; not cancelled"
+      },
+      "unaccepted": [
+        "Windowedge drag attempts showednoobservableboundschange;no windowresize/minimumruntimeclaim",
+        "No separatebuttonfreehovergesture acceptance"
+      ],
+      "captures": [
+        "logs/sidebar-geometry-v1-docked.png",
+        "logs/sidebar-geometry-v1-hidden.png",
+        "logs/sidebar-geometry-v1-peek.png",
+        "logs/sidebar-geometry-v1-fullscreen.png",
+        "logs/sidebar-geometry-v1-restored.png"
+      ],
+      "log": "logs/sidebar-geometry-v1.log",
+      "exit_receipt": "logs/sidebar-geometry-v1-exit.json",
+      "organization_snapshots": [
+        "logs/sidebar-geometry-v1-before.json",
+        "logs/sidebar-geometry-v1-after-commands.json",
+        "logs/sidebar-geometry-v1-final.json"
+      ]
+    },
+    {
+      "id": "sidebar-geometry-v2",
+      "result": "passed final client correction and affected controls",
+      "pid": 6709,
+      "exit_code": 0,
+      "profile": "same synthetic workspace-v3 Profile; mock Keychain on every launch",
+      "observations": [
+        "Session-local geometry started at default260 points",
+        "Native View menu Enter Full Screen suppressed sidebar",
+        "Steady-fullscreen Cmd+S showed no Save Page dialog and no accessibility-tree change",
+        "Escape restored260-point docked sidebar and rounded content",
+        "Two accessibility Widen actions changed260→280→300 points",
+        "Real activity click advanced modal fixture counter0→1",
+        "Page-focused Cmd+S hide/dock roundtrip passed",
+        "Actual Sidebar menu Toggle Sidebar hid sidebar; Cmd+S restored it",
+        "Normal application-menu Quit completed with exactly one detach, message-loop return and CEF shutdown",
+        "Coordinator verified final organization bytes exactly equal pre-run bytes"
+      ],
+      "captures": [
+        "logs/sidebar-geometry-v2-fullscreen.png",
+        "logs/sidebar-geometry-v2-final.png"
+      ],
+      "accessibility_snapshot": "logs/sidebar-geometry-v2-fullscreen-ax.txt",
+      "log": "logs/sidebar-geometry-v2.log",
+      "exit_receipt": "logs/sidebar-geometry-v2-exit.json",
+      "organization_snapshots": [
+        "logs/sidebar-geometry-v2-before.json",
+        "logs/sidebar-geometry-v2-final.json"
+      ],
+      "limits": [
+        "Steady fullscreen only; style-bit lag/shortcut ordering during transitions not runtime accepted"
+      ]
+    }
+  ],
+  "limits": [
+    "No animation or persisted geometry preference",
+    "Pointer exit during menu tracking may retain transient reveal until another exit or outside click",
+    "No general window-resize or minimum-window runtime acceptance; edge drag attempts showed no observable bounds change",
+    "Pointer-entry reveal was exercised by CUA clicking the edge; no separate button-free hover gesture test",
+    "Fullscreen Cmd+S accepted in steady state only; AppKit style-bit lag during transitions remains source reviewed",
+    "Light appearance, broader accessibility navigation, split and extension behavior were not retested",
+    "No production or daily-use readiness claim",
+    "Full Arc-style chrome, Bato split ownership and page Peek remain separate work"
+  ]
+}

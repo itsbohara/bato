@@ -10,6 +10,10 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     public let root: NSView
     public let runtime: PageRuntime
     public var requestNativeFocus: (() -> Void)?
+    /// Window geometry belongs to the host, including the page reservation.
+    public var requestSidebarToggle: (() -> Void)? {
+        didSet { sidebarToggle.isHidden = requestSidebarToggle == nil }
+    }
     /// The Chromium host schedules committed page work on its CEF UI task runner.
     public var requestPagePresentation: (() -> Void)?
     public var focusTarget: NSView { addressField }
@@ -18,6 +22,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private let entries = SidebarEntries()
     private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let workspaceActions = NSButton(frame: .zero)
+    private let sidebarToggle = NSButton(frame: .zero)
     private let profileLabel = NSTextField(labelWithString: "")
     private let workspaceTitle = NSTextField(labelWithString: "")
     private let addressSurface = SidebarSurface()
@@ -108,6 +113,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         perform { runtime.closeEntry(id) }
     }
 
+    @objc private func toggleSidebar() { requestSidebarToggle?() }
+
     private func configureView() {
         root.setAccessibilityIdentifier("bato-workspace-sidebar")
         if let view = root as? WorkspaceRoot {
@@ -136,7 +143,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         configureIcon(workspaceActions, symbol: "ellipsis", label: "Workspace actions")
         workspaceActions.setAccessibilityIdentifier("bato-workspace-actions")
         workspaceActions.toolTip = "Reorder this workspace"
-        let heading = NSStackView(views: [identity, workspaceEdit, workspaceActions])
+        sidebarToggle.target = self
+        sidebarToggle.action = #selector(toggleSidebar)
+        configureIcon(sidebarToggle, symbol: "sidebar.left", label: "Toggle sidebar")
+        sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
+        sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
+        sidebarToggle.isHidden = requestSidebarToggle == nil
+        let heading = NSStackView(views: [identity, sidebarToggle, workspaceEdit, workspaceActions])
         heading.orientation = .horizontal
         heading.distribution = .fill
         heading.spacing = 2

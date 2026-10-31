@@ -44,6 +44,11 @@ CEF_EXPORT int bato_native_slot_request_close_v1(uint64_t token, int browser_id)
 // Requests Views focus ownership for the native host. Returns 1 when the live
 // host owns Views focus; the client may then focus/select its editable field.
 CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
+// Main/CEF UI thread only. Per-window sidebar geometry: mode 0 retains a
+// six-point tracking edge, 1 docks/reserves width, 2 overlays without reservation.
+// Width is clamped to 220..400 points; host bounds may shrink in narrow windows.
+// Returns 1 after guarded layout acceptance, 0 for blocked/invalid tokens/modes.
+CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
 CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 #ifdef __cplusplus

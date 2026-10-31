@@ -24,7 +24,8 @@ extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
     int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
     int (*close)(uint64_t, int), int (*active)(uint64_t),
     int (*native_focus)(uint64_t), int (*command_id)(int),
-    void (*schedule_selection)(uint64_t));
+    void (*schedule_selection)(uint64_t),
+    int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
@@ -599,6 +600,8 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(loaded, "bato_native_slot_request_close_v1"));
   auto register_pages = reinterpret_cast<decltype(&bato_native_slot_register_page_callbacks_v1)>(
       dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
+  auto sidebar_geometry = reinterpret_cast<decltype(&bato_native_slot_set_sidebar_v1)>(
+      dlsym(loaded, "bato_native_slot_set_sidebar_v1"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -608,7 +611,7 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
   g_workspace_enabled = command_line->HasSwitch("bato-workspace-state");
   if (g_workspace_enabled) {
     if (directory.empty() || directory.front() != '/' || !new_tab || !native_focus ||
-        !request_close || !register_pages ||
+        !request_close || !register_pages || !sidebar_geometry ||
         command_line->GetSwitchValue("url").ToString() != "about:blank") {
       fprintf(stderr, "{\"event\":\"workspace-client-configuration-refused\"}\n");
       return false;
@@ -624,7 +627,7 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
                                  SelectWorkspacePage, CloseWorkspacePage,
                                  ActiveWorkspacePage, native_focus, WorkspaceCommandId,
-                                 ScheduleWorkspaceSelection);
+                                 ScheduleWorkspaceSelection, sidebar_geometry, focus);
   }
   BatoNativeSlotCallbacksV1 callbacks = {};
   callbacks.size = sizeof(callbacks);

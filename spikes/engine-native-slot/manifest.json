@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "e3e61e3c8806ed46367e6e54fb6701a7b3614f0d9564c70c551badcc17dee6ad",
+  "patch_sha256": "490de70f83dc40757bc1a639f0a30c629f0027e35c3cc33e7ba3d138bfd72516",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/browser_util.h",
       "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
-      "patched_sha256": "51a77fd38832c5379586240e0db6006f158c52f74f5cf0c4b2d875038ba7aac9"
+      "patched_sha256": "23182116c44efc3d5fc6955783c28efa30eacd62a93451112a84fec696b7bc61"
     },
     {
       "root": "cef",
@@ -32,25 +32,25 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "70378bdd20aab36c5843823d0a5c382d27ca1aa91c4607ddb733b9cd9c69e792"
+      "patched_sha256": "4772ac57ad3aa4532aaf5ce4d5f550ddecb4ae235d064d21f9c58a22a4021bf5"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
       "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
-      "patched_sha256": "e1042f1063025b66d85eb92e56c585f46e95d27f22f77ab36871a09572025664"
+      "patched_sha256": "3ee440a79826a28feef093ab553152c4a653f3ba6ad1bb5218c110bc9cdcde42"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "4c395220f5af17e10f1ec5c2790f6caacc11784c7b696fadc2f1e321348a9411"
+      "patched_sha256": "fce8f27063785e7f5f2e828c492f39627dbd3e3038f78fa14e0493799951d7c3"
     },
     {
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "fcb3e128284243ba4cc72f59cf180b7e02d8fe42c7df85c9b3801a887500021a"
+      "patched_sha256": "67899f52baded88258cb77cb232da98fa6202d9f0d0375d1ea059dd4443b5a70"
     }
   ]
 }

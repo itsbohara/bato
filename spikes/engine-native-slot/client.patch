@@ -94,7 +94,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,644 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -121,7 +121,8 @@
 +    int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
 +    int (*close)(uint64_t, int), int (*active)(uint64_t),
 +    int (*native_focus)(uint64_t), int (*command_id)(int),
-+    void (*schedule_selection)(uint64_t));
++    void (*schedule_selection)(uint64_t),
++    int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 +extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 +    int kind, const char* url, const char* title);
@@ -696,6 +697,8 @@
 +      dlsym(loaded, "bato_native_slot_request_close_v1"));
 +  auto register_pages = reinterpret_cast<decltype(&bato_native_slot_register_page_callbacks_v1)>(
 +      dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
++  auto sidebar_geometry = reinterpret_cast<decltype(&bato_native_slot_set_sidebar_v1)>(
++      dlsym(loaded, "bato_native_slot_set_sidebar_v1"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -705,7 +708,7 @@
 +  g_workspace_enabled = command_line->HasSwitch("bato-workspace-state");
 +  if (g_workspace_enabled) {
 +    if (directory.empty() || directory.front() != '/' || !new_tab || !native_focus ||
-+        !request_close || !register_pages ||
++        !request_close || !register_pages || !sidebar_geometry ||
 +        command_line->GetSwitchValue("url").ToString() != "about:blank") {
 +      fprintf(stderr, "{\"event\":\"workspace-client-configuration-refused\"}\n");
 +      return false;
@@ -721,7 +724,7 @@
 +    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
 +                                 SelectWorkspacePage, CloseWorkspacePage,
 +                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId,
-+                                 ScheduleWorkspaceSelection);
++                                 ScheduleWorkspaceSelection, sidebar_geometry, focus);
 +  }
 +  BatoNativeSlotCallbacksV1 callbacks = {};
 +  callbacks.size = sizeof(callbacks);
@@ -961,7 +964,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,454 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -970,6 +973,7 @@
 +private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
 +private typealias CommandID = @convention(c) (Int32) -> Int32
 +private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
++private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
 +private typealias ActivePage = @convention(c) (UInt64) -> Int32
 +private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 +@MainActor private var workspaceDirectory: URL?
@@ -980,6 +984,8 @@
 +@MainActor private var nativeFocus: ActivePage?
 +@MainActor private var commandID: CommandID?
 +@MainActor private var scheduleSelection: ScheduleSelection?
++@MainActor private var sidebarGeometry: SidebarGeometry?
++@MainActor private var pageFocus: ActivePage?
 +@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 +
 +@MainActor private final class WorkspaceEngine: PageEngine {
@@ -1035,17 +1041,99 @@
 +    }
 +}
 +
++/// This root stays visible as a six-point edge in hidden mode. Chromium owns
++/// its bounds; the client never creates a second window or covers the whole page.
 +@MainActor private final class AttachedWorkspaceRoot: NSView {
 +    var onAttach: (() -> Void)?
++    var onEnter: (() -> Void)?
++    var onExit: (() -> Void)?
++    var onResize: ((CGFloat) -> Void)?
++    weak var content: NSView?
++    var mode: Int32 = 1 {
++        didSet {
++            content?.isHidden = mode == 0
++            grip.isHidden = mode == 0
++            needsLayout = true
++        }
++    }
++    private var area: NSTrackingArea?
++    private let grip = SidebarResizeGrip(frame: .zero)
 +    override var isFlipped: Bool { true }
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        wantsLayer = true
++        layer?.masksToBounds = true
++        addSubview(grip)
++        grip.onResize = { [weak self] width in self?.onResize?(width) }
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    override func layout() {
++        super.layout()
++        content?.isHidden = mode == 0
++        grip.isHidden = mode == 0
++        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width - 6), height: bounds.height)
++        grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
++    }
++    override func updateTrackingAreas() {
++        if let area { removeTrackingArea(area) }
++        let tracking = NSTrackingArea(rect: .zero,
++            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
++        addTrackingArea(tracking)
++        area = tracking
++        super.updateTrackingAreas()
++    }
++    override func mouseEntered(with event: NSEvent) { onEnter?() }
++    override func mouseExited(with event: NSEvent) { onExit?() }
 +    override func viewDidMoveToWindow() {
 +        super.viewDidMoveToWindow()
 +        guard window != nil else { return }
-+        // CEF completes tab/window attachment after the slot factory returns.
 +        DispatchQueue.main.async { [weak self] in
 +            guard let self, self.window != nil else { return }
 +            self.onAttach?()
 +        }
++    }
++}
++
++@MainActor private final class SidebarResizeGrip: NSView {
++    var onResize: ((CGFloat) -> Void)?
++    private var dragOrigin: CGFloat?
++    private var startWidth: CGFloat = 260
++    override var acceptsFirstResponder: Bool { true }
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        setAccessibilityElement(true)
++        setAccessibilityRole(.splitter)
++        setAccessibilityLabel("Sidebar width")
++        setAccessibilityIdentifier("bato-sidebar-resize")
++        toolTip = "Drag to resize sidebar; arrow keys change width"
++        setAccessibilityCustomActions([
++            NSAccessibilityCustomAction(name: "Widen sidebar") { [weak self] in self?.adjust(20); return self != nil },
++            NSAccessibilityCustomAction(name: "Narrow sidebar") { [weak self] in self?.adjust(-20); return self != nil }
++        ])
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
++    override func draw(_ dirtyRect: NSRect) {
++        NSColor.separatorColor.setFill()
++        NSBezierPath(roundedRect: NSRect(x: 2, y: max(4, (bounds.height - 30) / 2), width: 2, height: 30),
++                     xRadius: 1, yRadius: 1).fill()
++    }
++    override func mouseDown(with event: NSEvent) {
++        guard let root = superview else { return }
++        window?.makeFirstResponder(self)
++        dragOrigin = root.convert(event.locationInWindow, from: nil).x
++        startWidth = root.bounds.width
++    }
++    override func mouseDragged(with event: NSEvent) {
++        guard let origin = dragOrigin, let root = superview else { return }
++        onResize?(startWidth + root.convert(event.locationInWindow, from: nil).x - origin)
++    }
++    override func mouseUp(with event: NSEvent) { dragOrigin = nil }
++    private func adjust(_ delta: CGFloat) { onResize?((superview?.bounds.width ?? 260) + delta) }
++    override func keyDown(with event: NSEvent) {
++        if event.keyCode == 123 { adjust(-10) }
++        else if event.keyCode == 124 { adjust(10) }
++        else { super.keyDown(with: event) }
 +    }
 +}
 +
@@ -1054,7 +1142,15 @@
 +    var controller: NativeWorkspaceController?
 +    var engine: WorkspaceEngine?
 +    var menuRouter: WorkspaceKeyRouter?
++    private var width: Int32 = 260
++    private var mode: Int32 = 1
++    private var pointerMonitor: Any?
++    private var menuObservers: [NSObjectProtocol] = []
++    private var menuTracking = false
++    private var changingGeometry = false
++    private let token: UInt64
 +    init(token: UInt64, directory: URL) {
++        self.token = token
 +        do {
 +            let controller = try NativeWorkspaceController(directory: directory, handlesKeyEquivalents: false) { profileID in
 +                let engine = WorkspaceEngine(token: token, profileID: profileID)
@@ -1062,21 +1158,29 @@
 +                return engine
 +            }
 +            self.controller = controller
-+            controller.requestNativeFocus = { _ = nativeFocus?(token) }
++            controller.requestNativeFocus = { [weak self] in
++                guard let self else { return }
++                if self.mode == 0, !self.setGeometry(mode: 2) { return }
++                _ = nativeFocus?(token)
++            }
++            controller.requestSidebarToggle = { [weak self] in _ = self?.toggle() }
++            root.onEnter = { [weak self] in self?.reveal() }
++            root.onExit = { [weak self] in self?.dismissPeek() }
++            root.onResize = { [weak self] width in
++                guard let self else { return }
++                _ = self.setGeometry(width: Int32(min(400, max(220, width.rounded()))), mode: self.mode)
++            }
 +            controller.requestPagePresentation = { scheduleSelection?(token) }
 +            engine?.onEvent = { [weak controller] event in controller?.receive(event) }
 +            engine?.onAnchorLost = { [weak controller] in _ = controller?.runtime.start() }
-+            controller.root.translatesAutoresizingMaskIntoConstraints = false
-+            root.addSubview(controller.root)
-+            NSLayoutConstraint.activate([
-+                controller.root.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-+                controller.root.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-+                controller.root.topAnchor.constraint(equalTo: root.topAnchor),
-+                controller.root.bottomAnchor.constraint(equalTo: root.bottomAnchor)
-+            ])
-+            let router = WorkspaceKeyRouter(token: token, root: root)
++            root.content = controller.root
++            root.addSubview(controller.root, positioned: .below, relativeTo: nil)
++            root.needsLayout = true
++            let router = WorkspaceKeyRouter(token: token, root: root,
++                                            toggle: { [weak self] in self?.toggle() ?? false })
 +            menuRouter = router
-+            root.onAttach = { [weak controller, weak router] in
++            root.onAttach = { [weak self, weak controller, weak router] in
++                self?.installPointerMonitor()
 +                controller?.start()
 +                router?.install()
 +            }
@@ -1087,6 +1191,65 @@
 +            root.addSubview(message)
 +        }
 +    }
++    private var canInteract: Bool {
++        guard NSApp.isActive, let window = root.window else { return false }
++        return window.isKeyWindow && window.attachedSheet == nil && NSApp.modalWindow == nil
++    }
++    @discardableResult private func setGeometry(width requested: Int32? = nil, mode next: Int32) -> Bool {
++        guard canInteract, !changingGeometry else { return false }
++        changingGeometry = true
++        defer { changingGeometry = false }
++        guard sidebarGeometry?(token, requested ?? width, next) == 1 else { return false }
++        width = requested ?? width
++        mode = next
++        root.mode = next
++        root.layoutSubtreeIfNeeded()
++        return true
++    }
++    @discardableResult func toggle() -> Bool {
++        guard setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
++        if mode == 0 { _ = pageFocus?(token) }
++        return true
++    }
++    private func reveal() {
++        guard mode == 0, canInteract, !menuTracking else { return }
++        _ = setGeometry(mode: 2) // Hover never steals focus from the page.
++    }
++    private func dismissPeek(force: Bool = false) {
++        guard mode == 2, canInteract, !menuTracking else { return }
++        if !force, let focused = root.window?.firstResponder as? NSView,
++           focused === root || focused.isDescendant(of: root) { return }
++        if setGeometry(mode: 0), force { _ = pageFocus?(token) }
++    }
++    private func installPointerMonitor() {
++        guard pointerMonitor == nil else { return }
++        pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
++            MainActor.assumeIsolated {
++                if let self, event.window === self.root.window,
++                   !self.root.bounds.contains(self.root.convert(event.locationInWindow, from: nil)) {
++                    self.dismissPeek(force: true)
++                }
++                return event // Preserve the original page event.
++            }
++        }
++        for (name, tracking) in [(NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false)] {
++            menuObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
++                MainActor.assumeIsolated { self?.menuTracking = tracking }
++            })
++        }
++    }
++    func detach() {
++        if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
++        pointerMonitor = nil
++        for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
++        menuObservers.removeAll()
++        menuRouter?.restore()
++        root.onEnter = nil
++        root.onExit = nil
++        root.onResize = nil
++        root.onAttach = nil
++    }
++
 +}
 +
 +@_cdecl("BatoSwiftWorkspaceConfigure")
@@ -1097,7 +1260,9 @@
 +    _ active: @escaping @convention(c) (UInt64) -> Int32,
 +    _ focus: @escaping @convention(c) (UInt64) -> Int32,
 +    _ command: @escaping @convention(c) (Int32) -> Int32,
-+    _ schedule: @escaping @convention(c) (UInt64) -> Void) {
++    _ schedule: @escaping @convention(c) (UInt64) -> Void,
++    _ geometry: @escaping @convention(c) (UInt64, Int32, Int32) -> Int32,
++    _ focusPage: @escaping @convention(c) (UInt64) -> Int32) {
 +    precondition(Thread.isMainThread)
 +    guard let directory else { return }
 +    let path = String(cString: directory)
@@ -1110,6 +1275,8 @@
 +    nativeFocus = focus
 +    commandID = command
 +    scheduleSelection = schedule
++    sidebarGeometry = geometry
++    pageFocus = focusPage
 +}
 +
 +@MainActor func workspaceModeEnabled() -> Bool { workspaceDirectory != nil }
@@ -1125,7 +1292,7 @@
 +    return Unmanaged.passUnretained(slot.controller?.focusTarget ?? slot.root).toOpaque()
 +}
 +@MainActor func detachWorkspaceSlot(_ token: UInt64) {
-+    workspaceSlots[token]?.menuRouter?.restore()
++    workspaceSlots[token]?.detach()
 +    workspaceSlots.removeValue(forKey: token)
 +}
 +
@@ -1154,14 +1321,33 @@
 +
 +/// Route physical T/W before Chromium's page-focused key-equivalent path.
 +/// Leave Chromium's menu items intact for untracked tabs and menu commands.
-+@MainActor private final class WorkspaceKeyRouter {
++@MainActor private final class WorkspaceKeyRouter: NSObject {
 +    private let token: UInt64
 +    private weak var root: NSView?
++    private weak var ownedWindow: NSWindow?
 +    private var keyMonitor: Any?
 +    private var acceptedKeys: Set<UInt16> = []
 +    private var deactivationObserver: NSObjectProtocol?
-+    init(token: UInt64, root: NSView) { self.token = token; self.root = root }
++    private let toggle: () -> Bool
++    private var sidebarMenuItem: NSMenuItem?
++    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool) {
++        self.token = token; self.root = root; self.toggle = toggle
++        super.init()
++    }
++    @objc private func toggleFromMenu() { _ = toggle() }
 +    func install() {
++        if let window = root?.window { ownedWindow = window }
++        if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
++            let item = NSMenuItem(title: "Sidebar", action: nil, keyEquivalent: "")
++            let menu = NSMenu(title: "Sidebar")
++            let toggleItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleFromMenu), keyEquivalent: "s")
++            toggleItem.target = self
++            toggleItem.keyEquivalentModifierMask = .command
++            menu.addItem(toggleItem)
++            item.submenu = menu
++            mainMenu.addItem(item)
++            sidebarMenuItem = item
++        }
 +        if keyMonitor == nil {
 +            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
 +                // AppKit delivers local event monitors on the main thread.
@@ -1180,11 +1366,14 @@
 +        }
 +    }
 +    func restore() {
++        if let sidebarMenuItem { sidebarMenuItem.menu?.removeItem(sidebarMenuItem) }
++        sidebarMenuItem = nil
 +        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
 +        keyMonitor = nil
 +        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
 +        deactivationObserver = nil
 +        acceptedKeys.removeAll()
++        ownedWindow = nil
 +    }
 +    private func routeKey(_ event: NSEvent) -> NSEvent? {
 +        if event.type == .keyUp {
@@ -1197,16 +1386,29 @@
 +        }
 +        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
 +        guard modifiers == .command,
-+              let key = event.charactersIgnoringModifiers, key == "t" || key == "w",
-+              NSApp.isActive, let window = root?.window,
++              let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
++              NSApp.isActive, let window = ownedWindow,
 +              event.window === window, NSApp.keyWindow === window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
++        // T/W retain their existing requirement for an attached native slot.
++        if key != "s", root?.window !== window { return event }
 +        // Keep suppressing an accepted physical sequence if its first close
 +        // exposes an untracked Chrome tab. Repeats begun there still pass through.
 +        if event.isARepeat { return acceptedKeys.contains(event.keyCode) ? nil : event }
 +        acceptedKeys.remove(event.keyCode) // A new physical sequence supersedes stale state.
 +        // The bridge also rejects blocked pages, slot transitions and closing
 +        // windows. Negative means an untracked Chrome tab or unavailable slot.
++        if key == "s" {
++            // Fullscreen detaches the native slot. Retain the owned window's
++            // shortcut without forwarding it to Chromium's Save Page command.
++            if window.styleMask.contains(.fullScreen) {
++                acceptedKeys.insert(event.keyCode)
++                return nil
++            }
++            guard toggle() else { return event }
++            acceptedKeys.insert(event.keyCode)
++            return nil
++        }
 +        let active = activePage?(token) ?? -1
 +        guard active >= 0 else { return event }
 +        acceptedKeys.insert(event.keyCode)
@@ -2427,7 +2629,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1128 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2440,6 +2642,10 @@
 +    public let root: NSView
 +    public let runtime: PageRuntime
 +    public var requestNativeFocus: (() -> Void)?
++    /// Window geometry belongs to the host, including the page reservation.
++    public var requestSidebarToggle: (() -> Void)? {
++        didSet { sidebarToggle.isHidden = requestSidebarToggle == nil }
++    }
 +    /// The Chromium host schedules committed page work on its CEF UI task runner.
 +    public var requestPagePresentation: (() -> Void)?
 +    public var focusTarget: NSView { addressField }
@@ -2448,6 +2654,7 @@
 +    private let entries = SidebarEntries()
 +    private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
 +    private let workspaceActions = NSButton(frame: .zero)
++    private let sidebarToggle = NSButton(frame: .zero)
 +    private let profileLabel = NSTextField(labelWithString: "")
 +    private let workspaceTitle = NSTextField(labelWithString: "")
 +    private let addressSurface = SidebarSurface()
@@ -2538,6 +2745,8 @@
 +        perform { runtime.closeEntry(id) }
 +    }
 +
++    @objc private func toggleSidebar() { requestSidebarToggle?() }
++
 +    private func configureView() {
 +        root.setAccessibilityIdentifier("bato-workspace-sidebar")
 +        if let view = root as? WorkspaceRoot {
@@ -2566,7 +2775,13 @@
 +        configureIcon(workspaceActions, symbol: "ellipsis", label: "Workspace actions")
 +        workspaceActions.setAccessibilityIdentifier("bato-workspace-actions")
 +        workspaceActions.toolTip = "Reorder this workspace"
-+        let heading = NSStackView(views: [identity, workspaceEdit, workspaceActions])
++        sidebarToggle.target = self
++        sidebarToggle.action = #selector(toggleSidebar)
++        configureIcon(sidebarToggle, symbol: "sidebar.left", label: "Toggle sidebar")
++        sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
++        sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
++        sidebarToggle.isHidden = requestSidebarToggle == nil
++        let heading = NSStackView(views: [identity, sidebarToggle, workspaceEdit, workspaceActions])
 +        heading.orientation = .horizontal
 +        heading.distribution = .fill
 +        heading.spacing = 2
