@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Native current-Profile organization search and atomic page activation",
+  "behavior": {
+    "control": "Find Page… beside New tab opens a native sheet",
+    "matching": "Trimmed, case/diacritic-insensitive title, latest URL, saved URL or workspace name within current Profile",
+    "ordering": "Favorites once bound to current workspace, then local pins and temporary tabs in workspace order; includes unloaded entries",
+    "search_effects": "No organization mutation or engine page creation during search/navigation/cancellation",
+    "activation": "Validate captured IDs and atomically commit both selections before reuse/lazy creation. Fake-engine semantics and bounded v8 real-host unloaded creation/live cross-workspace reuse passed.",
+    "destinations": "Unloaded saved entries use saved URL; temporary entries use latest URL",
+    "failure": "Closing, stale or foreign-Profile selections reject; save errors remain inline; later creation errors or blocked post-dismiss reconciliation use sidebar status",
+    "keyboard": [
+      "Up",
+      "Down",
+      "Return",
+      "Escape"
+    ],
+    "schema_change": false,
+    "engine_api_change": false,
+    "standalone_preview_change": false,
+    "existing_cmd_t_change": false,
+    "host_scheduling": "Client-only eighth WorkspaceConfigure argument schedules CEF UI command3; no engine ABI or modal/thread guard weakening",
+    "focus_restoration": "After modal guards, restore owned parent key window and native focus before guarded engine work; diagnostic events contain only phase and app/key/main booleans",
+    "host_visibility_repair": "Owned-window DidEndSheet observer revalidates slot token and lifecycle, calls existing NativeSlotUpdate to restore visibility from current modal state, and cleans up during teardown. V8 observed hidden→visible restoration after sheet dismissal and successful unloaded activation. Existing FindSlot/modal/lifecycle guards and engine ABI unchanged."
+  },
+  "verification": {
+    "swift_tests": {
+      "total": 86,
+      "core": 28,
+      "store": 9,
+      "session": 3,
+      "runtime": 46,
+      "new_cases": 7,
+      "result": "passed"
+    },
+    "review": "Independent model/runtime/UI source review found no additional actionable defect; bounded v8 real-host acceptance passed after exact host-visibility repair",
+    "initial_compile_failure": "NSSearchFieldDelegate conformance required; declaration corrected, original failed package log retained on SSD",
+    "overlay_checks": "Guarded13-file client roundtrip/nine mirrors/21overlay passed; eight-file engine overlay regeneration verified for diagnostics/repair",
+    "artifact_check": "Final repaired binary passed527ARM64-image scan; SSD logs/page-search-final-artifacts.log",
+    "saved_destination_regression": "New activation test exposed preexisting lazy saved-page creation using lastURL; runtime now uses savedURL ?? lastURL, retaining temporary latest-URL behavior and live-page reuse. Regression and full suite passed; failed test log retained as page-search-saved-url-failed.log.",
+    "superseded_build_seconds": [
+      27.72,
+      61.7,
+      36.4,
+      30.9,
+      33.12,
+      27.23
+    ],
+    "client_patch_roundtrip_files": 13,
+    "source_mirrors": 9,
+    "overlay_files": 21,
+    "arm64_images_checked": 527,
+    "engine_exports_unchanged": 8,
+    "client_workspace_configure_arguments": 8,
+    "incremental_build_seconds": 133.64,
+    "incremental_build_steps": 4,
+    "incremental_build_scope": "DidEndSheet native-host visibility repair, passed; compiler log SSD logs/page-search-sheet-repair-compiler.log",
+    "engine_overlay_files": 8,
+    "artifact_log": "logs/page-search-final-artifacts.log"
+  },
+  "runs": [
+    {
+      "id": "page-search-v1",
+      "result": "failed unloaded Open; search/cancellation passed",
+      "exit_code": 0,
+      "observations": [
+        "Focused native search field and two results displaying title/workspace/URL",
+        "Actual modal page counter advanced0→1 before opening picker",
+        "No-match/Open-disabled, Escape/Cancel and arrow selection passed with exact unchanged organization bytes during search/cancellation",
+        "Opening unloaded storage result was refused while native sheet remained attached; failure log/state/screenshot retained",
+        "Normal Quit exited0"
+      ],
+      "fix": "Keep engine modal guard; commit selection then dismiss sheet before runtime reconciliation"
+    },
+    {
+      "id": "page-search-v2",
+      "result": "failed unloaded Open inside sheet completion",
+      "observations": [
+        "Deferred organization commit succeeded but inline runtime selection in AppKit sheet completion still rejected unloaded creation; the exact guard was not yet observed",
+        "Failed log/state/screenshot retained"
+      ],
+      "fix": "Queue next-main-turn reconciliation after completion unwinds; recheck same host and no attached/modal sheet; otherwise show select-again sidebar status"
+    },
+    {
+      "id": "page-search-v3",
+      "result": "failed unloaded Open from GCD main queue",
+      "observations": [
+        "Queued main-thread presentation still failed to create unloaded storage",
+        "Immediately clicking the storage sidebar row created the page, isolating failure to callback/task context rather than fixture or entry",
+        "CEF task-context mismatch was a historical hypothesis, later insufficient: v4 observed CEF UI context true while creation still rejected"
+      ],
+      "fix": "Client schedules CEF UI task command3, which calls guarded resumeCommittedSelection after sheet dismisses"
+    },
+    {
+      "id": "page-search-v4",
+      "result": "failed unloaded Open despite CEF UI task context",
+      "observations": [
+        "Scheduled adapter callback reported CEF UI task context true but unloaded page creation still rejected",
+        "Parent Chromium window appeared inactive after sheet dismissal; the successful direct sidebar retry was observed in v3"
+      ],
+      "inference": "Parent focus was the next historical hypothesis; v5 measured app/key/main focus true and still rejected",
+      "fix": "Restore owned parent key window/native focus after modal guards, then runtime.start; privacy-free before/after focus booleans only"
+    },
+    {
+      "id": "page-search-v5",
+      "result": "failed unloaded Open after owned-parent focus restoration",
+      "observations": [
+        "CEF UI task context true",
+        "App-active/key-window/main-window booleans true before and after focus restoration",
+        "Unloaded creation still rejected; no third browser created",
+        "Root verified normal application-menu Quit exit0, one detach, loop return and completed CEF shutdown; no owned browser/build remains"
+      ],
+      "conclusion": "Precise client rejecting guard remains unresolved; callback-context and parent-focus hypotheses insufficient"
+    },
+    {
+      "id": "page-search-v6",
+      "result": "failed unloaded Open; client diagnostics narrow rejection",
+      "exit_code": 0,
+      "observations": [
+        "AvailableSlot reported active-browser-unavailable; CreateWorkspacePage reported available-slot-rejected",
+        "Normal application-menu Quit exited0; root verified completed lifecycle"
+      ],
+      "conclusion": "Rejection occurs through the engine active-browser/FindSlot guard before new-tab creation; engine guard diagnostics required"
+    },
+    {
+      "id": "page-search-v7",
+      "result": "failed unloaded Open; exact engine rejection identified",
+      "exit_code": 0,
+      "observations": [
+        "Engine FindSlot diagnostic reported host-hidden and host_visible false",
+        "Widget present; modal, transition and lifecycle blocking flags all false",
+        "No third browser created",
+        "Normal application-menu Quit exited0; root verified completed lifecycle"
+      ],
+      "conclusion": "Native host remained hidden after sheet dismissal despite cleared modal state; FindSlot correctly refused the hidden host"
+    },
+    {
+      "id": "page-search-v8",
+      "result": "passed bounded unloaded activation, live reuse, cancellation and normal Quit",
+      "observations": [
+        "From empty Research, Find Page modal query and Return activated the unloaded modal result in Personal and created the third browser",
+        "Actual fixture rendered with counter0; real click advanced counter0→1, with no creation error",
+        "After switching to Research, Find modal again returned to the same loaded page with counter1 and no additional browser creation",
+        "No-match query disabled Open; Escape preserved exact organization bytes",
+        "All three native-slot-sheet-ended records reported attached_sheet false, host_visible_before false and host_visible_after true; scheduled callback reported CEF UI true",
+        "Zero rejection-enum events before sample-native-quit-requested; expected lifecycle-closing/client rejection diagnostics occurred after Quit began",
+        "Three browsers created and three closed; normal application-menu Quit PID27732 exited0, with exactly one detach, message-loop-exited and cef-shutdown-complete, verified by root",
+        "Organization bytes remained exactly unchanged across final Quit"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "limits": [
+    "Bounded Find Page acceptance covers one synthetic Profile, same-Profile cross-workspace activation and one unloaded/live fixture; it does not establish broad daily-use readiness",
+    "Complete command bar and web search remain future work",
+    "Only organization in the current Profile is searched",
+    "No extension tests; existing foundation and daily-use acceptance gates remain"
+  ],
+  "raw_artifacts": "Dedicated SSD logs/page-search-*; synthetic engine Profile workspace-v3",
+  "status": "passed — bounded Find Page real-host acceptance",
+  "next_step": "Proceed to the broader Arc-style interface milestone; keep full command bar/web search, deferred extension checks and remaining foundation/release gates explicit.",
+  "checkpoint": "V8 accepted after exact host-hidden diagnosis and owned-window DidEndSheet visibility repair. No owned browser/build remains.",
+  "checkpoint_exit_verification": "Root verified v1–v8 normal Quit exit0 and completed lifecycle; v8 created/closed3, detached once, returned loop and completed CEF shutdown with exact organization bytes preserved."
+}

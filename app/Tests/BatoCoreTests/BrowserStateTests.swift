@@ -16,6 +16,78 @@ final class BrowserStateTests: XCTestCase {
         XCTAssertNil(state.currentWorkspace.activeEntryID)
     }
 
+    func testPageSearchPreservesOrganizationAndMatchesAllFieldsWithinCurrentProfile() throws {
+        var state = BrowserState.initial()
+        let first = state.activeWorkspaceID
+        let profile = state.currentWorkspace.profileID
+        let favorite = try state.addTab(url: URL(string: "https://favorite.invalid/")!, title: "Café Notes")
+        try state.favoriteEntry(favorite)
+        let pin = try state.addTab(url: URL(string: "https://saved-only.invalid/")!, title: "Pinned")
+        try state.pinEntry(pin)
+        try state.recordNavigation(entryID: pin, url: URL(string: "https://latest-only.invalid/")!, title: "Pinned")
+        let tab = try state.addTab(url: saved, title: "First temporary")
+        let second = try state.addWorkspace(name: "Résearch", profileID: profile)
+        try state.activateWorkspace(second)
+        let other = try state.addTab(url: navigated, title: "Second temporary")
+        let foreignProfile = try state.addProfile(name: "Foreign")
+        let foreign = try state.addWorkspace(name: "Foreign", profileID: foreignProfile)
+        try state.activateWorkspace(foreign)
+        let hidden = try state.addTab(url: saved, title: "Foreign secret")
+        try state.favoriteEntry(hidden)
+        try state.activateWorkspace(second)
+        let before = state
+
+        let all = state.searchPages(matching: "  \n ")
+        XCTAssertEqual(all.map(\.id), [favorite, pin, tab, other])
+        XCTAssertEqual(all.map(\.workspaceID), [second, first, first, second])
+        XCTAssertEqual(all[0].workspaceName, "Résearch")
+        XCTAssertEqual(all[0].entryID, favorite)
+        XCTAssertEqual(all[0].entry, state.profiles[0].favorites[0])
+        XCTAssertEqual(state.searchPages(matching: "  CAFE \n").map(\.id), [favorite])
+        XCTAssertEqual(state.searchPages(matching: "SAVED-ONLY").map(\.id), [pin])
+        XCTAssertEqual(state.searchPages(matching: "latest-only").map(\.id), [pin])
+        XCTAssertEqual(state.searchPages(matching: "research").map(\.id), [favorite, other])
+        XCTAssertTrue(state.searchPages(matching: "Foreign").isEmpty)
+        XCTAssertEqual(state, before)
+    }
+
+    func testAtomicPageActivationRejectsStaleTargetsAndPreservesAllOtherState() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let current = try state.addTab(url: saved, title: "Source current")
+        let favorite = try state.addTab(url: saved, title: "Shared")
+        try state.favoriteEntry(favorite)
+        try state.selectEntry(current)
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let target = try state.addTab(url: navigated, title: "Target")
+        let foreignProfile = try state.addProfile(name: "Foreign")
+        let foreign = try state.addWorkspace(name: "Foreign", profileID: foreignProfile)
+        try state.activateWorkspace(source)
+        let before = state
+        for (entry, workspace, expected) in [
+            (target, UUID(), BrowserStateError.missingWorkspace),
+            (target, source, .missingEntry), (UUID(), destination, .missingEntry),
+            (target, foreign, .invalidSelection)
+        ] {
+            XCTAssertThrowsError(try state.activateEntry(entry, inWorkspace: workspace)) {
+                XCTAssertEqual($0 as? BrowserStateError, expected)
+            }
+            XCTAssertEqual(state, before)
+        }
+        try state.activateEntry(target, inWorkspace: destination)
+        var expected = before
+        expected.activeWorkspaceID = destination
+        expected.workspaces[1].activeEntryID = target
+        XCTAssertEqual(state, expected)
+        try state.activateEntry(favorite, inWorkspace: destination)
+        expected.workspaces[1].activeEntryID = favorite
+        XCTAssertEqual(state, expected)
+        let decoded = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+        try decoded.validate()
+        XCTAssertEqual(decoded, expected)
+    }
+
     func testEntryTransferPreservesFullEntryAndBothWorkspaceSelections() throws {
         for kind in [EntryKind.pinned, .temporary] {
             for selected in [false, true] {

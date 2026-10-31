@@ -85,6 +85,20 @@ public final class PageRuntime {
         change { try $0.selectEntry(id) }
     }
 
+    /// Resolve both identities against current organization before selecting an engine page.
+    /// Modal hosts can defer engine work until their sheet has dismissed, then call start().
+    @discardableResult
+    public func activateEntry(_ id: UUID, inWorkspace workspaceID: UUID,
+                              deferPageSelection: Bool = false) -> Bool {
+        guard !pendingClose.contains(where: { $0.entryID == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: !deferPageSelection) {
+            try $0.activateEntry(id, inWorkspace: workspaceID)
+        }
+    }
+
     @discardableResult
     public func activateWorkspace(_ id: UUID) -> Bool {
         change { try $0.activateWorkspace(id) }
@@ -318,7 +332,9 @@ public final class PageRuntime {
         }
         let page = LivePage(entryID: id, profileID: workspace.profileID)
         livePages[id] = page
-        guard engine.create(page, url: entry.lastURL) else {
+        // A missing live page is a reopen: saved entries use their explicit
+        // destination, while temporary entries resume their latest session URL.
+        guard engine.create(page, url: entry.savedURL ?? entry.lastURL) else {
             if livePages[id] == page { livePages.removeValue(forKey: id) }
             pagesWithUncommittedNavigation.removeValue(forKey: page)
             lastError = .creationRejected

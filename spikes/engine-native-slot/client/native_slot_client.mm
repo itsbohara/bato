@@ -23,7 +23,8 @@ extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
 extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
     int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
     int (*close)(uint64_t, int), int (*active)(uint64_t),
-    int (*native_focus)(uint64_t), int (*command_id)(int));
+    int (*native_focus)(uint64_t), int (*command_id)(int),
+    void (*schedule_selection)(uint64_t));
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
@@ -83,30 +84,169 @@ CefRefPtr<CefBrowser> CurrentPeer(uint64_t token, const WorkspaceSlot& slot) {
       peer->GetHost()->GetRequestContext()->IsSame(slot.context) ? peer : nullptr;
 }
 
+// Fixed diagnostic values only: never include tokens, browser identifiers,
+// destinations, titles, or other browsing data in rejection records.
+enum class WorkspaceRejection {
+  kWorkspaceDisabled,
+  kNotMainThread,
+  kNotCefUI,
+  kActiveCallbackUnavailable,
+  kActiveBrowserUnavailable,
+  kSlotMissing,
+  kActiveBrowserInvalid,
+  kInitialBrowserMismatch,
+  kInitialFrameMissing,
+  kInitialDestinationMismatch,
+  kContextMismatch,
+  kDestinationInvalid,
+  kNewTabCallbackUnavailable,
+  kAvailableSlotRejected,
+  kPeerUnavailable,
+  kNewTabRejected,
+  kCreatedBrowserMissing,
+  kCreatedBrowserInvalid,
+  kCreatedSlotMissing,
+  kCreatedBrowserIsPeer,
+  kCreatedWindowMismatch,
+  kCreatedContextMismatch,
+  kCreatedFrameInvalid,
+  kPageAlreadyBound,
+  kPageInsertionFailed,
+  kSlotLostAfterNavigation,
+  kPageLostAfterNavigation,
+};
+
+void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
+  const char* value = "unknown";
+  switch (reason) {
+    case WorkspaceRejection::kWorkspaceDisabled:
+      value = "workspace-disabled";
+      break;
+    case WorkspaceRejection::kNotMainThread:
+      value = "not-main-thread";
+      break;
+    case WorkspaceRejection::kNotCefUI:
+      value = "not-cef-ui";
+      break;
+    case WorkspaceRejection::kActiveCallbackUnavailable:
+      value = "active-callback-unavailable";
+      break;
+    case WorkspaceRejection::kActiveBrowserUnavailable:
+      value = "active-browser-unavailable";
+      break;
+    case WorkspaceRejection::kSlotMissing:
+      value = "slot-missing";
+      break;
+    case WorkspaceRejection::kActiveBrowserInvalid:
+      value = "active-browser-invalid";
+      break;
+    case WorkspaceRejection::kInitialBrowserMismatch:
+      value = "initial-browser-mismatch";
+      break;
+    case WorkspaceRejection::kInitialFrameMissing:
+      value = "initial-frame-missing";
+      break;
+    case WorkspaceRejection::kInitialDestinationMismatch:
+      value = "initial-destination-mismatch";
+      break;
+    case WorkspaceRejection::kContextMismatch:
+      value = "context-mismatch";
+      break;
+    case WorkspaceRejection::kDestinationInvalid:
+      value = "destination-invalid";
+      break;
+    case WorkspaceRejection::kNewTabCallbackUnavailable:
+      value = "new-tab-callback-unavailable";
+      break;
+    case WorkspaceRejection::kAvailableSlotRejected:
+      value = "available-slot-rejected";
+      break;
+    case WorkspaceRejection::kPeerUnavailable:
+      value = "peer-unavailable";
+      break;
+    case WorkspaceRejection::kNewTabRejected:
+      value = "new-tab-rejected";
+      break;
+    case WorkspaceRejection::kCreatedBrowserMissing:
+      value = "created-browser-missing";
+      break;
+    case WorkspaceRejection::kCreatedBrowserInvalid:
+      value = "created-browser-invalid";
+      break;
+    case WorkspaceRejection::kCreatedSlotMissing:
+      value = "created-slot-missing";
+      break;
+    case WorkspaceRejection::kCreatedBrowserIsPeer:
+      value = "created-browser-is-peer";
+      break;
+    case WorkspaceRejection::kCreatedWindowMismatch:
+      value = "created-window-mismatch";
+      break;
+    case WorkspaceRejection::kCreatedContextMismatch:
+      value = "created-context-mismatch";
+      break;
+    case WorkspaceRejection::kCreatedFrameInvalid:
+      value = "created-frame-invalid";
+      break;
+    case WorkspaceRejection::kPageAlreadyBound:
+      value = "page-already-bound";
+      break;
+    case WorkspaceRejection::kPageInsertionFailed:
+      value = "page-insertion-failed";
+      break;
+    case WorkspaceRejection::kSlotLostAfterNavigation:
+      value = "slot-lost-after-navigation";
+      break;
+    case WorkspaceRejection::kPageLostAfterNavigation:
+      value = "page-lost-after-navigation";
+      break;
+  }
+  fprintf(stderr,
+          "{\"event\":\"workspace-adapter-rejected\",\"operation\":\"%s\",\"reason\":\"%s\"}\n",
+          operation, value);
+}
+
 WorkspaceSlot* AvailableSlot(uint64_t token) {
-  if (!g_workspace_enabled || !NSThread.isMainThread ||
-      !CefCurrentlyOn(TID_UI) || !g_active_browser_id) return nullptr;
+  auto reject = [](WorkspaceRejection reason) -> WorkspaceSlot* {
+    LogWorkspaceRejection("available-slot", reason);
+    return nullptr;
+  };
+  if (!g_workspace_enabled)
+    return reject(WorkspaceRejection::kWorkspaceDisabled);
+  if (!NSThread.isMainThread)
+    return reject(WorkspaceRejection::kNotMainThread);
+  if (!CefCurrentlyOn(TID_UI))
+    return reject(WorkspaceRejection::kNotCefUI);
+  if (!g_active_browser_id)
+    return reject(WorkspaceRejection::kActiveCallbackUnavailable);
   const int identifier = g_active_browser_id(token);
-  if (identifier <= 0) return nullptr;
+  if (identifier <= 0)
+    return reject(WorkspaceRejection::kActiveBrowserUnavailable);
   auto found = WorkspaceSlots().find(token);
-  if (found == WorkspaceSlots().end()) return nullptr;
+  if (found == WorkspaceSlots().end())
+    return reject(WorkspaceRejection::kSlotMissing);
   auto active = CefBrowserHost::GetBrowserByIdentifier(identifier);
-  if (!active || !active->IsValid()) return nullptr;
+  if (!active || !active->IsValid())
+    return reject(WorkspaceRejection::kActiveBrowserInvalid);
   auto& slot = found->second;
   if (!slot.context) {
     // Only the initial browser can seed the original blank anchor. A new tab
     // can also briefly have an empty URL, so emptiness alone is insufficient.
-    if (identifier != g_initial_browser_id) return nullptr;
+    if (identifier != g_initial_browser_id)
+      return reject(WorkspaceRejection::kInitialBrowserMismatch);
     auto frame = active->GetMainFrame();
-    if (!frame) return nullptr;
+    if (!frame)
+      return reject(WorkspaceRejection::kInitialFrameMissing);
     const auto initial_url = frame->GetURL().ToString();
-    if (!initial_url.empty() && initial_url != "about:blank") return nullptr;
+    if (!initial_url.empty() && initial_url != "about:blank")
+      return reject(WorkspaceRejection::kInitialDestinationMismatch);
     slot.anchor = active;
     slot.context = active->GetHost()->GetRequestContext();
   }
   // An anchor closed by Chrome does not change the bound engine Profile. A real
   // page may prove same-window ownership, but must never become the blank anchor.
-  if (!active->GetHost()->GetRequestContext()->IsSame(slot.context)) return nullptr;
+  if (!active->GetHost()->GetRequestContext()->IsSame(slot.context))
+    return reject(WorkspaceRejection::kContextMismatch);
   return &slot;
 }
 
@@ -122,6 +262,21 @@ int ActiveWorkspacePage(uint64_t token) {
 int WorkspaceCommandId(int command) {
   if (!CefCurrentlyOn(TID_UI)) return -1;
   return cef_id_for_command_id_name(command == 1 ? "IDC_NEW_TAB" : "IDC_CLOSE_TAB");
+}
+
+void ScheduleWorkspaceSelection(uint64_t token) {
+  // AppKit sheet completion runs on the main thread, but not necessarily in
+  // CEF's UI task scope. Post before entering the guarded page adapter APIs.
+  if (!g_workspace_enabled || !NSThread.isMainThread ||
+      !WorkspaceSlots().contains(token)) return;
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token) {
+        if (!g_workspace_enabled || !WorkspaceSlots().contains(token)) return;
+        fprintf(stderr,
+                "{\"event\":\"workspace-selection-dispatched\",\"cef_ui\":%s}\n",
+                CefCurrentlyOn(TID_UI) ? "true" : "false");
+        BatoSwiftWorkspaceCommand(token, 3, 0);
+      }, token));
 }
 
 void PostPageState(uint64_t token, int identifier, BoundPage& page) {
@@ -142,32 +297,57 @@ void PostPageState(uint64_t token, int identifier, BoundPage& page) {
 }
 
 int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
-  if (!ValidDestination(utf8_url) || !g_new_tab) return 0;
+  auto reject = [](WorkspaceRejection reason) {
+    LogWorkspaceRejection("create-page", reason);
+    return 0;
+  };
+  if (!ValidDestination(utf8_url))
+    return reject(WorkspaceRejection::kDestinationInvalid);
+  if (!g_new_tab)
+    return reject(WorkspaceRejection::kNewTabCallbackUnavailable);
   auto* slot = AvailableSlot(token);
-  if (!slot) return 0;
+  if (!slot)
+    return reject(WorkspaceRejection::kAvailableSlotRejected);
   // Copy URL and retain the same-window peer/context across Chrome callbacks.
   const CefString url(utf8_url);
   CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
   CefRefPtr<CefRequestContext> context = slot->context;
-  if (!peer) return 0;
+  if (!peer)
+    return reject(WorkspaceRejection::kPeerUnavailable);
   const int identifier = g_new_tab(token);
-  auto browser = identifier > 0 ? CefBrowserHost::GetBrowserByIdentifier(identifier) : nullptr;
+  if (identifier <= 0)
+    return reject(WorkspaceRejection::kNewTabRejected);
+  auto browser = CefBrowserHost::GetBrowserByIdentifier(identifier);
   auto current_slot = WorkspaceSlots().find(token);
-  if (!browser || !browser->IsValid() || current_slot == WorkspaceSlots().end() ||
-      browser->IsSame(peer) || !SameWindow(peer, browser) ||
-      !browser->GetHost()->GetRequestContext()->IsSame(context)) return 0;
+  if (!browser)
+    return reject(WorkspaceRejection::kCreatedBrowserMissing);
+  if (!browser->IsValid())
+    return reject(WorkspaceRejection::kCreatedBrowserInvalid);
+  if (current_slot == WorkspaceSlots().end())
+    return reject(WorkspaceRejection::kCreatedSlotMissing);
+  if (browser->IsSame(peer))
+    return reject(WorkspaceRejection::kCreatedBrowserIsPeer);
+  if (!SameWindow(peer, browser))
+    return reject(WorkspaceRejection::kCreatedWindowMismatch);
+  if (!browser->GetHost()->GetRequestContext()->IsSame(context))
+    return reject(WorkspaceRejection::kCreatedContextMismatch);
   auto frame = browser->GetMainFrame();
-  if (!frame || !frame->IsValid()) return 0;
+  if (!frame || !frame->IsValid())
+    return reject(WorkspaceRejection::kCreatedFrameInvalid);
   auto& pages = current_slot->second.pages;
-  if (pages.contains(identifier)) return 0;
+  if (pages.contains(identifier))
+    return reject(WorkspaceRejection::kPageAlreadyBound);
   auto [found, inserted] = pages.emplace(identifier, BoundPage{browser, url.ToString(), ""});
-  if (!inserted) return 0;
+  if (!inserted)
+    return reject(WorkspaceRejection::kPageInsertionFailed);
   frame->LoadURL(url);
   // Navigation can reenter client code. Never keep an iterator across it.
   auto still_live = WorkspaceSlots().find(token);
-  if (still_live == WorkspaceSlots().end()) return 0;
+  if (still_live == WorkspaceSlots().end())
+    return reject(WorkspaceRejection::kSlotLostAfterNavigation);
   auto bound = still_live->second.pages.find(identifier);
-  if (bound == still_live->second.pages.end()) return 0;
+  if (bound == still_live->second.pages.end())
+    return reject(WorkspaceRejection::kPageLostAfterNavigation);
   // Bato's Swift generation binding is established when this call returns.
   PostPageState(token, identifier, bound->second);
   return identifier;
@@ -443,7 +623,8 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     g_request_close = request_close;
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
                                  SelectWorkspacePage, CloseWorkspacePage,
-                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId);
+                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId,
+                                 ScheduleWorkspaceSelection);
   }
   BatoNativeSlotCallbacksV1 callbacks = {};
   callbacks.size = sizeof(callbacks);

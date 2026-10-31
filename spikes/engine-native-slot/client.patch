@@ -94,7 +94,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,460 @@
+@@ -0,0 +1,641 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -120,7 +120,8 @@
 +extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
 +    int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
 +    int (*close)(uint64_t, int), int (*active)(uint64_t),
-+    int (*native_focus)(uint64_t), int (*command_id)(int));
++    int (*native_focus)(uint64_t), int (*command_id)(int),
++    void (*schedule_selection)(uint64_t));
 +extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 +    int kind, const char* url, const char* title);
@@ -180,30 +181,169 @@
 +      peer->GetHost()->GetRequestContext()->IsSame(slot.context) ? peer : nullptr;
 +}
 +
++// Fixed diagnostic values only: never include tokens, browser identifiers,
++// destinations, titles, or other browsing data in rejection records.
++enum class WorkspaceRejection {
++  kWorkspaceDisabled,
++  kNotMainThread,
++  kNotCefUI,
++  kActiveCallbackUnavailable,
++  kActiveBrowserUnavailable,
++  kSlotMissing,
++  kActiveBrowserInvalid,
++  kInitialBrowserMismatch,
++  kInitialFrameMissing,
++  kInitialDestinationMismatch,
++  kContextMismatch,
++  kDestinationInvalid,
++  kNewTabCallbackUnavailable,
++  kAvailableSlotRejected,
++  kPeerUnavailable,
++  kNewTabRejected,
++  kCreatedBrowserMissing,
++  kCreatedBrowserInvalid,
++  kCreatedSlotMissing,
++  kCreatedBrowserIsPeer,
++  kCreatedWindowMismatch,
++  kCreatedContextMismatch,
++  kCreatedFrameInvalid,
++  kPageAlreadyBound,
++  kPageInsertionFailed,
++  kSlotLostAfterNavigation,
++  kPageLostAfterNavigation,
++};
++
++void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
++  const char* value = "unknown";
++  switch (reason) {
++    case WorkspaceRejection::kWorkspaceDisabled:
++      value = "workspace-disabled";
++      break;
++    case WorkspaceRejection::kNotMainThread:
++      value = "not-main-thread";
++      break;
++    case WorkspaceRejection::kNotCefUI:
++      value = "not-cef-ui";
++      break;
++    case WorkspaceRejection::kActiveCallbackUnavailable:
++      value = "active-callback-unavailable";
++      break;
++    case WorkspaceRejection::kActiveBrowserUnavailable:
++      value = "active-browser-unavailable";
++      break;
++    case WorkspaceRejection::kSlotMissing:
++      value = "slot-missing";
++      break;
++    case WorkspaceRejection::kActiveBrowserInvalid:
++      value = "active-browser-invalid";
++      break;
++    case WorkspaceRejection::kInitialBrowserMismatch:
++      value = "initial-browser-mismatch";
++      break;
++    case WorkspaceRejection::kInitialFrameMissing:
++      value = "initial-frame-missing";
++      break;
++    case WorkspaceRejection::kInitialDestinationMismatch:
++      value = "initial-destination-mismatch";
++      break;
++    case WorkspaceRejection::kContextMismatch:
++      value = "context-mismatch";
++      break;
++    case WorkspaceRejection::kDestinationInvalid:
++      value = "destination-invalid";
++      break;
++    case WorkspaceRejection::kNewTabCallbackUnavailable:
++      value = "new-tab-callback-unavailable";
++      break;
++    case WorkspaceRejection::kAvailableSlotRejected:
++      value = "available-slot-rejected";
++      break;
++    case WorkspaceRejection::kPeerUnavailable:
++      value = "peer-unavailable";
++      break;
++    case WorkspaceRejection::kNewTabRejected:
++      value = "new-tab-rejected";
++      break;
++    case WorkspaceRejection::kCreatedBrowserMissing:
++      value = "created-browser-missing";
++      break;
++    case WorkspaceRejection::kCreatedBrowserInvalid:
++      value = "created-browser-invalid";
++      break;
++    case WorkspaceRejection::kCreatedSlotMissing:
++      value = "created-slot-missing";
++      break;
++    case WorkspaceRejection::kCreatedBrowserIsPeer:
++      value = "created-browser-is-peer";
++      break;
++    case WorkspaceRejection::kCreatedWindowMismatch:
++      value = "created-window-mismatch";
++      break;
++    case WorkspaceRejection::kCreatedContextMismatch:
++      value = "created-context-mismatch";
++      break;
++    case WorkspaceRejection::kCreatedFrameInvalid:
++      value = "created-frame-invalid";
++      break;
++    case WorkspaceRejection::kPageAlreadyBound:
++      value = "page-already-bound";
++      break;
++    case WorkspaceRejection::kPageInsertionFailed:
++      value = "page-insertion-failed";
++      break;
++    case WorkspaceRejection::kSlotLostAfterNavigation:
++      value = "slot-lost-after-navigation";
++      break;
++    case WorkspaceRejection::kPageLostAfterNavigation:
++      value = "page-lost-after-navigation";
++      break;
++  }
++  fprintf(stderr,
++          "{\"event\":\"workspace-adapter-rejected\",\"operation\":\"%s\",\"reason\":\"%s\"}\n",
++          operation, value);
++}
++
 +WorkspaceSlot* AvailableSlot(uint64_t token) {
-+  if (!g_workspace_enabled || !NSThread.isMainThread ||
-+      !CefCurrentlyOn(TID_UI) || !g_active_browser_id) return nullptr;
++  auto reject = [](WorkspaceRejection reason) -> WorkspaceSlot* {
++    LogWorkspaceRejection("available-slot", reason);
++    return nullptr;
++  };
++  if (!g_workspace_enabled)
++    return reject(WorkspaceRejection::kWorkspaceDisabled);
++  if (!NSThread.isMainThread)
++    return reject(WorkspaceRejection::kNotMainThread);
++  if (!CefCurrentlyOn(TID_UI))
++    return reject(WorkspaceRejection::kNotCefUI);
++  if (!g_active_browser_id)
++    return reject(WorkspaceRejection::kActiveCallbackUnavailable);
 +  const int identifier = g_active_browser_id(token);
-+  if (identifier <= 0) return nullptr;
++  if (identifier <= 0)
++    return reject(WorkspaceRejection::kActiveBrowserUnavailable);
 +  auto found = WorkspaceSlots().find(token);
-+  if (found == WorkspaceSlots().end()) return nullptr;
++  if (found == WorkspaceSlots().end())
++    return reject(WorkspaceRejection::kSlotMissing);
 +  auto active = CefBrowserHost::GetBrowserByIdentifier(identifier);
-+  if (!active || !active->IsValid()) return nullptr;
++  if (!active || !active->IsValid())
++    return reject(WorkspaceRejection::kActiveBrowserInvalid);
 +  auto& slot = found->second;
 +  if (!slot.context) {
 +    // Only the initial browser can seed the original blank anchor. A new tab
 +    // can also briefly have an empty URL, so emptiness alone is insufficient.
-+    if (identifier != g_initial_browser_id) return nullptr;
++    if (identifier != g_initial_browser_id)
++      return reject(WorkspaceRejection::kInitialBrowserMismatch);
 +    auto frame = active->GetMainFrame();
-+    if (!frame) return nullptr;
++    if (!frame)
++      return reject(WorkspaceRejection::kInitialFrameMissing);
 +    const auto initial_url = frame->GetURL().ToString();
-+    if (!initial_url.empty() && initial_url != "about:blank") return nullptr;
++    if (!initial_url.empty() && initial_url != "about:blank")
++      return reject(WorkspaceRejection::kInitialDestinationMismatch);
 +    slot.anchor = active;
 +    slot.context = active->GetHost()->GetRequestContext();
 +  }
 +  // An anchor closed by Chrome does not change the bound engine Profile. A real
 +  // page may prove same-window ownership, but must never become the blank anchor.
-+  if (!active->GetHost()->GetRequestContext()->IsSame(slot.context)) return nullptr;
++  if (!active->GetHost()->GetRequestContext()->IsSame(slot.context))
++    return reject(WorkspaceRejection::kContextMismatch);
 +  return &slot;
 +}
 +
@@ -219,6 +359,21 @@
 +int WorkspaceCommandId(int command) {
 +  if (!CefCurrentlyOn(TID_UI)) return -1;
 +  return cef_id_for_command_id_name(command == 1 ? "IDC_NEW_TAB" : "IDC_CLOSE_TAB");
++}
++
++void ScheduleWorkspaceSelection(uint64_t token) {
++  // AppKit sheet completion runs on the main thread, but not necessarily in
++  // CEF's UI task scope. Post before entering the guarded page adapter APIs.
++  if (!g_workspace_enabled || !NSThread.isMainThread ||
++      !WorkspaceSlots().contains(token)) return;
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token) {
++        if (!g_workspace_enabled || !WorkspaceSlots().contains(token)) return;
++        fprintf(stderr,
++                "{\"event\":\"workspace-selection-dispatched\",\"cef_ui\":%s}\n",
++                CefCurrentlyOn(TID_UI) ? "true" : "false");
++        BatoSwiftWorkspaceCommand(token, 3, 0);
++      }, token));
 +}
 +
 +void PostPageState(uint64_t token, int identifier, BoundPage& page) {
@@ -239,32 +394,57 @@
 +}
 +
 +int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
-+  if (!ValidDestination(utf8_url) || !g_new_tab) return 0;
++  auto reject = [](WorkspaceRejection reason) {
++    LogWorkspaceRejection("create-page", reason);
++    return 0;
++  };
++  if (!ValidDestination(utf8_url))
++    return reject(WorkspaceRejection::kDestinationInvalid);
++  if (!g_new_tab)
++    return reject(WorkspaceRejection::kNewTabCallbackUnavailable);
 +  auto* slot = AvailableSlot(token);
-+  if (!slot) return 0;
++  if (!slot)
++    return reject(WorkspaceRejection::kAvailableSlotRejected);
 +  // Copy URL and retain the same-window peer/context across Chrome callbacks.
 +  const CefString url(utf8_url);
 +  CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
 +  CefRefPtr<CefRequestContext> context = slot->context;
-+  if (!peer) return 0;
++  if (!peer)
++    return reject(WorkspaceRejection::kPeerUnavailable);
 +  const int identifier = g_new_tab(token);
-+  auto browser = identifier > 0 ? CefBrowserHost::GetBrowserByIdentifier(identifier) : nullptr;
++  if (identifier <= 0)
++    return reject(WorkspaceRejection::kNewTabRejected);
++  auto browser = CefBrowserHost::GetBrowserByIdentifier(identifier);
 +  auto current_slot = WorkspaceSlots().find(token);
-+  if (!browser || !browser->IsValid() || current_slot == WorkspaceSlots().end() ||
-+      browser->IsSame(peer) || !SameWindow(peer, browser) ||
-+      !browser->GetHost()->GetRequestContext()->IsSame(context)) return 0;
++  if (!browser)
++    return reject(WorkspaceRejection::kCreatedBrowserMissing);
++  if (!browser->IsValid())
++    return reject(WorkspaceRejection::kCreatedBrowserInvalid);
++  if (current_slot == WorkspaceSlots().end())
++    return reject(WorkspaceRejection::kCreatedSlotMissing);
++  if (browser->IsSame(peer))
++    return reject(WorkspaceRejection::kCreatedBrowserIsPeer);
++  if (!SameWindow(peer, browser))
++    return reject(WorkspaceRejection::kCreatedWindowMismatch);
++  if (!browser->GetHost()->GetRequestContext()->IsSame(context))
++    return reject(WorkspaceRejection::kCreatedContextMismatch);
 +  auto frame = browser->GetMainFrame();
-+  if (!frame || !frame->IsValid()) return 0;
++  if (!frame || !frame->IsValid())
++    return reject(WorkspaceRejection::kCreatedFrameInvalid);
 +  auto& pages = current_slot->second.pages;
-+  if (pages.contains(identifier)) return 0;
++  if (pages.contains(identifier))
++    return reject(WorkspaceRejection::kPageAlreadyBound);
 +  auto [found, inserted] = pages.emplace(identifier, BoundPage{browser, url.ToString(), ""});
-+  if (!inserted) return 0;
++  if (!inserted)
++    return reject(WorkspaceRejection::kPageInsertionFailed);
 +  frame->LoadURL(url);
 +  // Navigation can reenter client code. Never keep an iterator across it.
 +  auto still_live = WorkspaceSlots().find(token);
-+  if (still_live == WorkspaceSlots().end()) return 0;
++  if (still_live == WorkspaceSlots().end())
++    return reject(WorkspaceRejection::kSlotLostAfterNavigation);
 +  auto bound = still_live->second.pages.find(identifier);
-+  if (bound == still_live->second.pages.end()) return 0;
++  if (bound == still_live->second.pages.end())
++    return reject(WorkspaceRejection::kPageLostAfterNavigation);
 +  // Bato's Swift generation binding is established when this call returns.
 +  PostPageState(token, identifier, bound->second);
 +  return identifier;
@@ -540,7 +720,8 @@
 +    g_request_close = request_close;
 +    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
 +                                 SelectWorkspacePage, CloseWorkspacePage,
-+                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId);
++                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId,
++                                 ScheduleWorkspaceSelection);
 +  }
 +  BatoNativeSlotCallbacksV1 callbacks = {};
 +  callbacks.size = sizeof(callbacks);
@@ -780,7 +961,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,255 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -788,6 +969,7 @@
 +
 +private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
 +private typealias CommandID = @convention(c) (Int32) -> Int32
++private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 +private typealias ActivePage = @convention(c) (UInt64) -> Int32
 +private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 +@MainActor private var workspaceDirectory: URL?
@@ -797,6 +979,7 @@
 +@MainActor private var activePage: ActivePage?
 +@MainActor private var nativeFocus: ActivePage?
 +@MainActor private var commandID: CommandID?
++@MainActor private var scheduleSelection: ScheduleSelection?
 +@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 +
 +@MainActor private final class WorkspaceEngine: PageEngine {
@@ -880,6 +1063,7 @@
 +            }
 +            self.controller = controller
 +            controller.requestNativeFocus = { _ = nativeFocus?(token) }
++            controller.requestPagePresentation = { scheduleSelection?(token) }
 +            engine?.onEvent = { [weak controller] event in controller?.receive(event) }
 +            engine?.onAnchorLost = { [weak controller] in _ = controller?.runtime.start() }
 +            controller.root.translatesAutoresizingMaskIntoConstraints = false
@@ -912,7 +1096,8 @@
 +    _ close: @escaping @convention(c) (UInt64, Int32) -> Int32,
 +    _ active: @escaping @convention(c) (UInt64) -> Int32,
 +    _ focus: @escaping @convention(c) (UInt64) -> Int32,
-+    _ command: @escaping @convention(c) (Int32) -> Int32) {
++    _ command: @escaping @convention(c) (Int32) -> Int32,
++    _ schedule: @escaping @convention(c) (UInt64) -> Void) {
 +    precondition(Thread.isMainThread)
 +    guard let directory else { return }
 +    let path = String(cString: directory)
@@ -924,6 +1109,7 @@
 +    activePage = active
 +    nativeFocus = focus
 +    commandID = command
++    scheduleSelection = schedule
 +}
 +
 +@MainActor func workspaceModeEnabled() -> Bool { workspaceDirectory != nil }
@@ -955,6 +1141,7 @@
 +@MainActor public func workspaceCommand(_ token: UInt64, _ command: Int32, _ browserID: Int32) {
 +    precondition(Thread.isMainThread)
 +    guard let controller = workspaceSlots[token]?.controller else { return }
++    if command == 3 { controller.resumeCommittedSelection() }
 +    if command == 1 { controller.newTab() }
 +    if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
 +        controller.receive(.selected(page))
@@ -1147,7 +1334,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,480 @@
+@@ -0,0 +1,536 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -1175,6 +1362,22 @@
 +        self.savedURL = savedURL
 +        self.lastURL = lastURL
 +        self.kind = kind
++    }
++}
++
++/// A transient organization search result; engine-loaded state stays in the runtime.
++public struct PageSearchResult: Identifiable, Equatable, Sendable {
++    public var id: UUID { entryID }
++    public let entryID: UUID
++    public let workspaceID: UUID
++    public let workspaceName: String
++    public let entry: PageEntry
++
++    public init(entryID: UUID, workspaceID: UUID, workspaceName: String, entry: PageEntry) {
++        self.entryID = entryID
++        self.workspaceID = workspaceID
++        self.workspaceName = workspaceName
++        self.entry = entry
 +    }
 +}
 +
@@ -1274,6 +1477,28 @@
 +        return favorites + workspace.pins + workspace.tabs
 +    }
 +
++    /// Search the current Profile without loading pages or duplicating shared Favorites.
++    public func searchPages(matching query: String) -> [PageSearchResult] {
++        let current = currentWorkspace
++        let favorites = profiles.first(where: { $0.id == current.profileID })?.favorites ?? []
++        var results = favorites.map {
++            PageSearchResult(entryID: $0.id, workspaceID: current.id, workspaceName: current.name, entry: $0)
++        }
++        for workspace in workspaces where workspace.profileID == current.profileID {
++            results += (workspace.pins + workspace.tabs).map {
++                PageSearchResult(entryID: $0.id, workspaceID: workspace.id, workspaceName: workspace.name, entry: $0)
++            }
++        }
++        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !query.isEmpty else { return results }
++        return results.filter { result in
++            [result.entry.title, result.entry.lastURL.absoluteString,
++             result.entry.savedURL?.absoluteString ?? "", result.workspaceName].contains {
++                $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
++            }
++        }
++    }
++
 +    public func validate() throws {
 +        guard version == 1 else { throw BrowserStateError.unsupportedVersion(version) }
 +        var identities = Set<UUID>()
@@ -1345,6 +1570,24 @@
 +        try transact { draft in
 +            guard draft.workspaces.contains(where: { $0.id == id }) else { throw BrowserStateError.missingWorkspace }
 +            draft.activeWorkspaceID = id
++        }
++    }
++
++    /// Switch workspace and page as one validated organization transaction.
++    public mutating func activateEntry(_ id: UUID, inWorkspace workspaceID: UUID) throws {
++        try transact { draft in
++            guard let workspace = draft.workspaces.first(where: { $0.id == workspaceID }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            guard workspace.profileID == draft.currentWorkspace.profileID else {
++                throw BrowserStateError.invalidSelection
++            }
++            let favorites = draft.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
++            guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            draft.activeWorkspaceID = workspaceID
++            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
 +        }
 +    }
 +
@@ -1829,7 +2072,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,352 @@
 +import Foundation
 +import BatoCore
 +
@@ -1915,6 +2158,20 @@
 +    @discardableResult
 +    public func selectEntry(_ id: UUID) -> Bool {
 +        change { try $0.selectEntry(id) }
++    }
++
++    /// Resolve both identities against current organization before selecting an engine page.
++    /// Modal hosts can defer engine work until their sheet has dismissed, then call start().
++    @discardableResult
++    public func activateEntry(_ id: UUID, inWorkspace workspaceID: UUID,
++                              deferPageSelection: Bool = false) -> Bool {
++        guard !pendingClose.contains(where: { $0.entryID == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: !deferPageSelection) {
++            try $0.activateEntry(id, inWorkspace: workspaceID)
++        }
 +    }
 +
 +    @discardableResult
@@ -2150,7 +2407,9 @@
 +        }
 +        let page = LivePage(entryID: id, profileID: workspace.profileID)
 +        livePages[id] = page
-+        guard engine.create(page, url: entry.lastURL) else {
++        // A missing live page is a reopen: saved entries use their explicit
++        // destination, while temporary entries resume their latest session URL.
++        guard engine.create(page, url: entry.savedURL ?? entry.lastURL) else {
 +            if livePages[id] == page { livePages.removeValue(forKey: id) }
 +            pagesWithUncommittedNavigation.removeValue(forKey: page)
 +            lastError = .creationRejected
@@ -2168,7 +2427,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,867 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2181,6 +2440,8 @@
 +    public let root: NSView
 +    public let runtime: PageRuntime
 +    public var requestNativeFocus: (() -> Void)?
++    /// The Chromium host schedules committed page work on its CEF UI task runner.
++    public var requestPagePresentation: (() -> Void)?
 +    public var focusTarget: NSView { addressField }
 +
 +    private let addressField = NSTextField(string: "")
@@ -2192,6 +2453,7 @@
 +    private var workspaceIDs: [UUID] = []
 +    private var hasStarted = false
 +    private var workspaceEditor: WorkspaceEditor?
++    private var pageFinder: PageFinder?
 +    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 +
 +    /// Load failures throw without replacing the existing document. The factory
@@ -2239,6 +2501,34 @@
 +        addressField.selectText(nil)
 +    }
 +
++    /// Called by the host after leaving AppKit's sheet callback context.
++    public func resumeCommittedSelection() {
++        guard hasStarted, let window = root.window else { return }
++        guard window.attachedSheet == nil, NSApp.modalWindow == nil else {
++            render()
++            statusLabel.stringValue = "Close the dialog, then select the page to open it."
++            return
++        }
++        logPagePresentationFocus("before", window: window)
++        // Ending our sheet can leave the owned parent inactive. Restore that
++        // window and its native focus before asking the guarded host to create.
++        window.makeKeyAndOrderFront(nil)
++        requestNativeFocus?()
++        logPagePresentationFocus("after", window: window)
++        _ = runtime.start()
++        render()
++    }
++
++    private func logPagePresentationFocus(_ phase: String, window: NSWindow) {
++        let event: [String: Any] = ["event": "page-presentation-focus", "phase": phase,
++                                    "appActive": NSApp.isActive,
++                                    "keyWindow": window.isKeyWindow,
++                                    "mainWindow": window.isMainWindow]
++        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
++        FileHandle.standardError.write(data)
++        FileHandle.standardError.write(Data([0x0A]))
++    }
++
 +    public func closeSelection() {
 +        guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
 +        perform { runtime.closeEntry(id) }
@@ -2274,7 +2564,13 @@
 +        addressField.cell?.sendsActionOnEndEditing = false
 +        let add = ActionButton(title: "New tab") { [weak self] in self?.submitAddress() }
 +        add.setAccessibilityIdentifier("bato-new-tab")
-+        let address = NSStackView(views: [addressField, add])
++        let find = ActionButton(title: "Find Page…") { [weak self] in self?.findPage() }
++        find.setAccessibilityLabel("Find Page")
++        find.setAccessibilityIdentifier("bato-find-page")
++        let addressActions = NSStackView(views: [add, find])
++        addressActions.orientation = .horizontal
++        addressActions.spacing = 6
++        let address = NSStackView(views: [addressField, addressActions])
 +        address.orientation = .vertical
 +        address.alignment = .leading
 +        address.spacing = 7
@@ -2372,6 +2668,7 @@
 +        workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
 +        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
 +        profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
++        pageFinder?.refresh()
 +        switch runtime.lastError {
 +        case .none:
 +            statusLabel.stringValue = runtime.pendingClose.isEmpty ? "" : "Waiting for page to close…"
@@ -2547,6 +2844,45 @@
 +        moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
 +        menu.addItem(moveDown)
 +        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
++    }
++
++    private func findPage() {
++        guard hasStarted, pageFinder == nil, workspaceEditor == nil, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        requestNativeFocus?()
++        let finder = PageFinder(search: { [weak self] query in
++            self?.runtime.state.searchPages(matching: query) ?? []
++        }, open: { [weak self] result in
++            guard let self else { return "The page is no longer available." }
++            guard self.runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID,
++                                             deferPageSelection: true) else {
++                switch self.runtime.lastError {
++                case .saveFailed: return "Changes couldn’t be saved. Reopen Bato to reload organization."
++                default: return "This page is no longer available or is closing. Choose another page."
++                }
++            }
++            self.render()
++            return nil
++        })
++        pageFinder = finder
++        guard let sheet = finder.window else { pageFinder = nil; return }
++        window.beginSheet(sheet) { [weak self] response in
++            guard let self else { return }
++            self.pageFinder = nil
++            if response == .OK {
++                // AppKit can still be in its modal context inside this completion.
++                // Leave the completion, then let the Chromium host post to its UI task runner.
++                DispatchQueue.main.async { [weak self, weak window] in
++                    guard let self, let window, self.root.window === window else { return }
++                    if let request = self.requestPagePresentation {
++                        request()
++                    } else {
++                        self.resumeCommittedSelection()
++                    }
++                }
++            }
++        }
++        finder.focusSearch()
 +    }
 +
 +    private func editWorkspace() {
@@ -2742,6 +3078,210 @@
 +        guard let window, let parent = window.sheetParent else { return }
 +        parent.endSheet(window, returnCode: response)
 +        window.orderOut(nil)
++    }
++}
++
++/// Searches organization without creating pages until the user opens a result.
++@MainActor
++private final class PageFinder: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
++    private let searchField = NSSearchField(string: "")
++    private let table = PageSearchTable()
++    private let resultLabel = NSTextField(labelWithString: "")
++    private let errorLabel = NSTextField(wrappingLabelWithString: "")
++    private let openButton = NSButton(title: "Open", target: nil, action: nil)
++    private let search: (String) -> [PageSearchResult]
++    private let open: (PageSearchResult) -> String?
++    private var results: [PageSearchResult] = []
++
++    init(search: @escaping (String) -> [PageSearchResult], open: @escaping (PageSearchResult) -> String?) {
++        self.search = search
++        self.open = open
++        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
++                            styleMask: [.titled], backing: .buffered, defer: false)
++        panel.title = "Find Page"
++        panel.isReleasedWhenClosed = false
++        super.init(window: panel)
++        searchField.placeholderString = "Search page titles, addresses or workspaces"
++        searchField.setAccessibilityLabel("Find page search")
++        searchField.setAccessibilityIdentifier("bato-page-search")
++        searchField.delegate = self
++        searchField.sendsSearchStringImmediately = true
++        searchField.cell?.sendsActionOnEndEditing = false
++        table.dataSource = self
++        table.delegate = self
++        table.headerView = nil
++        table.rowHeight = 50
++        table.allowsEmptySelection = false
++        table.allowsMultipleSelection = false
++        table.usesAlternatingRowBackgroundColors = true
++        table.setAccessibilityLabel("Matching pages")
++        table.setAccessibilityIdentifier("bato-page-search-results")
++        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("page"))
++        column.resizingMask = .autoresizingMask
++        table.addTableColumn(column)
++        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
++        table.target = self
++        table.doubleAction = #selector(openSelected)
++        table.openSelection = { [weak self] in self?.openSelected() }
++        table.cancel = { [weak self] in self?.dismiss(.cancel) }
++        let scroll = NSScrollView()
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.documentView = table
++        scroll.borderType = .bezelBorder
++        resultLabel.font = .systemFont(ofSize: 11)
++        resultLabel.textColor = .secondaryLabelColor
++        resultLabel.setAccessibilityIdentifier("bato-page-search-count")
++        errorLabel.font = .systemFont(ofSize: 11)
++        errorLabel.textColor = .systemRed
++        errorLabel.setAccessibilityIdentifier("bato-page-search-error")
++        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
++        cancel.keyEquivalent = "\u{1b}"
++        cancel.setAccessibilityIdentifier("bato-page-search-cancel")
++        openButton.bezelStyle = .rounded
++        openButton.target = self
++        openButton.action = #selector(openSelected)
++        openButton.keyEquivalent = "\r"
++        openButton.setAccessibilityIdentifier("bato-page-search-open")
++        panel.defaultButtonCell = openButton.cell as? NSButtonCell
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let buttons = NSStackView(views: [spacer, cancel, openButton])
++        buttons.orientation = .horizontal
++        buttons.spacing = 8
++        let stack = NSStackView(views: [searchField, resultLabel, scroll, errorLabel, buttons])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 9
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        panel.contentView?.addSubview(stack)
++        if let content = panel.contentView {
++            NSLayoutConstraint.activate([
++                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
++                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
++                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
++                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
++                searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
++                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
++            ])
++        }
++        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
++        refresh()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func focusSearch() {
++        window?.makeFirstResponder(searchField)
++        searchField.selectText(nil)
++    }
++
++    func refresh() {
++        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].entryID : nil
++        results = search(searchField.stringValue)
++        table.reloadData()
++        if let index = results.firstIndex(where: { $0.entryID == selectedID }) {
++            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
++        } else if !results.isEmpty {
++            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++        }
++        openButton.isEnabled = results.indices.contains(table.selectedRow)
++        resultLabel.stringValue = results.isEmpty ? "No matching pages." : "\(results.count) \(results.count == 1 ? "page" : "pages") in this Profile"
++    }
++
++    func controlTextDidChange(_ notification: Notification) {
++        errorLabel.stringValue = ""
++        refresh()
++    }
++
++    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
++        switch commandSelector {
++        case #selector(NSResponder.moveDown(_:)):
++            moveSelection(1)
++        case #selector(NSResponder.moveUp(_:)):
++            moveSelection(-1)
++        case #selector(NSResponder.insertNewline(_:)):
++            openSelected()
++        case #selector(NSResponder.cancelOperation(_:)):
++            dismiss(.cancel)
++        default: return false
++        }
++        return true
++    }
++
++    private func moveSelection(_ delta: Int) {
++        guard !results.isEmpty else { return }
++        let row = max(0, min(results.count - 1, table.selectedRow + delta))
++        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
++        table.scrollRowToVisible(row)
++    }
++
++    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
++
++    func tableViewSelectionDidChange(_ notification: Notification) {
++        openButton.isEnabled = results.indices.contains(table.selectedRow)
++    }
++
++    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
++        guard results.indices.contains(row) else { return nil }
++        let result = results[row]
++        let title = NSTextField(labelWithString: result.entry.title.isEmpty ? result.entry.lastURL.absoluteString : result.entry.title)
++        title.font = .systemFont(ofSize: 13, weight: .medium)
++        title.lineBreakMode = .byTruncatingTail
++        let detail = NSTextField(labelWithString: "\(result.workspaceName) · \(result.entry.lastURL.absoluteString)")
++        detail.font = .systemFont(ofSize: 11)
++        detail.textColor = .secondaryLabelColor
++        detail.lineBreakMode = .byTruncatingMiddle
++        let cell = NSTableCellView()
++        cell.textField = title
++        let stack = NSStackView(views: [title, detail])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 3
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        cell.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
++            stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
++            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
++            title.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            detail.widthAnchor.constraint(equalTo: stack.widthAnchor)
++        ])
++        return cell
++    }
++
++    @objc private func openSelected() {
++        guard results.indices.contains(table.selectedRow) else { return }
++        // Snapshot stable identities before the runtime publishes refreshed results.
++        let result = results[table.selectedRow]
++        if let error = open(result) {
++            errorLabel.stringValue = error
++        } else {
++            dismiss(.OK)
++        }
++    }
++
++    private func dismiss(_ response: NSApplication.ModalResponse) {
++        guard let window, let parent = window.sheetParent else { return }
++        parent.endSheet(window, returnCode: response)
++        window.orderOut(nil)
++    }
++}
++
++@MainActor
++private final class PageSearchTable: NSTableView {
++    var openSelection: (() -> Void)?
++    var cancel: (() -> Void)?
++
++    override func keyDown(with event: NSEvent) {
++        switch event.keyCode {
++        case 36, 76: openSelection?()
++        case 53: cancel?()
++        default: super.keyDown(with: event)
++        }
 +    }
 +}
 +

@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "52ff1775439c9bf40f81aeb2fe1d0534088b4f4d3b304218aded3ad134cbace4",
+  "patch_sha256": "6ec56fba9dbbf52a5a70289a88335b0f9ca1fa7c2e60b6790e08db25d6dc649f",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "746ccf688c7d1137a4f721c475c6d74124ff49115939bac4118208dba924b55c"
+      "patched_sha256": "5a25c3e868afb30690a931ef0dead40d67e96b92ad31e72e9c879854c4b9456b"
     },
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "c5d79c21b88a1d74906085381e6ce8c2122906626febb916b8b4ddca1ddcd20a"
+      "patched_sha256": "b94ad43599f73deaa2e17c3c6099e24a2e23c3a18acba921caa124e163961083"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "711996d1deb07986ca666aaf1ee441ea573c1b51c59e597ee961811aa69c2a73"
+      "patched_sha256": "d3a084b451b01ca6fa1fe4c281d906efc23d76dedd8ddfff3ee94f037a53c642"
     },
     {
       "root": "cef",
@@ -74,13 +74,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "cfaa7c5f238bc9464b1becbd67ac57408b820140dd4c671777f2d2efd858f64b"
+      "patched_sha256": "c189aff26a80f260b3f67e066979615781cdffac7422ac47f948b4aa2613982a"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "c3564b8abd2ceb3925062828269f86298946b28a0e255858411e4d1f6aeddb1f"
+      "patched_sha256": "92014f7c943e9022cba162186dbc50462772518a7cc62cdfe964070261955338"
     }
   ],
   "source_mirrors": {

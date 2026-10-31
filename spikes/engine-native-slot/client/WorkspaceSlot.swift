@@ -5,6 +5,7 @@ import BatoBrowserUI
 
 private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
 private typealias CommandID = @convention(c) (Int32) -> Int32
+private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
@@ -14,6 +15,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor private var activePage: ActivePage?
 @MainActor private var nativeFocus: ActivePage?
 @MainActor private var commandID: CommandID?
+@MainActor private var scheduleSelection: ScheduleSelection?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 
 @MainActor private final class WorkspaceEngine: PageEngine {
@@ -97,6 +99,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
             }
             self.controller = controller
             controller.requestNativeFocus = { _ = nativeFocus?(token) }
+            controller.requestPagePresentation = { scheduleSelection?(token) }
             engine?.onEvent = { [weak controller] event in controller?.receive(event) }
             engine?.onAnchorLost = { [weak controller] in _ = controller?.runtime.start() }
             controller.root.translatesAutoresizingMaskIntoConstraints = false
@@ -129,7 +132,8 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
     _ close: @escaping @convention(c) (UInt64, Int32) -> Int32,
     _ active: @escaping @convention(c) (UInt64) -> Int32,
     _ focus: @escaping @convention(c) (UInt64) -> Int32,
-    _ command: @escaping @convention(c) (Int32) -> Int32) {
+    _ command: @escaping @convention(c) (Int32) -> Int32,
+    _ schedule: @escaping @convention(c) (UInt64) -> Void) {
     precondition(Thread.isMainThread)
     guard let directory else { return }
     let path = String(cString: directory)
@@ -141,6 +145,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
     activePage = active
     nativeFocus = focus
     commandID = command
+    scheduleSelection = schedule
 }
 
 @MainActor func workspaceModeEnabled() -> Bool { workspaceDirectory != nil }
@@ -172,6 +177,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor public func workspaceCommand(_ token: UInt64, _ command: Int32, _ browserID: Int32) {
     precondition(Thread.isMainThread)
     guard let controller = workspaceSlots[token]?.controller else { return }
+    if command == 3 { controller.resumeCommittedSelection() }
     if command == 1 { controller.newTab() }
     if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
         controller.receive(.selected(page))

@@ -28,6 +28,22 @@ public struct PageEntry: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// A transient organization search result; engine-loaded state stays in the runtime.
+public struct PageSearchResult: Identifiable, Equatable, Sendable {
+    public var id: UUID { entryID }
+    public let entryID: UUID
+    public let workspaceID: UUID
+    public let workspaceName: String
+    public let entry: PageEntry
+
+    public init(entryID: UUID, workspaceID: UUID, workspaceName: String, entry: PageEntry) {
+        self.entryID = entryID
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.entry = entry
+    }
+}
+
 public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
@@ -124,6 +140,28 @@ public struct BrowserState: Codable, Equatable, Sendable {
         return favorites + workspace.pins + workspace.tabs
     }
 
+    /// Search the current Profile without loading pages or duplicating shared Favorites.
+    public func searchPages(matching query: String) -> [PageSearchResult] {
+        let current = currentWorkspace
+        let favorites = profiles.first(where: { $0.id == current.profileID })?.favorites ?? []
+        var results = favorites.map {
+            PageSearchResult(entryID: $0.id, workspaceID: current.id, workspaceName: current.name, entry: $0)
+        }
+        for workspace in workspaces where workspace.profileID == current.profileID {
+            results += (workspace.pins + workspace.tabs).map {
+                PageSearchResult(entryID: $0.id, workspaceID: workspace.id, workspaceName: workspace.name, entry: $0)
+            }
+        }
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return results }
+        return results.filter { result in
+            [result.entry.title, result.entry.lastURL.absoluteString,
+             result.entry.savedURL?.absoluteString ?? "", result.workspaceName].contains {
+                $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
+        }
+    }
+
     public func validate() throws {
         guard version == 1 else { throw BrowserStateError.unsupportedVersion(version) }
         var identities = Set<UUID>()
@@ -195,6 +233,24 @@ public struct BrowserState: Codable, Equatable, Sendable {
         try transact { draft in
             guard draft.workspaces.contains(where: { $0.id == id }) else { throw BrowserStateError.missingWorkspace }
             draft.activeWorkspaceID = id
+        }
+    }
+
+    /// Switch workspace and page as one validated organization transaction.
+    public mutating func activateEntry(_ id: UUID, inWorkspace workspaceID: UUID) throws {
+        try transact { draft in
+            guard let workspace = draft.workspaces.first(where: { $0.id == workspaceID }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            guard workspace.profileID == draft.currentWorkspace.profileID else {
+                throw BrowserStateError.invalidSelection
+            }
+            let favorites = draft.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
+            guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            draft.activeWorkspaceID = workspaceID
+            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
         }
     }
 

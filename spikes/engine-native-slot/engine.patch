@@ -68,7 +68,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,425 @@
+@@ -49,3 +49,484 @@
  }
  
  }  // namespace cef
@@ -199,6 +199,7 @@
 +  id __strong will_exit;
 +  id __strong did_enter;
 +  id __strong did_exit;
++  id __strong did_end_sheet;
 +};
 +auto& Slots() {
 +  static base::NoDestructor<std::map<BrowserView*, SlotState>> slots;
@@ -228,10 +229,45 @@
 +  return !unload || unload->is_attempting_to_close_browser() ||
 +      unload->is_delete_scheduled() || view->browser()->GetTabStripModel()->closing_all();
 +}
++void LogSlotRejection(BrowserView* view, const SlotState& state) {
++  // Rejection-only diagnostics: fixed reasons/flags, never browsing data or IDs.
++  auto* widget = view->GetWidget();
++  NSWindow* window = widget && widget->GetNativeWindow()
++      ? widget->GetNativeWindow().GetNativeNSWindow() : nil;
++  auto* contents = view->GetActiveWebContents();
++  auto* tab = contents ? tabs::TabInterface::MaybeGetFromContents(contents) : nullptr;
++  auto* manager = contents
++      ? web_modal::WebContentsModalDialogManager::FromWebContents(contents) : nullptr;
++  const bool visible = state.host && state.host->GetVisible();
++  const bool app_modal = NSApp.modalWindow != nil;
++  const bool sheet = window && window.attachedSheet;
++  const bool tab_blocked = tab && tab->IsBlocked();
++  const bool web_dialog = manager && manager->IsDialogActive();
++  const bool closing = SlotClosing(view);
++  const char* reason = !state.host ? "host-missing"
++      : state.transitioning ? "transitioning"
++      : !visible ? "host-hidden"
++      : !widget ? "widget-unavailable"
++      : app_modal ? "application-modal"
++      : sheet ? "attached-sheet"
++      : tab_blocked ? "tab-blocked"
++      : web_dialog ? "web-dialog-active"
++      : closing ? "lifecycle-closing" : "unavailable";
++  fprintf(stderr,
++          "{\"event\":\"native-slot-rejected\",\"reason\":\"%s\","
++          "\"host_visible\":%s,\"transitioning\":%s,\"widget_available\":%s,"
++          "\"app_modal\":%s,\"attached_sheet\":%s,\"tab_blocked\":%s,"
++          "\"web_dialog_active\":%s,\"lifecycle_closing\":%s}\n",
++          reason, visible ? "true" : "false", state.transitioning ? "true" : "false",
++          widget ? "true" : "false", app_modal ? "true" : "false",
++          sheet ? "true" : "false", tab_blocked ? "true" : "false",
++          web_dialog ? "true" : "false", closing ? "true" : "false");
++}
 +BrowserView* FindSlot(uint64_t token) {
 +  for (const auto& [view, state] : Slots()) {
 +    if (state.token == token && state.host && !state.transitioning &&
 +        state.host->GetVisible() && !SlotBlocked(view) && !SlotClosing(view)) return view;
++    if (state.token == token) LogSlotRejection(view, state);
 +  }
 +  return nullptr;
 +}
@@ -290,7 +326,7 @@
 +  bool pending_ = true;
 +};
 +
-+void ObserveFullscreen(BrowserView* view, SlotState& state) {
++void ObserveWindowNotifications(BrowserView* view, SlotState& state) {
 +  NSWindow* window = view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
 +  NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
 +  auto change = ^(NSNotification* note) {
@@ -308,6 +344,28 @@
 +  state.will_exit = [center addObserverForName:NSWindowWillExitFullScreenNotification object:window queue:nil usingBlock:change];
 +  state.did_enter = [center addObserverForName:NSWindowDidEnterFullScreenNotification object:window queue:nil usingBlock:change];
 +  state.did_exit = [center addObserverForName:NSWindowDidExitFullScreenNotification object:window queue:nil usingBlock:change];
++  const uint64_t token = state.token;
++  state.did_end_sheet = [center addObserverForName:NSWindowDidEndSheetNotification
++      object:window queue:nil usingBlock:^(NSNotification* note) {
++    auto found = Slots().find(view);
++    if (found == Slots().end() || found->second.token != token || SlotClosing(view)) return;
++    const bool was_visible = found->second.host && found->second.host->GetVisible();
++    NSWindow* parent = note.object;
++    const bool sheet = parent.attachedSheet != nil;
++    // AppKit sheet dismissal need not trigger Views layout. Reconcile existing
++    // bounds/visibility through the normal modal/fullscreen guards now that the
++    // authoritative sheet state changed; do not bypass FindSlot or retry later.
++    cef::NativeSlotUpdate(view, false, false);
++    // Native layout may re-enter client code and tear down or replace the slot.
++    auto current = Slots().find(view);
++    if (current == Slots().end() || current->second.token != token) return;
++    const bool visible = current->second.host && current->second.host->GetVisible();
++    fprintf(stderr,
++            "{\"event\":\"native-slot-sheet-ended\",\"attached_sheet\":%s,"
++            "\"host_visible_before\":%s,\"host_visible_after\":%s}\n",
++            sheet ? "true" : "false", was_visible ? "true" : "false",
++            visible ? "true" : "false");
++  }];
 +}
 +}
 +
@@ -425,7 +483,8 @@
 +    if (found == Slots().end()) return;
 +    auto& state = found->second;
 +    for (id observer : @[state.will_enter ?: NSNull.null, state.will_exit ?: NSNull.null,
-+                         state.did_enter ?: NSNull.null, state.did_exit ?: NSNull.null]) {
++                         state.did_enter ?: NSNull.null, state.did_exit ?: NSNull.null,
++                         state.did_end_sheet ?: NSNull.null]) {
 +      if (observer != NSNull.null) [NSNotificationCenter.defaultCenter removeObserver:observer];
 +    }
 +    const uint64_t token = state.token;
@@ -484,7 +543,7 @@
 +      state.tab_observer = std::make_unique<SlotTabObserver>(
 +          view->browser()->GetTabStripModel(), state.token);
 +    }
-+    ObserveFullscreen(view, state);
++    ObserveWindowNotifications(view, state);
 +    fprintf(stderr, "{\"event\":\"native-slot-attached\",\"token\":%llu}\n", (unsigned long long)state.token);
 +  }
 +  if (state.host) {

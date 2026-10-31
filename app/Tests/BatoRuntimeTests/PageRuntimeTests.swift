@@ -28,6 +28,165 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func searchActivationCommitsOnceBeforeLazyCreationAndReusesLivePage() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let current = try state.addTab(url: start, title: "Source")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let target = try state.addTab(url: next, title: "Destination pin")
+        try state.pinEntry(target)
+        try state.recordNavigation(entryID: target, url: start, title: "Navigated pin")
+        try state.activateWorkspace(source)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { committed.append($0) })
+        #expect(runtime.start())
+        let original = try #require(runtime.livePages[current])
+        runtime.onStateChange = { candidate in
+            #expect(committed.last == candidate)
+            #expect(engine.visible == original)
+            #expect(engine.created.count == 1)
+        }
+        #expect(runtime.activateEntry(target, inWorkspace: destination))
+        #expect(committed.count == 1)
+        #expect(runtime.state.activeWorkspaceID == destination)
+        #expect(runtime.state.currentWorkspace.activeEntryID == target)
+        let loaded = try #require(runtime.livePages[target])
+        #expect(engine.created.count == 2)
+        #expect(engine.created.last?.1 == next) // Saved destination opens when unloaded.
+        #expect(engine.visible == loaded)
+        runtime.onStateChange = nil
+        #expect(runtime.activateEntry(current, inWorkspace: source))
+        #expect(runtime.activateEntry(target, inWorkspace: destination))
+        #expect(committed.count == 3)
+        #expect(runtime.livePages[target] == loaded)
+        #expect(runtime.livePages[current] == original)
+        #expect(engine.created.count == 2)
+        #expect(engine.visible == loaded)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func deferredSearchActivationPublishesBeforePageEffectsAndStartsWithoutResaving() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let current = try state.addTab(url: start, title: "Source")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let target = try state.addTab(url: next, title: "Saved target")
+        try state.pinEntry(target)
+        try state.recordNavigation(entryID: target, url: start, title: "Last session")
+        try state.activateWorkspace(source)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var fails = true
+        var committed: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { candidate in
+            if fails { throw Failure.disk }
+            committed.append(candidate)
+        })
+        #expect(runtime.start())
+        let original = try #require(runtime.livePages[current])
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { candidate in
+            #expect(committed.last == candidate)
+            #expect(engine.visible == original)
+            #expect(engine.created.count == 1)
+            #expect(engine.selections == selections)
+            publications += 1
+        }
+        #expect(!runtime.activateEntry(target, inWorkspace: destination, deferPageSelection: true))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(runtime.state == state)
+        #expect(committed.isEmpty)
+        #expect(publications == 0)
+        #expect(runtime.livePages == [current: original])
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+
+        fails = false
+        #expect(runtime.activateEntry(target, inWorkspace: destination, deferPageSelection: true))
+        #expect(committed.count == 1)
+        #expect(publications == 1)
+        #expect(runtime.state.activeWorkspaceID == destination)
+        #expect(runtime.state.currentWorkspace.activeEntryID == target)
+        #expect(runtime.livePages == [current: original])
+        #expect(engine.created.count == 1)
+        #expect(engine.selections == selections)
+        #expect(engine.visible == original)
+        #expect(runtime.start()) // The host calls this after its native sheet detaches.
+        let loaded = try #require(runtime.livePages[target])
+        #expect(engine.created.count == 2)
+        #expect(engine.created.last?.1 == next)
+        #expect(engine.visible == loaded)
+        #expect(committed.count == 1)
+        #expect(publications == 1)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func searchActivationFailureAndStaleTargetsKeepCommittedWorkspaceVisible() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let current = try state.addTab(url: start, title: "Source")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(destination)
+        let target = try state.addTab(url: next, title: "Target")
+        try state.activateWorkspace(source)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in
+            saves += 1
+            throw Failure.disk
+        })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[current])
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.activateEntry(target, inWorkspace: destination))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(saves == 1)
+        #expect(!runtime.activateEntry(target, inWorkspace: source))
+        #expect(!runtime.activateEntry(UUID(), inWorkspace: destination))
+        #expect(!runtime.activateEntry(target, inWorkspace: UUID()))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saves == 1)
+        #expect(publications == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.livePages == [current: page])
+        #expect(engine.selections == selections)
+        #expect(engine.visible == page)
+        #expect(engine.created.count == 1)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func searchActivationRejectsPendingCloseAndForeignProfileWithoutSaving() throws {
+        var state = BrowserState.initial()
+        let source = state.activeWorkspaceID
+        let target = try state.addTab(url: start, title: "Closing")
+        let destination = try state.addWorkspace(name: "Destination", profileID: state.currentWorkspace.profileID)
+        let foreignProfile = try state.addProfile(name: "Foreign")
+        let foreign = try state.addWorkspace(name: "Foreign", profileID: foreignProfile)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var saves = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in saves += 1 })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[target])
+        #expect(runtime.closeEntry(target))
+        let selections = engine.selections
+        #expect(!runtime.activateEntry(target, inWorkspace: source))
+        #expect(!runtime.activateEntry(target, inWorkspace: destination))
+        #expect(!runtime.activateEntry(UUID(), inWorkspace: foreign))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(saves == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.pendingClose == [page])
+        #expect(runtime.livePages == [target: page])
+        #expect(engine.selections == selections)
+        #expect(engine.closes == [page])
+        #expect(engine.created.count == 1)
+    }
+
     @Test func selectedEntryTransferCommitsBeforeHidingAndReusesLiveGeneration() throws {
         var state = BrowserState.initial()
         let source = state.activeWorkspaceID
@@ -419,6 +578,35 @@ struct PageRuntimeTests {
         #expect(saveAttempts == 1)
         #expect(runtime.state == state)
         #expect(publications == 0)
+    }
+
+    @Test func savedReopenUsesSavedDestinationWhileTemporaryResumesLatestURL() throws {
+        for kind in [EntryKind.pinned, .favorite, .temporary] {
+            var state = BrowserState.initial()
+            let id = try state.addTab(url: start, title: "Restored page")
+            if kind == .pinned { try state.pinEntry(id) }
+            if kind == .favorite { try state.favoriteEntry(id) }
+            try state.recordNavigation(entryID: id, url: next, title: "Session destination")
+            let engine = FakeEngine(state.currentWorkspace.profileID)
+            let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+            let expected = kind == .temporary ? next : start
+            #expect(runtime.start())
+            let original = try #require(runtime.livePages[id])
+            #expect(engine.created.first?.1 == expected)
+            #expect(runtime.state == state) // Creation itself doesn't invent a navigation commit.
+            runtime.receive(.navigation(original, url: next, title: "Live session"))
+            #expect(runtime.selectEntry(id))
+            #expect(engine.created.count == 1)
+            #expect(runtime.livePages[id] == original)
+            runtime.receive(.unloaded(original))
+            #expect(runtime.livePages.isEmpty)
+            #expect(runtime.selectEntry(id))
+            let reopened = try #require(runtime.livePages[id])
+            #expect(reopened != original)
+            #expect(engine.created.count == 2)
+            #expect(engine.created.last?.1 == expected)
+            #expect(runtime.state.visibleEntries.first?.lastURL == next)
+        }
     }
 
     @Test func restoreIsLazyAndSelectionReusesPages() throws {

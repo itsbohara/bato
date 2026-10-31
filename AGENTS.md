@@ -6,6 +6,10 @@ Native Swift interface over Chromium, macOS and Apple Silicon first. Preserve th
 
 ## Workflow
 
+Read `RESUME.md` and `PROGRESS.md` when resuming work. Keep the progress checklist and handoff synchronized with demonstrated capabilities, unfinished work, known failures, running processes and the next concrete step. Progress percentages are rough planning estimates, not measured completion.
+
+Prefer larger reviewable application/UI milestones over chains of tiny feature slices. Keep verification proportional: targeted tests and a short affected-workflow host check; repeat heavy engine/dependency checks when integration or dependencies change. Do not reopen the full extension matrix for unrelated application changes.
+
 Use subagents for bounded research and implementation. Give each agent explicit file ownership, context, acceptance criteria, and a request for concise findings. The coordinating agent reviews and verifies results before integration. Keep the main chat focused on decisions and outcomes.
 
 Distinguish confirmed requirements, proposed defaults, and demonstrated capabilities. No extension, import, security, or performance claim without evidence. Keep research sources and version details in the relevant report.

@@ -10,6 +10,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     public let root: NSView
     public let runtime: PageRuntime
     public var requestNativeFocus: (() -> Void)?
+    /// The Chromium host schedules committed page work on its CEF UI task runner.
+    public var requestPagePresentation: (() -> Void)?
     public var focusTarget: NSView { addressField }
 
     private let addressField = NSTextField(string: "")
@@ -21,6 +23,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private var workspaceIDs: [UUID] = []
     private var hasStarted = false
     private var workspaceEditor: WorkspaceEditor?
+    private var pageFinder: PageFinder?
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 
     /// Load failures throw without replacing the existing document. The factory
@@ -68,6 +71,34 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         addressField.selectText(nil)
     }
 
+    /// Called by the host after leaving AppKit's sheet callback context.
+    public func resumeCommittedSelection() {
+        guard hasStarted, let window = root.window else { return }
+        guard window.attachedSheet == nil, NSApp.modalWindow == nil else {
+            render()
+            statusLabel.stringValue = "Close the dialog, then select the page to open it."
+            return
+        }
+        logPagePresentationFocus("before", window: window)
+        // Ending our sheet can leave the owned parent inactive. Restore that
+        // window and its native focus before asking the guarded host to create.
+        window.makeKeyAndOrderFront(nil)
+        requestNativeFocus?()
+        logPagePresentationFocus("after", window: window)
+        _ = runtime.start()
+        render()
+    }
+
+    private func logPagePresentationFocus(_ phase: String, window: NSWindow) {
+        let event: [String: Any] = ["event": "page-presentation-focus", "phase": phase,
+                                    "appActive": NSApp.isActive,
+                                    "keyWindow": window.isKeyWindow,
+                                    "mainWindow": window.isMainWindow]
+        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
+        FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data([0x0A]))
+    }
+
     public func closeSelection() {
         guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
         perform { runtime.closeEntry(id) }
@@ -103,7 +134,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         addressField.cell?.sendsActionOnEndEditing = false
         let add = ActionButton(title: "New tab") { [weak self] in self?.submitAddress() }
         add.setAccessibilityIdentifier("bato-new-tab")
-        let address = NSStackView(views: [addressField, add])
+        let find = ActionButton(title: "Find Page…") { [weak self] in self?.findPage() }
+        find.setAccessibilityLabel("Find Page")
+        find.setAccessibilityIdentifier("bato-find-page")
+        let addressActions = NSStackView(views: [add, find])
+        addressActions.orientation = .horizontal
+        addressActions.spacing = 6
+        let address = NSStackView(views: [addressField, addressActions])
         address.orientation = .vertical
         address.alignment = .leading
         address.spacing = 7
@@ -201,6 +238,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
         if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
         profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
+        pageFinder?.refresh()
         switch runtime.lastError {
         case .none:
             statusLabel.stringValue = runtime.pendingClose.isEmpty ? "" : "Waiting for page to close…"
@@ -376,6 +414,45 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
         menu.addItem(moveDown)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
+    }
+
+    private func findPage() {
+        guard hasStarted, pageFinder == nil, workspaceEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        let finder = PageFinder(search: { [weak self] query in
+            self?.runtime.state.searchPages(matching: query) ?? []
+        }, open: { [weak self] result in
+            guard let self else { return "The page is no longer available." }
+            guard self.runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID,
+                                             deferPageSelection: true) else {
+                switch self.runtime.lastError {
+                case .saveFailed: return "Changes couldn’t be saved. Reopen Bato to reload organization."
+                default: return "This page is no longer available or is closing. Choose another page."
+                }
+            }
+            self.render()
+            return nil
+        })
+        pageFinder = finder
+        guard let sheet = finder.window else { pageFinder = nil; return }
+        window.beginSheet(sheet) { [weak self] response in
+            guard let self else { return }
+            self.pageFinder = nil
+            if response == .OK {
+                // AppKit can still be in its modal context inside this completion.
+                // Leave the completion, then let the Chromium host post to its UI task runner.
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self, let window, self.root.window === window else { return }
+                    if let request = self.requestPagePresentation {
+                        request()
+                    } else {
+                        self.resumeCommittedSelection()
+                    }
+                }
+            }
+        }
+        finder.focusSearch()
     }
 
     private func editWorkspace() {
@@ -571,6 +648,210 @@ private final class WorkspaceEditor: NSWindowController {
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window, returnCode: response)
         window.orderOut(nil)
+    }
+}
+
+/// Searches organization without creating pages until the user opens a result.
+@MainActor
+private final class PageFinder: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private let searchField = NSSearchField(string: "")
+    private let table = PageSearchTable()
+    private let resultLabel = NSTextField(labelWithString: "")
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let openButton = NSButton(title: "Open", target: nil, action: nil)
+    private let search: (String) -> [PageSearchResult]
+    private let open: (PageSearchResult) -> String?
+    private var results: [PageSearchResult] = []
+
+    init(search: @escaping (String) -> [PageSearchResult], open: @escaping (PageSearchResult) -> String?) {
+        self.search = search
+        self.open = open
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Find Page"
+        panel.isReleasedWhenClosed = false
+        super.init(window: panel)
+        searchField.placeholderString = "Search page titles, addresses or workspaces"
+        searchField.setAccessibilityLabel("Find page search")
+        searchField.setAccessibilityIdentifier("bato-page-search")
+        searchField.delegate = self
+        searchField.sendsSearchStringImmediately = true
+        searchField.cell?.sendsActionOnEndEditing = false
+        table.dataSource = self
+        table.delegate = self
+        table.headerView = nil
+        table.rowHeight = 50
+        table.allowsEmptySelection = false
+        table.allowsMultipleSelection = false
+        table.usesAlternatingRowBackgroundColors = true
+        table.setAccessibilityLabel("Matching pages")
+        table.setAccessibilityIdentifier("bato-page-search-results")
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("page"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.target = self
+        table.doubleAction = #selector(openSelected)
+        table.openSelection = { [weak self] in self?.openSelected() }
+        table.cancel = { [weak self] in self?.dismiss(.cancel) }
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = table
+        scroll.borderType = .bezelBorder
+        resultLabel.font = .systemFont(ofSize: 11)
+        resultLabel.textColor = .secondaryLabelColor
+        resultLabel.setAccessibilityIdentifier("bato-page-search-count")
+        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.textColor = .systemRed
+        errorLabel.setAccessibilityIdentifier("bato-page-search-error")
+        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
+        cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityIdentifier("bato-page-search-cancel")
+        openButton.bezelStyle = .rounded
+        openButton.target = self
+        openButton.action = #selector(openSelected)
+        openButton.keyEquivalent = "\r"
+        openButton.setAccessibilityIdentifier("bato-page-search-open")
+        panel.defaultButtonCell = openButton.cell as? NSButtonCell
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let buttons = NSStackView(views: [spacer, cancel, openButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        let stack = NSStackView(views: [searchField, resultLabel, scroll, errorLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 9
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(stack)
+        if let content = panel.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+                searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            ])
+        }
+        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func focusSearch() {
+        window?.makeFirstResponder(searchField)
+        searchField.selectText(nil)
+    }
+
+    func refresh() {
+        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].entryID : nil
+        results = search(searchField.stringValue)
+        table.reloadData()
+        if let index = results.firstIndex(where: { $0.entryID == selectedID }) {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        } else if !results.isEmpty {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        openButton.isEnabled = results.indices.contains(table.selectedRow)
+        resultLabel.stringValue = results.isEmpty ? "No matching pages." : "\(results.count) \(results.count == 1 ? "page" : "pages") in this Profile"
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        errorLabel.stringValue = ""
+        refresh()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            moveSelection(1)
+        case #selector(NSResponder.moveUp(_:)):
+            moveSelection(-1)
+        case #selector(NSResponder.insertNewline(_:)):
+            openSelected()
+        case #selector(NSResponder.cancelOperation(_:)):
+            dismiss(.cancel)
+        default: return false
+        }
+        return true
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard !results.isEmpty else { return }
+        let row = max(0, min(results.count - 1, table.selectedRow + delta))
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        openButton.isEnabled = results.indices.contains(table.selectedRow)
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard results.indices.contains(row) else { return nil }
+        let result = results[row]
+        let title = NSTextField(labelWithString: result.entry.title.isEmpty ? result.entry.lastURL.absoluteString : result.entry.title)
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.lineBreakMode = .byTruncatingTail
+        let detail = NSTextField(labelWithString: "\(result.workspaceName) · \(result.entry.lastURL.absoluteString)")
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingMiddle
+        let cell = NSTableCellView()
+        cell.textField = title
+        let stack = NSStackView(views: [title, detail])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            title.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            detail.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ])
+        return cell
+    }
+
+    @objc private func openSelected() {
+        guard results.indices.contains(table.selectedRow) else { return }
+        // Snapshot stable identities before the runtime publishes refreshed results.
+        let result = results[table.selectedRow]
+        if let error = open(result) {
+            errorLabel.stringValue = error
+        } else {
+            dismiss(.OK)
+        }
+    }
+
+    private func dismiss(_ response: NSApplication.ModalResponse) {
+        guard let window, let parent = window.sheetParent else { return }
+        parent.endSheet(window, returnCode: response)
+        window.orderOut(nil)
+    }
+}
+
+@MainActor
+private final class PageSearchTable: NSTableView {
+    var openSelection: (() -> Void)?
+    var cancel: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76: openSelection?()
+        case 53: cancel?()
+        default: super.keyDown(with: event)
+        }
     }
 }
 

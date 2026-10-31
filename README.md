@@ -4,7 +4,7 @@ A native macOS browser with an Arc-inspired interface, built with Swift and Chro
 
 ## Status
 
-Provisional alpha development has started on Apple Silicon. The first native [organization preview](app/README.md) implements workspace, Favorite, pin and temporary-tab state with local persistence. It does not render web pages yet. The source-built CEF/native-host experiments and selected extension behavior have been exercised; complete compatibility and daily-use readiness remain open. See the [evidence matrix](FEASIBILITY-RESULTS.md).
+Provisional alpha development is underway on Apple Silicon. The [Chromium-connected developer host](app/CHROMIUM.md) renders real pages alongside persistent native workspaces, Favorites, pins and temporary tabs. The separate [organization preview](app/README.md) has no renderer. The Arc-style interface and several V1 features remain unfinished; this is not a daily-use release. See the [progress checklist](PROGRESS.md) and [evidence matrix](FEASIBILITY-RESULTS.md).
 
 ## Direction
 
