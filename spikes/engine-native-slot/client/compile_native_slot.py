@@ -20,16 +20,16 @@ def main():
               '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
               '-I', str(modules)]
     objects = []
-    for name, filename in [('BatoCore', 'BrowserState.swift'),
-                           ('BatoPersistence', 'OrganizationStore.swift'),
-                           ('BatoRuntime', 'PageRuntime.swift'),
-                           ('BatoBrowserUI', 'NativeWorkspaceController.swift')]:
-        module_source = source.parent / 'bato' / name / filename
+    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
+                           ('BatoPersistence', ['OrganizationStore.swift']),
+                           ('BatoRuntime', ['PageRuntime.swift']),
+                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
+        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
                                  '-emit-object', '-emit-module', '-module-name', name,
                                  '-emit-module-path', str(modules / (name + '.swiftmodule')),
-                                 str(module_source), '-o', str(obj)], check=True)
+                                 *module_sources, '-o', str(obj)], check=True)
         objects.append(str(obj))
     subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-emit-library',
                     '-module-name', 'BatoNativeSlot', '-target', 'arm64-apple-macos13.0',

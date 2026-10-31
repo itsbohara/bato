@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "scope": "Native floating visual Cmd+T command bar with modal sheet behavior",
+  "status": "bounded command-bar workflows and same-provider restart passed; initial v1 rendering anomaly retained",
+  "behavior": {
+    "presentation": "Rounded borderless NSPanel presented as an owned AppKit sheet",
+    "actions": [
+      "HTTP(S) navigation into a new temporary tab",
+      "Web search after explicit acceptance",
+      "Current-Profile organization search across workspaces",
+      "Stable-identity existing-page activation",
+      "Find Page",
+      "Toggle Sidebar",
+      "Close Current Page"
+    ],
+    "keyboard": "Arrow selection, Return/Open acceptance, Escape/Cancel dismissal",
+    "search_providers": ["DuckDuckGo", "Google"],
+    "default_provider_status": "DuckDuckGo proposed alpha default",
+    "provider_persistence": "session-local",
+    "network_while_typing": false,
+    "pending_action_policy": "Execute after sheet dismissal through CEF UI callback; bind to owner and cancel stale or blocked restoration",
+    "organization_schema_change": false,
+    "engine_abi_change": false,
+    "engine_export_count": 9,
+    "workspace_configure_arguments": 10,
+    "existing_guards": "Retained modal, sheet, web-dialog, host visibility, fullscreen and lifecycle guards"
+  },
+  "verification": {
+    "independent_source_review": "passed after pending-intent cancellation repair; no blocking findings",
+    "focused_command_bar_tests_passed": 7,
+    "native_slot_tests_passed": 6,
+    "additional_patch_tests_passed": 2,
+    "swift_package_build_seconds": 5.59,
+    "source_host_initial_build_seconds": 37.57,
+    "source_host_initial_build_steps": 7,
+    "source_host_final_build_seconds": 20.19,
+    "source_host_final_build_steps": 7,
+    "initial_compiler_log": "logs/command-bar-initial-compiler.log",
+    "final_compiler_log": "logs/command-bar-final-compiler.log",
+    "focused_test_log": "logs/command-bar-core-tests.log",
+    "client_roundtrip_files": 15,
+    "source_mirrors": 11,
+    "overlay_files": 23,
+    "overlay_checks": "passed",
+    "runtime_acceptance": "bounded workflows passed after page recreation and on same-provider restart; both normal Quit checks passed; initial v1 rendering anomaly retained",
+    "owned_browser_or_build_running": false,
+    "fixture_server_port": 18765,
+    "extension_retest": false
+  },
+  "runs": [
+    {
+      "id": "command-bar-v1",
+      "pid": 50531,
+      "status": "bounded workflows passed after recreation; initial rendering anomaly retained; normal Quit passed",
+      "log": "logs/command-bar-v1.log",
+      "exit_receipt": "logs/command-bar-v1-exit.json",
+      "organization_snapshots": "logs/command-bar-v1-*.json",
+      "exit_code": 0,
+      "shutdown_markers": {"native_detach": 1, "message_loop_return": 1, "cef_shutdown": 1},
+      "organization_before_final_exact_bytes_equal": true,
+      "observations": [
+        "Held CmdT for1100ms opened one bar; CmdW and CmdS left the open sheet intact",
+        "Unicode paste preview; Google selection persisted across reopening within session",
+        "Escape preserved exact organization bytes",
+        "Hidden-sidebar CmdT opened bar; local HTTP command-bar=1 created third browser and temporary entry",
+        "Down/Return Close Current Page executed after dismissal and returned original modal page",
+        "New Favorite login rendered; Google query bato synthetic + query & sample rendered real search results with literal plus and ampersand encoded as%2B and%26; CmdW closed search",
+        "Unloaded original modal; Research CmdT tab-modal query Down/Return opened Personal/modal rendered page; activity counter0→1",
+        "Repeated tab-modal activation reused live page at counter1 with no additional browser creation",
+        "Repeated local URL command-bar=2 plus Close Current Page returned rendered modal at counter1; black page did not recur"
+      ],
+      "anomaly": {
+        "case": "Original modal WebContents remained black after initial URL creation/close",
+        "context": "Initial bar showed real page behind dimming; toolbar/sidebar/title remained normal while old page area was black",
+        "attempts_without_recovery": ["Sidebar selection", "Reload", "Native tab away/back"],
+        "recovery": "Unload affected saved page and recreate through cross-workspace command-bar activation",
+        "diagnostic": "WidgetHost message7 rejection preceded first sheet-ended event; causality unknown",
+        "status": "Retained unexplained anomaly; no engine fix or sheet-presentation attribution; repeat workflow passed after recreation in same binary"
+      }
+    },
+    {
+      "id": "command-bar-v2",
+      "pid": 65495,
+      "status": "same-provider restart and bounded command-bar repetition passed; normal Quit passed",
+      "profile": "Same synthetic state and workspace-v3 engine Profile; --use-mock-keychain on restart",
+      "log": "logs/command-bar-v2.log",
+      "exit_receipt": "logs/command-bar-v2-exit.json",
+      "organization_snapshots": "logs/command-bar-v2-*.json",
+      "exit_code": 0,
+      "shutdown_markers": {"native_detach": 1, "message_loop_return": 1, "cef_shutdown": 1},
+      "organization_before_final_exact_bytes_equal": true,
+      "observations": [
+        "Original modal visibly rendered at baseline; activity counter0→1",
+        "CmdT provider reset to DuckDuckGo, confirming session-local choice",
+        "Local HTTP login.html?command-bar=restart opened",
+        "CmdT Close Current Page Down/Return closed temporary page and returned rendered original modal counter1; no black-page recurrence",
+        "Final CmdT tab-modal query Down selected existing-page result; screenshot retained, then Escape dismissed",
+        "Normal application-menu Quit exit0; coordinator verified exactly one detach/loop/shutdown and exact organization before/final bytes"
+      ],
+      "captures": ["logs/command-bar-v2-final.png"],
+      "anomaly_policy": "No engine changes or v1 black-page root-cause/repair claim"
+    }
+  ],
+  "limits": [
+    "Modal sheet behavior rather than an independent free-floating child window",
+    "Initial original-renderer black-page anomaly remains unexplained; accepted workflows passed after page recreation",
+    "Find Page and Toggle Sidebar commands source-reviewed but not newly runtime-accepted",
+    "Provider choice is session-local",
+    "Fullscreen, light appearance, complete Arc chrome and broad accessibility/window acceptance remain open",
+    "No production or daily-use readiness claim"
+  ]
+}

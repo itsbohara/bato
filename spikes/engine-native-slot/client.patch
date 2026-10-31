@@ -37,7 +37,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,33 @@
+@@ -2313,6 +2317,35 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -50,9 +50,11 @@
 +      "tests/cefsimple/NativeSlot.swift",
 +      "tests/cefsimple/WorkspaceSlot.swift",
 +      "tests/cefsimple/bato/BatoCore/BrowserState.swift",
++      "tests/cefsimple/bato/BatoCore/CommandBar.swift",
 +      "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
 +      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -71,7 +73,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2367,19 @@
+@@ -2336,12 +2369,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -783,16 +785,16 @@
 +              '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
 +              '-I', str(modules)]
 +    objects = []
-+    for name, filename in [('BatoCore', 'BrowserState.swift'),
-+                           ('BatoPersistence', 'OrganizationStore.swift'),
-+                           ('BatoRuntime', 'PageRuntime.swift'),
-+                           ('BatoBrowserUI', 'NativeWorkspaceController.swift')]:
-+        module_source = source.parent / 'bato' / name / filename
++    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
++                           ('BatoPersistence', ['OrganizationStore.swift']),
++                           ('BatoRuntime', ['PageRuntime.swift']),
++                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
++        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
 +                                 '-emit-object', '-emit-module', '-module-name', name,
 +                                 '-emit-module-path', str(modules / (name + '.swiftmodule')),
-+                                 str(module_source), '-o', str(obj)], check=True)
++                                 *module_sources, '-o', str(obj)], check=True)
 +        objects.append(str(obj))
 +    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-emit-library',
 +                    '-module-name', 'BatoNativeSlot', '-target', 'arm64-apple-macos13.0',
@@ -2629,7 +2631,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1128 @@
+@@ -0,0 +1,1211 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2664,6 +2666,10 @@
 +    private var hasStarted = false
 +    private var workspaceEditor: WorkspaceEditor?
 +    private var pageFinder: PageFinder?
++    private var commandBar: CommandBarController?
++    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
++    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
++    private weak var pendingCommandBarWindow: NSWindow?
 +    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 +
 +    /// Load failures throw without replacing the existing document. The factory
@@ -2704,16 +2710,90 @@
 +        render()
 +    }
 +
-+    /// Focuses native address entry. Host menu commands may call this method.
-+    public func newTab() {
++    /// Opens native navigation, organization search and browser commands.
++    public func newTab() { showCommandBar() }
++
++    private func showCommandBar(query: String = "", error: String? = nil) {
++        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil,
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
-+        root.window?.makeFirstResponder(addressField)
-+        addressField.selectText(nil)
++        let bar = CommandBarController(query: query, error: error,
++                                       provider: commandBarSearchProvider,
++                                       providerChanged: { [weak self] in self?.commandBarSearchProvider = $0 }) { [weak self] query in
++            guard let self else { return [] }
++            return CommandBarResults.make(query: query, state: self.runtime.state,
++                                          provider: self.commandBarSearchProvider).filter { result in
++                switch result.action {
++                case .command(.toggleSidebar): return self.requestSidebarToggle != nil
++                case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
++                default: return true
++                }
++            }
++        }
++        commandBar = bar
++        guard let sheet = bar.window else { commandBar = nil; return }
++        window.beginSheet(sheet) { [weak self, weak bar, weak window] response in
++            guard let self else { return }
++            if response == .OK, let bar, let action = bar.chosenAction {
++                self.pendingCommandBarAction = (action, bar.query)
++                self.pendingCommandBarWindow = window
++            }
++            self.commandBar = nil
++            guard response == .OK else { return }
++            // Do not create/select/close a Chromium page inside sheet completion.
++            // The host restores its native slot before this scheduled callback.
++            DispatchQueue.main.async { [weak self, weak window] in
++                guard let self else { return }
++                guard let window, self.root.window === window else {
++                    self.pendingCommandBarAction = nil
++                    self.pendingCommandBarWindow = nil
++                    return
++                }
++                if let request = self.requestPagePresentation { request() }
++                else { self.resumeCommittedSelection() }
++            }
++        }
++        bar.focusSearch()
++    }
++
++    private func executeCommandBarAction(_ pending: (action: CommandBarAction, query: String)) {
++        let succeeded: Bool
++        switch pending.action {
++        case .open(let url):
++            // An engine failure may follow a successful save: do not create a
++            // duplicate entry if the new page is already in organization.
++            let before = runtime.state
++            let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
++            succeeded = opened || runtime.state != before
++        case .activate(let result):
++            succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
++        case .command(let command):
++            switch command {
++            case .findPage: findPage()
++            case .toggleSidebar: requestSidebarToggle?()
++            case .closePage: closeSelection()
++            }
++            return
++        }
++        render()
++        if !succeeded {
++            let message = runtime.lastError == .saveFailed
++                ? "Changes couldn’t be saved. Reopen Bato to reload organization."
++                : "This page is unavailable or is closing. Choose another result."
++            showCommandBar(query: pending.query, error: message)
++        }
 +    }
 +
 +    /// Called by the host after leaving AppKit's sheet callback context.
 +    public func resumeCommittedSelection() {
++        // A rejected or stale presentation callback cancels its intent. It must
++        // neither block the next CmdT nor execute on an unrelated later callback.
++        let pending = pendingCommandBarAction
++        let owner = pendingCommandBarWindow
++        pendingCommandBarAction = nil
++        pendingCommandBarWindow = nil
 +        guard hasStarted, let window = root.window else { return }
++        if pending != nil, owner !== window { return }
 +        guard window.attachedSheet == nil, NSApp.modalWindow == nil else {
 +            render()
 +            statusLabel.stringValue = "Close the dialog, then select the page to open it."
@@ -2726,8 +2806,12 @@
 +        window.makeKeyAndOrderFront(nil)
 +        requestNativeFocus?()
 +        logPagePresentationFocus("after", window: window)
-+        _ = runtime.start()
-+        render()
++        if let pending {
++            executeCommandBarAction(pending)
++        } else {
++            _ = runtime.start()
++            render()
++        }
 +    }
 +
 +    private func logPagePresentationFocus(_ phase: String, window: NSWindow) {
@@ -2929,6 +3013,7 @@
 +    }
 +
 +    private func render() {
++        commandBar?.refresh()
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
 +        (root as? WorkspaceRoot)?.accent = accent
@@ -3757,4 +3842,403 @@
 +    return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
 +                   green: CGFloat((value >> 8) & 255) / 255,
 +                   blue: CGFloat(value & 255) / 255, alpha: 1)
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
+@@ -0,0 +1,121 @@
++import Foundation
++
++public enum CommandBarDestination: Equatable, Sendable {
++    case empty
++    case navigate(URL)
++    case search(URL)
++    case invalid(String)
++}
++
++/// Provider selection is owned by the UI; DuckDuckGo is the alpha default.
++public enum CommandBarSearchProvider: String, CaseIterable, Sendable {
++    case duckDuckGo, google
++    public var title: String {
++        switch self {
++        case .duckDuckGo: "DuckDuckGo"
++        case .google: "Google"
++        }
++    }
++    public var endpoint: URL {
++        switch self {
++        case .duckDuckGo: URL(string: "https://duckduckgo.com/")!
++        case .google: URL(string: "https://www.google.com/search")!
++        }
++    }
++}
++
++/// Local input classification only. No query or page data is sent until Open.
++public enum CommandBarInput {
++    public static func resolve(_ input: String, provider: CommandBarSearchProvider = .duckDuckGo) -> CommandBarDestination {
++        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !text.isEmpty else { return .empty }
++        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
++            return .invalid("Enter an address or search without control characters.")
++        }
++        let authority = String(text.prefix { !"/?#".contains($0) })
++        let isBareAddress = !authority.contains(where: { $0.isWhitespace }) &&
++            (authority.contains(".") || authority == "localhost" || authority.hasPrefix("localhost:") || authority.hasPrefix("["))
++        // A domain/localhost port is not an explicit URI scheme.
++        let colonPrefix = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
++        let schemeLike = text.contains(":") && colonPrefix.range(of: "^[A-Za-z][A-Za-z0-9+.-]*$", options: .regularExpression) != nil
++        let portSuffix = authority.split(separator: ":", omittingEmptySubsequences: false).last ?? ""
++        let barePort = isBareAddress && !portSuffix.isEmpty && portSuffix.allSatisfy(\.isNumber)
++        let explicit = schemeLike && !barePort
++        if explicit || isBareAddress {
++            if explicit && !text.lowercased().hasPrefix("http://") && !text.lowercased().hasPrefix("https://") {
++                return .invalid("Only HTTP and HTTPS addresses can be opened.")
++            }
++            let value = explicit ? text : "https://" + text
++            guard !text.contains(where: { $0.isWhitespace }), !text.contains("\\"),
++                  let components = URLComponents(string: value),
++                  ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
++                  components.user == nil, components.password == nil,
++                  let host = components.host, !host.isEmpty,
++                  !host.contains("%"), !host.contains(".."),
++                  components.port.map({ (1...65535).contains($0) }) ?? true,
++                  let url = components.url else {
++                return .invalid("Enter a valid HTTP or HTTPS address without sign-in details.")
++            }
++            return .navigate(url)
++        }
++        var search = URLComponents(url: provider.endpoint, resolvingAgainstBaseURL: false)!
++        search.queryItems = [URLQueryItem(name: "q", value: text)]
++        // Search endpoints decode form queries, where a literal + means space.
++        // URLComponents uses RFC 3986 and leaves + unescaped by default.
++        search.percentEncodedQuery = search.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
++        return .search(search.url!)
++    }
++}
++
++public enum CommandBarCommand: String, CaseIterable, Sendable {
++    case findPage, toggleSidebar, closePage
++    public var title: String {
++        switch self {
++        case .findPage: "Find Page"
++        case .toggleSidebar: "Toggle Sidebar"
++        case .closePage: "Close Current Page"
++        }
++    }
++}
++
++public enum CommandBarAction: Equatable, Sendable {
++    case open(URL)
++    case activate(PageSearchResult)
++    case command(CommandBarCommand)
++}
++
++public struct CommandBarResult: Identifiable, Equatable, Sendable {
++    public let id: String
++    public let title: String
++    public let subtitle: String
++    public let action: CommandBarAction
++}
++
++public enum CommandBarResults {
++    /// Stable IDs let the UI preserve selection while organization events arrive.
++    /// Results never mutate state; activation must revalidate through PageRuntime.
++    public static func make(query: String, state: BrowserState, provider: CommandBarSearchProvider = .duckDuckGo) -> [CommandBarResult] {
++        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
++        var results: [CommandBarResult] = []
++        switch CommandBarInput.resolve(text, provider: provider) {
++        case .navigate(let url):
++            results.append(CommandBarResult(id: "destination", title: "Open \(url.host ?? text)",
++                subtitle: url.absoluteString, action: .open(url)))
++        case .search(let url):
++            results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
++                subtitle: "Web search", action: .open(url)))
++        case .empty, .invalid: break
++        }
++        results += state.searchPages(matching: text).map {
++            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
++                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
++        }
++        results += CommandBarCommand.allCases.filter {
++            text.isEmpty || $0.title.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
++        }.map {
++            CommandBarResult(id: "command:\($0.rawValue)", title: $0.title,
++                subtitle: "Browser command", action: .command($0))
++        }
++        return results
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
+@@ -0,0 +1,272 @@
++import AppKit
++import BatoCore
++
++/// A native modal surface: Chromium retains ownership of the parent window and
++/// its sheet lifecycle. No page or network work happens while the user types.
++@MainActor
++final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
++    private let field = NSSearchField(string: "")
++    private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
++    private var provider: CommandBarSearchProvider
++    private let providerChanged: (CommandBarSearchProvider) -> Void
++    private let table = CommandBarTable()
++    private let hint = NSTextField(labelWithString: "")
++    private let errorLabel = NSTextField(wrappingLabelWithString: "")
++    private let openButton = NSButton(title: "Open", target: nil, action: nil)
++    private let resultsForQuery: (String) -> [CommandBarResult]
++    private var results: [CommandBarResult] = []
++    private(set) var chosenAction: CommandBarAction?
++    var query: String { field.stringValue }
++
++    init(query: String = "", error: String? = nil,
++         provider: CommandBarSearchProvider = .duckDuckGo,
++         providerChanged: @escaping (CommandBarSearchProvider) -> Void,
++         results: @escaping (String) -> [CommandBarResult]) {
++        self.provider = provider
++        self.providerChanged = providerChanged
++        resultsForQuery = results
++        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 410),
++                                    styleMask: [.borderless], backing: .buffered, defer: false)
++        panel.isReleasedWhenClosed = false
++        panel.title = "New Tab"
++        panel.isOpaque = false
++        panel.backgroundColor = .clear
++        panel.hasShadow = true
++        super.init(window: panel)
++        let surface = CommandBarSurface()
++        surface.wantsLayer = true
++        surface.layer?.cornerRadius = 16
++        surface.layer?.masksToBounds = true
++        panel.contentView = surface
++        field.stringValue = query
++        field.placeholderString = "Search or enter a URL"
++        field.font = .systemFont(ofSize: 20)
++        field.controlSize = .large
++        field.focusRingType = .none
++        field.setAccessibilityLabel("Command bar search or address")
++        field.setAccessibilityIdentifier("bato-command-bar-input")
++        field.delegate = self
++        field.sendsSearchStringImmediately = true
++        field.cell?.sendsActionOnEndEditing = false
++        providerPicker.addItems(withTitles: CommandBarSearchProvider.allCases.map(\.title))
++        if let index = CommandBarSearchProvider.allCases.firstIndex(of: provider) { providerPicker.selectItem(at: index) }
++        providerPicker.target = self
++        providerPicker.action = #selector(changeProvider)
++        providerPicker.setAccessibilityLabel("Web search provider")
++        providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
++        providerPicker.toolTip = "Search provider for this session"
++        let inputRow = NSStackView(views: [field, providerPicker])
++        inputRow.spacing = 12
++        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        providerPicker.setContentCompressionResistancePriority(.required, for: .horizontal)
++        table.dataSource = self
++        table.delegate = self
++        table.headerView = nil
++        table.rowHeight = 52
++        table.backgroundColor = .clear
++        table.selectionHighlightStyle = .regular
++        table.allowsEmptySelection = false
++        table.allowsMultipleSelection = false
++        table.setAccessibilityLabel("Command bar results")
++        table.setAccessibilityIdentifier("bato-command-bar-results")
++        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("command"))
++        column.resizingMask = .autoresizingMask
++        table.addTableColumn(column)
++        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
++        table.target = self
++        table.doubleAction = #selector(openSelected)
++        table.openSelection = { [weak self] in self?.openSelected() }
++        table.cancel = { [weak self] in self?.dismiss(.cancel) }
++        let scroll = NSScrollView()
++        scroll.documentView = table
++        scroll.drawsBackground = false
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.scrollerStyle = .overlay
++        hint.font = .systemFont(ofSize: 11)
++        hint.textColor = .secondaryLabelColor
++        hint.lineBreakMode = .byTruncatingTail
++        hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        hint.setAccessibilityIdentifier("bato-command-bar-hint")
++        errorLabel.font = .systemFont(ofSize: 11)
++        errorLabel.textColor = .systemRed
++        errorLabel.stringValue = error ?? ""
++        errorLabel.setAccessibilityIdentifier("bato-command-bar-error")
++        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelBar))
++        cancel.bezelStyle = .rounded
++        cancel.keyEquivalent = "\u{1b}"
++        cancel.setAccessibilityIdentifier("bato-command-bar-cancel")
++        openButton.target = self
++        openButton.action = #selector(openSelected)
++        openButton.bezelStyle = .rounded
++        openButton.keyEquivalent = "\r"
++        openButton.setAccessibilityIdentifier("bato-command-bar-open")
++        panel.defaultButtonCell = openButton.cell as? NSButtonCell
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let footer = NSStackView(views: [hint, spacer, cancel, openButton])
++        footer.spacing = 8
++        let divider = NSBox()
++        divider.boxType = .separator
++        let stack = NSStackView(views: [inputRow, divider, scroll, errorLabel, footer])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 12
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        surface.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 20),
++            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -20),
++            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 20),
++            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -16),
++            inputRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            field.heightAnchor.constraint(equalToConstant: 36),
++            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
++            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
++        ])
++        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
++        refresh()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func focusSearch() {
++        window?.makeFirstResponder(field)
++        field.selectText(nil)
++    }
++
++    func refresh() {
++        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
++        results = resultsForQuery(field.stringValue)
++        table.reloadData()
++        if let index = results.firstIndex(where: { $0.id == selectedID }) {
++            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
++        } else if !results.isEmpty {
++            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++        }
++        openButton.isEnabled = results.indices.contains(table.selectedRow)
++        if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
++            hint.stringValue = message
++        } else {
++            hint.stringValue = "↑↓ to choose · Return to open · Esc to cancel"
++        }
++    }
++
++    func controlTextDidChange(_ notification: Notification) {
++        errorLabel.stringValue = ""
++        refresh()
++    }
++
++    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
++        switch selector {
++        case #selector(NSResponder.moveDown(_:)): moveSelection(1)
++        case #selector(NSResponder.moveUp(_:)): moveSelection(-1)
++        case #selector(NSResponder.insertNewline(_:)): openSelected()
++        case #selector(NSResponder.cancelOperation(_:)): dismiss(.cancel)
++        default: return false
++        }
++        return true
++    }
++
++    private func moveSelection(_ delta: Int) {
++        guard !results.isEmpty else { return }
++        let row = max(0, min(results.count - 1, table.selectedRow + delta))
++        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
++        table.scrollRowToVisible(row)
++    }
++
++    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
++    func tableViewSelectionDidChange(_ notification: Notification) {
++        openButton.isEnabled = results.indices.contains(table.selectedRow)
++    }
++
++    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
++        guard results.indices.contains(row) else { return nil }
++        let result = results[row]
++        let symbol: String
++        switch result.action {
++        case .open: symbol = "arrow.up.right"
++        case .activate: symbol = "rectangle.on.rectangle"
++        case .command: symbol = "command"
++        }
++        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
++        image.contentTintColor = .secondaryLabelColor
++        let title = NSTextField(labelWithString: result.title)
++        title.font = .systemFont(ofSize: 13, weight: .medium)
++        title.lineBreakMode = .byTruncatingTail
++        let detail = NSTextField(labelWithString: result.subtitle)
++        detail.font = .systemFont(ofSize: 11)
++        detail.textColor = .secondaryLabelColor
++        detail.lineBreakMode = .byTruncatingMiddle
++        let labels = NSStackView(views: [title, detail])
++        labels.orientation = .vertical
++        labels.alignment = .leading
++        labels.spacing = 3
++        let rowView = NSStackView(views: [image, labels])
++        rowView.spacing = 12
++        rowView.translatesAutoresizingMaskIntoConstraints = false
++        let cell = NSTableCellView()
++        cell.textField = title
++        cell.addSubview(rowView)
++        NSLayoutConstraint.activate([
++            rowView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
++            rowView.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
++            rowView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
++            image.widthAnchor.constraint(equalToConstant: 20),
++            title.widthAnchor.constraint(equalTo: labels.widthAnchor),
++            detail.widthAnchor.constraint(equalTo: labels.widthAnchor)
++        ])
++        return cell
++    }
++
++    @objc private func changeProvider() {
++        let choices = CommandBarSearchProvider.allCases
++        guard choices.indices.contains(providerPicker.indexOfSelectedItem) else { return }
++        provider = choices[providerPicker.indexOfSelectedItem]
++        providerChanged(provider)
++        refresh()
++    }
++
++    @objc private func cancelBar() { dismiss(.cancel) }
++    @objc private func openSelected() {
++        guard results.indices.contains(table.selectedRow) else { return }
++        chosenAction = results[table.selectedRow].action
++        dismiss(.OK)
++    }
++    private func dismiss(_ response: NSApplication.ModalResponse) {
++        guard let window, let parent = window.sheetParent else { return }
++        parent.endSheet(window, returnCode: response)
++        window.orderOut(nil)
++    }
++}
++
++@MainActor
++private final class CommandBarPanel: NSPanel {
++    override var canBecomeKey: Bool { true }
++}
++
++@MainActor
++private final class CommandBarTable: NSTableView {
++    var openSelection: (() -> Void)?
++    var cancel: (() -> Void)?
++    override func keyDown(with event: NSEvent) {
++        switch event.keyCode {
++        case 36, 76: openSelection?()
++        case 53: cancel?()
++        default: super.keyDown(with: event)
++        }
++    }
++}
++
++@MainActor
++private final class CommandBarSurface: NSView {
++    override var wantsUpdateLayer: Bool { true }
++    override func updateLayer() { layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
++    override func viewDidChangeEffectiveAppearance() {
++        super.viewDidChangeEffectiveAppearance()
++        needsDisplay = true
++    }
 +}

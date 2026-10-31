@@ -32,6 +32,10 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private var hasStarted = false
     private var workspaceEditor: WorkspaceEditor?
     private var pageFinder: PageFinder?
+    private var commandBar: CommandBarController?
+    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
+    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
+    private weak var pendingCommandBarWindow: NSWindow?
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 
     /// Load failures throw without replacing the existing document. The factory
@@ -72,16 +76,90 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         render()
     }
 
-    /// Focuses native address entry. Host menu commands may call this method.
-    public func newTab() {
+    /// Opens native navigation, organization search and browser commands.
+    public func newTab() { showCommandBar() }
+
+    private func showCommandBar(query: String = "", error: String? = nil) {
+        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
-        root.window?.makeFirstResponder(addressField)
-        addressField.selectText(nil)
+        let bar = CommandBarController(query: query, error: error,
+                                       provider: commandBarSearchProvider,
+                                       providerChanged: { [weak self] in self?.commandBarSearchProvider = $0 }) { [weak self] query in
+            guard let self else { return [] }
+            return CommandBarResults.make(query: query, state: self.runtime.state,
+                                          provider: self.commandBarSearchProvider).filter { result in
+                switch result.action {
+                case .command(.toggleSidebar): return self.requestSidebarToggle != nil
+                case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
+                default: return true
+                }
+            }
+        }
+        commandBar = bar
+        guard let sheet = bar.window else { commandBar = nil; return }
+        window.beginSheet(sheet) { [weak self, weak bar, weak window] response in
+            guard let self else { return }
+            if response == .OK, let bar, let action = bar.chosenAction {
+                self.pendingCommandBarAction = (action, bar.query)
+                self.pendingCommandBarWindow = window
+            }
+            self.commandBar = nil
+            guard response == .OK else { return }
+            // Do not create/select/close a Chromium page inside sheet completion.
+            // The host restores its native slot before this scheduled callback.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self else { return }
+                guard let window, self.root.window === window else {
+                    self.pendingCommandBarAction = nil
+                    self.pendingCommandBarWindow = nil
+                    return
+                }
+                if let request = self.requestPagePresentation { request() }
+                else { self.resumeCommittedSelection() }
+            }
+        }
+        bar.focusSearch()
+    }
+
+    private func executeCommandBarAction(_ pending: (action: CommandBarAction, query: String)) {
+        let succeeded: Bool
+        switch pending.action {
+        case .open(let url):
+            // An engine failure may follow a successful save: do not create a
+            // duplicate entry if the new page is already in organization.
+            let before = runtime.state
+            let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
+            succeeded = opened || runtime.state != before
+        case .activate(let result):
+            succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
+        case .command(let command):
+            switch command {
+            case .findPage: findPage()
+            case .toggleSidebar: requestSidebarToggle?()
+            case .closePage: closeSelection()
+            }
+            return
+        }
+        render()
+        if !succeeded {
+            let message = runtime.lastError == .saveFailed
+                ? "Changes couldn’t be saved. Reopen Bato to reload organization."
+                : "This page is unavailable or is closing. Choose another result."
+            showCommandBar(query: pending.query, error: message)
+        }
     }
 
     /// Called by the host after leaving AppKit's sheet callback context.
     public func resumeCommittedSelection() {
+        // A rejected or stale presentation callback cancels its intent. It must
+        // neither block the next CmdT nor execute on an unrelated later callback.
+        let pending = pendingCommandBarAction
+        let owner = pendingCommandBarWindow
+        pendingCommandBarAction = nil
+        pendingCommandBarWindow = nil
         guard hasStarted, let window = root.window else { return }
+        if pending != nil, owner !== window { return }
         guard window.attachedSheet == nil, NSApp.modalWindow == nil else {
             render()
             statusLabel.stringValue = "Close the dialog, then select the page to open it."
@@ -94,8 +172,12 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         window.makeKeyAndOrderFront(nil)
         requestNativeFocus?()
         logPagePresentationFocus("after", window: window)
-        _ = runtime.start()
-        render()
+        if let pending {
+            executeCommandBarAction(pending)
+        } else {
+            _ = runtime.start()
+            render()
+        }
     }
 
     private func logPagePresentationFocus(_ phase: String, window: NSWindow) {
@@ -297,6 +379,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
 
     private func render() {
+        commandBar?.refresh()
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent

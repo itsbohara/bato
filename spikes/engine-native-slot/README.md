@@ -61,3 +61,8 @@ This diagnostic resolves the current page on each action. It does not map saved 
 ## Native workspace connection
 
 The opt-in workspace host now connects a real native organization sidebar to Chromium pages. Read [workspace results and retained failures](WORKSPACE-RESULTS.md) and [application host notes](../../app/CHROMIUM.md). The current matching framework/client resolves nine authored exports; historical diagnostic-only results above retain their original four-symbol scope. Source mirrors guard the four staged Swift modules before builds. Page-focused CmdW and broader host acceptance remain open.
+
+
+## Workspace command bar
+
+The native workspace host now presents a rounded Cmd+T command bar for URL entry, configurable session-local web search, current-Profile page switching and browser commands. Its floating visual uses the existing AppKit sheet lifecycle; engine and organization interfaces are unchanged. See [command-bar results](COMMAND-BAR-RESULTS.md) for verification and limits. The client overlay now contains fifteen files and eleven canonical source mirrors.
