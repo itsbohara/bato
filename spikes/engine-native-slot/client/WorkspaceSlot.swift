@@ -7,6 +7,7 @@ private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) ->
 private typealias CommandID = @convention(c) (Int32) -> Int32
 private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
+private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32
 private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
@@ -19,6 +20,8 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor private var scheduleSelection: ScheduleSelection?
 @MainActor private var sidebarGeometry: SidebarGeometry?
 @MainActor private var pageFocus: ActivePage?
+@MainActor private var presentSplitPages: PresentSplit?
+@MainActor private var separateSplitPages: ActivePage?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 
 @MainActor private final class WorkspaceEngine: PageEngine {
@@ -49,6 +52,15 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
         } else { id = 0 }
         _ = selectPage?(token, id)
     }
+    var supportsSplits: Bool { presentSplitPages != nil && separateSplitPages != nil }
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
+        guard supportedProfileIDs.contains(left.profileID), left.profileID == right.profileID,
+              let a = pages.first(where: { $0.value == left })?.key,
+              let b = pages.first(where: { $0.value == right })?.key,
+              let f = pages.first(where: { $0.value == focused })?.key else { return false }
+        return presentSplitPages?(token, a, b, f, ratio) == 1
+    }
+    func separateSplit() -> Bool { separateSplitPages?(token) == 1 }
     func requestClose(_ page: LivePage) {
         guard let id = pages.first(where: { $0.value == page })?.key else { return }
         if closePage?(token, id) != 1 { onEvent?(.closeCancelled(page)) }
@@ -464,4 +476,26 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
           slot.controller?.runtime.livePages[page.entryID] == page else { return }
     let data = png.map { Data(bytes: $0, count: size) }
     slot.controller?.receivePageIcon(entryID: page.entryID, png: data)
+}
+
+@_cdecl("BatoSwiftWorkspaceConfigureSplits")
+@MainActor public func configureWorkspaceSplits(
+    _ present: @escaping @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32,
+    _ separate: @escaping @convention(c) (UInt64) -> Int32) {
+    precondition(Thread.isMainThread)
+    presentSplitPages = present
+    separateSplitPages = separate
+}
+
+@_cdecl("BatoSwiftWorkspaceSplitChanged")
+@MainActor public func workspaceSplitChanged(_ token: UInt64, _ left: Int32, _ right: Int32,
+                                            _ ratio: Double, _ removed: Int32) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine,
+          let a = engine.pages[left], let b = engine.pages[right],
+          let controller = slot.controller,
+          controller.runtime.livePages[a.entryID] == a,
+          controller.runtime.livePages[b.entryID] == b else { return }
+    if removed == 1 { controller.receive(.splitSeparated(left: a, right: b)) }
+    else { controller.receive(.splitRatioChanged(left: a, right: b, ratio: ratio)) }
 }

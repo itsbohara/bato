@@ -41,6 +41,18 @@ CEF_EXPORT int bato_native_slot_new_tab_v1(uint64_t token);
 // Requests a normal, cancellable close only for a page in this slot window.
 // Returns request acceptance, not completed closure; use CEF OnBeforeClose.
 CEF_EXPORT int bato_native_slot_request_close_v1(uint64_t token, int browser_id);
+// Split notifications are observational, including fullscreen, and may run inside
+// a tab-model mutation. Clients must defer work and revalidate live generations.
+typedef struct BatoSplitCallbacksV1 {
+  size_t size;
+  uint32_t version;
+  void* context;
+  // Zero IDs mean the previously managed pair no longer exists. No raw split IDs.
+  void (*changed)(void* context, uint64_t token, int left, int right, double ratio);
+} BatoSplitCallbacksV1;
+CEF_EXPORT int bato_native_slot_register_split_callbacks_v1(const BatoSplitCallbacksV1* callbacks);
+CEF_EXPORT int bato_native_slot_present_split_v1(uint64_t token, int left, int right, int focused, double ratio);
+CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token);
 // Requests Views focus ownership for the native host. Returns 1 when the live
 // host owns Views focus; the client may then focus/select its editable field.
 CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);

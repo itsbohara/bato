@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "1e6db873cd79ebc25a7266aacfc6068876f140ef37abb74a39085c9d11340b89",
+  "patch_sha256": "5b7a5be3f53fdb2d52edfda11814479380b195e61898fe992d628f78e3aa4e12",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "c68e847c62f244b604b2c87243913032d53c2e025031a7f49c35d195819e3d7e"
+      "patched_sha256": "d29ae81239953b218d405b0a3ae2c85ebbc94775ffc0032623c866f2dc466a2a"
     },
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "5c03bdb330e002207d24f71d893b0a90c584fcaea32dce819b54c6a5ad9b26cc"
+      "patched_sha256": "2d46f3a8c89e9052b4f14fa46fab9801888a664c39405a760b790bc29e8280a6"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "543968715adc215b666cf4627cda765270d24b6da3ed67590ce84975c57d5f3c"
+      "patched_sha256": "8cee7c037697ce61f05d3c715e0ee7425948afa38fe346a0b3b61802a811519f"
     },
     {
       "root": "cef",
@@ -74,13 +74,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "b843b73985a107537876ae2d57ac10a773c9be44be1e064c2707db489a7e748d"
+      "patched_sha256": "918cec882ea29b0d07becd509b3338a29d1e667398cd5f49bb394a2fbe3f4c53"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "abb641b095f0154896d3fd5fe0bbb42de1841600aa6fb3ae8ca58a5672f54a99"
+      "patched_sha256": "319d1d9c2d82f6b99deca480c66977112839873ddeb3577f0a47331b4c37b29f"
     },
     {
       "root": "cef",

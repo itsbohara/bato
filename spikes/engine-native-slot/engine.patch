@@ -73,7 +73,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,542 @@
+@@ -49,3 +49,696 @@
  }
 
  }  // namespace cef
@@ -81,6 +81,7 @@
 +// Bato native-slot experiment. All storage and callbacks are UI-thread only.
 +#include <map>
 +#include <algorithm>
++#include <cmath>
 +#include "base/no_destructor.h"
 +#include "base/supports_user_data.h"
 +#include "base/command_line.h"
@@ -92,6 +93,9 @@
 +#include "chrome/browser/lifetime/browser_shutdown.h"
 +#include "chrome/browser/ui/browser_commands.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
++#include "chrome/browser/ui/tabs/split_tab_metrics.h"
++#include "components/tabs/public/split_tab_data.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 +#include "chrome/browser/ui/unload_controller.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
@@ -108,6 +112,7 @@
 +namespace {
 +BatoNativeSlotCallbacksV1 g_slot_callbacks = {};
 +BatoPageCallbacksV1 g_page_callbacks = {};
++BatoSplitCallbacksV1 g_split_callbacks = {};
 +uint64_t g_slot_generation = 0;
 +bool g_slot_registration_closed = false;
 +class SlotAdapter;
@@ -181,6 +186,7 @@
 +  Host* host_ = nullptr;
 +};
 +void NotifyActivePage(uint64_t token, content::WebContents* contents);
++void NotifyManagedSplit(uint64_t token);
 +class SlotTabObserver final : public TabStripModelObserver {
 + public:
 +  SlotTabObserver(TabStripModel* model, uint64_t token) : token_(token) {
@@ -190,6 +196,9 @@
 +                             const TabStripModelChange& change,
 +                             const TabStripSelectionChange& selection) override {
 +    if (selection.active_tab_changed()) NotifyActivePage(token_, selection.new_contents);
++  }
++  void OnSplitTabChanged(const SplitTabChange& change) override {
++    NotifyManagedSplit(token_);
 +  }
 + private:
 +  const uint64_t token_;
@@ -202,6 +211,9 @@
 +  uint64_t token = 0;
 +  bool attempted = false;
 +  bool transitioning = false;
++  bool changing_split = false;
++  int split_left = 0;
++  int split_right = 0;
 +  views::NativeViewHost* host = nullptr;  // BrowserView owns this child.
 +  std::unique_ptr<SlotAdapter> adapter;
 +  std::unique_ptr<SlotTabObserver> tab_observer;
@@ -215,6 +227,22 @@
 +  static base::NoDestructor<std::map<BrowserView*, SlotState>> slots;
 +  return *slots;
 +}
++// Reentrant notifications can detach the owner; never retain SlotState refs
++// across model mutations, and always release suppression for a surviving owner.
++class ScopedSplitMutation {
++ public:
++  ScopedSplitMutation(BrowserView* view, uint64_t token) : view_(view), token_(token) {
++    Slots().at(view_).changing_split = true;
++  }
++  ~ScopedSplitMutation() {
++    auto found = Slots().find(view_);
++    if (found != Slots().end() && found->second.token == token_)
++      found->second.changing_split = false;
++  }
++ private:
++  BrowserView* view_;
++  uint64_t token_;
++};
 +bool NativeSlotFocusAllowed(BrowserView* view) {
 +  auto found = Slots().find(view);
 +  return found != Slots().end() && found->second.sidebar_mode != 0 &&
@@ -311,6 +339,38 @@
 +    if (browser && browser->GetIdentifier() == identifier) return browser;
 +  }
 +  return nullptr;
++}
++
++// Read-only observations deliberately do not use FindSlot: a fullscreen or
++// modal transition must not be mistaken for native separation.
++void NotifyManagedSplit(uint64_t token) {
++  for (auto& [view, state] : Slots()) {
++    if (state.token != token || state.changing_split || !state.split_left ||
++        !state.split_right || SlotClosing(view)) continue;
++    auto left = BrowserInSlot(view, state.split_left);
++    auto right = BrowserInSlot(view, state.split_right);
++    auto* model = view->browser()->GetTabStripModel();
++    const int li = left ? model->GetIndexOfWebContents(left->GetWebContents()) : TabStripModel::kNoTab;
++    const int ri = right ? model->GetIndexOfWebContents(right->GetWebContents()) : TabStripModel::kNoTab;
++    auto split = li >= 0 ? model->GetSplitForTab(li) : std::nullopt;
++    const bool valid = split && ri >= 0 && model->GetSplitForTab(ri) == split;
++    int left_id = state.split_left, right_id = state.split_right;
++    double ratio = 0;
++    if (valid) {
++      auto* data = model->GetSplitData(*split);
++      if (!data || data->ListTabs().size() != 2) return;
++      // A native swap reverses the logical ratio. Bato's persisted order remains
++      // stable; the next explicit presentation restores that order.
++      ratio = data->visual_data()->split_ratio();
++      if (li > ri) ratio = 1.0 - ratio;
++    } else {
++      state.split_left = state.split_right = 0;
++      left_id = right_id = 0;
++    }
++    const auto callbacks = g_split_callbacks;
++    if (callbacks.changed) callbacks.changed(callbacks.context, token, left_id, right_id, ratio);
++    return;
++  }
 +}
 +
 +// WebContents owns the observer, so its destruction cannot leave a dangling
@@ -458,6 +518,100 @@
 +  contents->SetUserData(&kPageCloseObserverKey,
 +      std::make_unique<PageCloseObserver>(contents, token, browser_id));
 +  browser->CloseBrowser(false);  // Preserve the default dialog and beforeunload.
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_register_split_callbacks_v1(
++    const BatoSplitCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_split_callbacks.version || g_slot_registration_closed ||
++      (CefContext::Get() && CefContext::Get()->initialized()) || !callbacks ||
++      callbacks->size != sizeof(BatoSplitCallbacksV1) || callbacks->version != 1 ||
++      !callbacks->changed) return 0;
++  g_split_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_present_split_v1(
++    uint64_t token, int left_id, int right_id, int focused_id, double ratio) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || left_id <= 0 ||
++      right_id <= 0 || left_id == right_id ||
++      (focused_id != left_id && focused_id != right_id) ||
++      !std::isfinite(ratio) || ratio <= 0 || ratio >= 1) return 0;
++  auto* view = FindSlot(token);
++  if (!view) return 0;
++  auto left = BrowserInSlot(view, left_id), right = BrowserInSlot(view, right_id);
++  if (!left || !right || !left->GetRequestContext()->IsSame(right->GetRequestContext())) return 0;
++  auto* model = view->browser()->GetTabStripModel();
++  if (!model->delegate()->IsTabStripEditable()) return 0;
++  int li = model->GetIndexOfWebContents(left->GetWebContents());
++  int ri = model->GetIndexOfWebContents(right->GetWebContents());
++  if (li < 0 || ri < 0 || model->IsTabPinned(li) != model->IsTabPinned(ri) ||
++      model->GetTabGroupForTab(li) != model->GetTabGroupForTab(ri)) return 0;
++  auto ls = model->GetSplitForTab(li), rs = model->GetSplitForTab(ri);
++  auto& state = Slots().at(view);
++  // Never adopt/destroy another native split, including an externally created one.
++  if ((ls || rs) && !(ls && ls == rs && state.split_left == left_id && state.split_right == right_id)) return 0;
++  ScopedSplitMutation mutation(view, token);
++  if (state.split_left && (state.split_left != left_id || state.split_right != right_id)) {
++    auto old_left = BrowserInSlot(view, state.split_left);
++    auto old_right = BrowserInSlot(view, state.split_right);
++    const int oi = old_left ? model->GetIndexOfWebContents(old_left->GetWebContents()) : -1;
++    const int oj = old_right ? model->GetIndexOfWebContents(old_right->GetWebContents()) : -1;
++    auto old_split = oi >= 0 ? model->GetSplitForTab(oi) : std::nullopt;
++    if (old_split && oj >= 0 && model->GetSplitForTab(oj) == old_split)
++      model->RemoveSplit(*old_split);
++    if (FindSlot(token) != view) return 0;
++    Slots().at(view).split_left = Slots().at(view).split_right = 0;
++    li = model->GetIndexOfWebContents(left->GetWebContents());
++    ri = model->GetIndexOfWebContents(right->GetWebContents());
++    if (li < 0 || ri < 0) return 0;
++  }
++  auto split = ls.value_or(split_tabs::SplitTabId::CreateEmpty());
++  if (!ls) split = model->AddToNewSplit({li, ri},
++      split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kSideBySide, ratio),
++      split_tabs::SplitTabCreatedSource::kToolbarButton);
++  if (FindSlot(token) != view) return 0;
++  li = model->GetIndexOfWebContents(left->GetWebContents());
++  ri = model->GetIndexOfWebContents(right->GetWebContents());
++  if (li < 0 || ri < 0 || model->GetSplitForTab(li) != split ||
++      model->GetSplitForTab(ri) != split) return 0;
++  if (li > ri) model->ReverseTabsInSplit(split);
++  if (FindSlot(token) != view) return 0;
++  li = model->GetIndexOfWebContents(left->GetWebContents());
++  ri = model->GetIndexOfWebContents(right->GetWebContents());
++  if (li < 0 || ri < 0 || model->GetSplitForTab(li) != split ||
++      model->GetSplitForTab(ri) != split) return 0;
++  model->UpdateSplitRatio(split, ratio);
++  if (FindSlot(token) != view) return 0;
++  li = model->GetIndexOfWebContents(left->GetWebContents());
++  ri = model->GetIndexOfWebContents(right->GetWebContents());
++  if (li < 0 || ri < 0 || model->GetSplitForTab(li) != split ||
++      model->GetSplitForTab(ri) != split) return 0;
++  model->ActivateTabAt(focused_id == left_id ? li : ri);
++  auto current = Slots().find(view);
++  if (current == Slots().end() || current->second.token != token) return 0;
++  li = model->GetIndexOfWebContents(left->GetWebContents());
++  ri = model->GetIndexOfWebContents(right->GetWebContents());
++  if (li < 0 || ri < 0 || model->GetSplitForTab(li) != split ||
++      model->GetSplitForTab(ri) != split) return 0;
++  current->second.split_left = left_id;
++  current->second.split_right = right_id;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT()) return 0;
++  auto* view = FindSlot(token);
++  if (!view) return 0;
++  auto& state = Slots().at(view);
++  auto left = BrowserInSlot(view, state.split_left);
++  auto right = BrowserInSlot(view, state.split_right);
++  auto* model = view->browser()->GetTabStripModel();
++  if (!model->delegate()->IsTabStripEditable()) return 0;
++  const int li = left ? model->GetIndexOfWebContents(left->GetWebContents()) : -1;
++  const int ri = right ? model->GetIndexOfWebContents(right->GetWebContents()) : -1;
++  auto split = li >= 0 ? model->GetSplitForTab(li) : std::nullopt;
++  // Only remove this exact managed pair. A surviving unrelated split is untouched.
++  const bool matched = split && ri >= 0 && model->GetSplitForTab(ri) == split;
++  state.split_left = state.split_right = 0;
++  if (matched) model->RemoveSplit(*split);
 +  return 1;
 +}
 +extern "C" CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token) {
@@ -783,7 +937,7 @@
          fullscreen);
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,69 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -827,6 +981,18 @@
 +// Requests a normal, cancellable close only for a page in this slot window.
 +// Returns request acceptance, not completed closure; use CEF OnBeforeClose.
 +CEF_EXPORT int bato_native_slot_request_close_v1(uint64_t token, int browser_id);
++// Split notifications are observational, including fullscreen, and may run inside
++// a tab-model mutation. Clients must defer work and revalidate live generations.
++typedef struct BatoSplitCallbacksV1 {
++  size_t size;
++  uint32_t version;
++  void* context;
++  // Zero IDs mean the previously managed pair no longer exists. No raw split IDs.
++  void (*changed)(void* context, uint64_t token, int left, int right, double ratio);
++} BatoSplitCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_split_callbacks_v1(const BatoSplitCallbacksV1* callbacks);
++CEF_EXPORT int bato_native_slot_present_split_v1(uint64_t token, int left, int right, int focused, double ratio);
++CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token);
 +// Requests Views focus ownership for the native host. Returns 1 when the live
 +// host owns Views focus; the client may then focus/select its editable field.
 +CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);

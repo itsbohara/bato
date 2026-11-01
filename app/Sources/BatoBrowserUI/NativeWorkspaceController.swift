@@ -29,6 +29,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
     private var pageIcons: [UUID: NSImage] = [:]
+    private var splitControls: [String: NSButton] = [:]
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var workspaceIDs: [UUID] = []
     private var hasStarted = false
@@ -418,6 +419,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             guard let role = ordered.firstIndex(where: { root.window?.firstResponder === $0 }) else { return nil }
             return (id, role)
         }.first
+        let focusedSplit = splitControls.first { root.window?.firstResponder === $0.value }?.key
+        splitControls.removeAll()
         let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
         pageControls.removeAll()
         folderControls.removeAll()
@@ -429,6 +432,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             view.removeFromSuperview()
         }
         let favorites = state.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
+        if let split = state.currentSplit { addActiveSplit(split, workspaceID: workspace.id) }
+        addSavedSplits(workspaceID: workspace.id)
         addSection("Favorites", pages: favorites)
         let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
         addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
@@ -437,6 +442,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         addSection("Tabs", pages: workspace.tabs)
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
+        } else if let focusedSplit, let control = splitControls[focusedSplit] {
+            root.window?.makeFirstResponder(control)
         } else if let focusedFolder, let controls = folderControls[focusedFolder.id] {
             let ordered = [controls.disclosure, controls.title, controls.actions]
             root.window?.makeFirstResponder(ordered[focusedFolder.role])
@@ -462,6 +469,163 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             statusLabel.stringValue = "This action couldn’t be completed."
         }
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
+    }
+
+    /// Split controls address organization identities, never Chromium tab indices.
+    private func canRunSplitAction(in workspaceID: UUID) -> Bool {
+        guard hasStarted, runtime.supportsSplits,
+              runtime.state.activeWorkspaceID == workspaceID,
+              commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil,
+              workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil,
+              NSApp.modalWindow == nil else { return false }
+        return true
+    }
+
+    private func splitTitle(_ split: PageSplit) -> String {
+        let pages = runtime.state.currentWorkspace.pins + runtime.state.currentWorkspace.tabs
+        let left = pages.first { $0.id == split.leftEntryID }
+        let right = pages.first { $0.id == split.rightEntryID }
+        return "\(left.map(pageTitle) ?? "Page") + \(right.map(pageTitle) ?? "Page")"
+    }
+
+    private func pageTitle(_ page: PageEntry) -> String {
+        page.title.isEmpty ? (page.lastURL.host ?? "Page") : page.title
+    }
+
+    private func addActiveSplit(_ split: PageSplit, workspaceID: UUID) {
+        let heading = NSTextField(labelWithString: "Split view")
+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        heading.textColor = .secondaryLabelColor
+        entries.addArrangedSubview(heading)
+        let pages = runtime.state.currentWorkspace.pins + runtime.state.currentWorkspace.tabs
+        let isClosing = runtime.pendingClose.contains { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }
+        let sides = NSStackView()
+        sides.orientation = .horizontal
+        sides.distribution = .fillEqually
+        sides.spacing = 4
+        for (position, entryID) in [("left", split.leftEntryID), ("right", split.rightEntryID)] {
+            guard let page = pages.first(where: { $0.id == entryID }) else { continue }
+            let button = ActionButton(title: pageTitle(page)) { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID),
+                      self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
+                self.perform { self.runtime.activateSplit(split.id, focusedEntryID: entryID) }
+            }
+            configureTextAction(button, symbol: position == "left" ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
+            button.contentTintColor = runtime.state.currentWorkspace.activeEntryID == entryID ? accent : .secondaryLabelColor
+            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+            button.setAccessibilityLabel("Focus \(position) page: \(pageTitle(page))")
+            let key = "bato-split-\(position)-\(split.id.uuidString)"
+            button.setAccessibilityIdentifier(key)
+            splitControls[key] = button
+            button.isEnabled = !isClosing
+            sides.addArrangedSubview(button)
+        }
+        entries.addArrangedSubview(sides)
+        sides.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.spacing = 4
+        if !split.isPinned {
+            let pin = ActionButton(title: "Pin pair") { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
+                self.perform { self.runtime.pinSplit(split.id) }
+            }
+            configureTextAction(pin, symbol: "pin")
+            pin.toolTip = "Save both destinations as a pinned pair."
+            pin.isEnabled = !isClosing
+            let key = "bato-pin-split-\(split.id.uuidString)"
+            pin.setAccessibilityIdentifier(key)
+            splitControls[key] = pin
+            actions.addArrangedSubview(pin)
+        }
+        let separate = ActionButton(title: "Separate") { [weak self] in
+            guard let self, self.canRunSplitAction(in: workspaceID) else { return }
+            self.perform { split.isPinned ? self.runtime.deactivateSplit() : self.runtime.dissolveSplit(split.id) }
+        }
+        configureTextAction(separate, symbol: "rectangle.split.2x1")
+        separate.toolTip = split.isPinned ? "Show the focused page alone. The saved pair remains available." : "Separate the pages. Both pages remain available."
+        separate.setAccessibilityLabel("Separate split")
+        separate.isEnabled = !isClosing
+        let key = "bato-separate-split-\(split.id.uuidString)"
+        separate.setAccessibilityIdentifier(key)
+        splitControls[key] = separate
+        actions.addArrangedSubview(separate)
+        let optionsKey = "bato-split-options-\(split.id.uuidString)"
+        let options = ActionButton(title: "") { [weak self] in
+            guard let self, let anchor = self.splitControls[optionsKey] else { return }
+            self.showSplitOptions(split.id, workspaceID: workspaceID, anchor: anchor)
+        }
+        configureIcon(options, symbol: "ellipsis", label: "Split options")
+        options.setAccessibilityIdentifier(optionsKey)
+        options.toolTip = "Adjust split widths"
+        options.isEnabled = !isClosing
+        splitControls[optionsKey] = options
+        actions.addArrangedSubview(options)
+        entries.addArrangedSubview(actions)
+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
+    }
+
+    private func showSplitOptions(_ splitID: UUID, workspaceID: UUID, anchor: NSView) {
+        guard canRunSplitAction(in: workspaceID),
+              let split = runtime.state.currentSplit, split.id == splitID,
+              !runtime.pendingClose.contains(where: { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }) else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (title, adjustment) in [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)] {
+            let item = ActionMenuItem(title: title) { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID),
+                      let current = self.runtime.state.currentSplit, current.id == splitID,
+                      !self.runtime.pendingClose.contains(where: { $0.entryID == current.leftEntryID || $0.entryID == current.rightEntryID }) else { return }
+                let ratio = adjustment == 0 ? 0.5 : min(0.9, max(0.1, current.dividerRatio + adjustment))
+                self.perform { self.runtime.updateSplitRatio(splitID, ratio: ratio) }
+            }
+            let target = adjustment == 0 ? 0.5 : min(0.9, max(0.1, split.dividerRatio + adjustment))
+            item.isEnabled = abs(target - split.dividerRatio) > 0.0001
+            menu.addItem(item)
+        }
+        requestNativeFocus?()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
+    }
+
+    private func addSavedSplits(workspaceID: UUID) {
+        let splits = runtime.state.currentWorkspace.splits.filter(\.isPinned)
+        guard !splits.isEmpty else { return }
+        let heading = NSTextField(labelWithString: "Saved pairs")
+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        heading.textColor = .secondaryLabelColor
+        entries.addArrangedSubview(heading)
+        for split in splits {
+            let button = ActionButton(title: splitTitle(split)) { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
+                self.perform { self.runtime.activateSplit(split.id) }
+            }
+            configureTextAction(button, symbol: "rectangle.split.2x1")
+            button.alignment = .left
+            button.contentTintColor = runtime.state.currentWorkspace.activeSplitID == split.id ? accent : .secondaryLabelColor
+            let isClosing = runtime.pendingClose.contains { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }
+            button.isEnabled = runtime.supportsSplits && !isClosing
+            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+            let key = "bato-saved-split-\(split.id.uuidString)"
+            button.setAccessibilityIdentifier(key)
+            button.setAccessibilityLabel("Open saved pair: \(splitTitle(split))")
+            splitControls[key] = button
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            let remove = ActionMenuItem(title: "Remove Split Pair") { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
+                self.perform { self.runtime.dissolveSplit(split.id) }
+            }
+            remove.toolTip = "Keep both pages and remove only the pair."
+            remove.isEnabled = !isClosing
+            menu.addItem(remove)
+            button.menu = menu
+            entries.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        }
+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
     }
 
     private func addSection(_ title: String, pages: [PageEntry], totalCount: Int? = nil, includeEmpty: Bool = false) {
@@ -604,6 +768,20 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         if let menu = select.menu {
             // Boundary actions stay disabled for every entry kind.
             menu.autoenablesItems = false
+            if runtime.supportsSplits, page.kind != .favorite {
+                let workspaceID = runtime.state.activeWorkspaceID
+                let sourceID = runtime.state.currentWorkspace.activeEntryID
+                let split = ActionMenuItem(title: "Split with Current Page") { [weak self] in
+                    guard let self, self.canRunSplitAction(in: workspaceID),
+                          self.runtime.state.currentWorkspace.activeEntryID == sourceID,
+                          self.runtime.state.canCreateSplit(with: page.id) else { return }
+                    self.perform { self.runtime.createSplit(with: page.id) }
+                }
+                split.isEnabled = runtime.state.canCreateSplit(with: page.id) &&
+                    !runtime.pendingClose.contains(where: { $0.entryID == page.id || $0.entryID == sourceID })
+                menu.addItem(.separator())
+                menu.addItem(split)
+            }
             if page.kind == .pinned {
                 menu.addItem(.separator())
                 let workspace = runtime.state.currentWorkspace

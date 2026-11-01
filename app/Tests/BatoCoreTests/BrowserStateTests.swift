@@ -788,3 +788,137 @@ final class BrowserStateTests: XCTestCase {
         }
     }
 }
+
+extension BrowserStateTests {
+    func testSplitLegacyRoundTripValidationAndSelection() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: saved, title: "Left")
+        let right = try state.addTab(url: navigated, title: "Right")
+        let legacy = try JSONEncoder().encode(state)
+        XCTAssertFalse(String(decoding: legacy, as: UTF8.self).contains("splits"))
+        XCTAssertEqual(try JSONDecoder().decode(BrowserState.self, from: legacy).currentWorkspace.splits, [])
+        try state.selectEntry(left)
+        let id = try state.createSplit(with: right)
+        XCTAssertEqual(state.currentSplit?.id, id)
+        try state.selectEntry(right)
+        XCTAssertEqual(state.currentSplit?.id, id)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, right)
+        let paired = state
+        XCTAssertThrowsError(try state.createSplit(with: left))
+        XCTAssertEqual(state, paired)
+        for invalid in [Double.nan, Double.infinity, 0, 1] {
+            XCTAssertThrowsError(try state.updateSplitRatio(id, ratio: invalid))
+            XCTAssertEqual(state, paired)
+        }
+        try state.updateSplitRatio(id, ratio: 0.65)
+        XCTAssertEqual(try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state)), state)
+        try state.pinSplit(id)
+        let unrelated = try state.addTab(url: saved, title: "Other")
+        XCTAssertNil(state.currentSplit)
+        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+        try state.activateSplit(id, focusedEntryID: left)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, left)
+        try state.selectEntry(unrelated)
+        XCTAssertNil(state.currentSplit)
+        try state.validate()
+    }
+
+    func testSplitRejectsFavoritesForeignMembersAndDuplicateReferences() throws {
+        var state = BrowserState.initial()
+        let favorite = try state.addTab(url: saved, title: "Favorite")
+        try state.favoriteEntry(favorite)
+        let left = try state.addTab(url: saved, title: "Left")
+        XCTAssertFalse(state.canCreateSplit(with: favorite))
+        XCTAssertThrowsError(try state.createSplit(with: favorite))
+        let right = try state.addTab(url: navigated, title: "Right")
+        let pair = try state.createSplit(with: left)
+        var invalid = state
+        invalid.workspaces[0].splits[0].rightEntryID = UUID()
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = state
+        invalid.workspaces[0].splits.append(PageSplit(leftEntryID: left, rightEntryID: right))
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = state
+        invalid.workspaces[0].splits[0].id = left
+        XCTAssertThrowsError(try invalid.validate())
+        XCTAssertEqual(state.currentSplit?.id, pair)
+    }
+
+    func testPinSplitPreservesSavedDestinationsAndSavedCloseKeepsPair() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: saved, title: "Saved")
+        try state.pinEntry(left)
+        try state.recordNavigation(entryID: left, url: navigated, title: "Moved")
+        let right = try state.addTab(url: navigated, title: "Temporary")
+        let id = try state.createSplit(with: left)
+        try state.pinSplit(id)
+        XCTAssertEqual(state.currentWorkspace.tabs.count, 0)
+        XCTAssertEqual(state.currentWorkspace.pins.first(where: { $0.id == left })?.savedURL, saved)
+        XCTAssertEqual(state.currentWorkspace.pins.first(where: { $0.id == right })?.savedURL, navigated)
+        XCTAssertTrue(try XCTUnwrap(state.currentSplit).isPinned)
+        try state.closeEntry(right)
+        XCTAssertNil(state.currentSplit)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, left)
+        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+        try state.activateSplit(id)
+        try state.dissolveSplit(id)
+        XCTAssertEqual(state.currentWorkspace.pins.count, 2)
+    }
+
+    func testTemporaryCloseAndTransferRemoveSplitWithoutLosingSurvivor() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: saved, title: "Left")
+        let right = try state.addTab(url: navigated, title: "Right")
+        _ = try state.createSplit(with: left)
+        try state.closeEntry(right)
+        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, left)
+        let replacement = try state.addTab(url: navigated, title: "Replacement")
+        _ = try state.createSplit(with: left)
+        let destination = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.moveEntry(replacement, toWorkspace: destination)
+        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, left)
+        XCTAssertEqual(state.workspaces.first(where: { $0.id == destination })?.tabs.first?.id, replacement)
+    }
+}
+
+extension BrowserStateTests {
+    func testUnpinnedPairIsDiscardedWhenLeavingAndSavedPairCanRestore() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: saved, title: "Left")
+        let right = try state.addTab(url: saved, title: "Right")
+        _ = try state.createSplit(with: left)
+        try state.deactivateSplit()
+        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        XCTAssertTrue(state.canCreateSplit(with: left))
+        _ = try state.createSplit(with: left)
+        _ = try state.addTab(url: saved, title: "Unrelated")
+        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        try state.selectEntry(right)
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        try state.deactivateSplit()
+        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+        try state.activateSplit(pair)
+        try state.updateSplitRatio(pair, ratio: 0.05)
+        XCTAssertEqual(state.currentSplit?.dividerRatio, 0.05)
+    }
+}
+
+extension BrowserStateTests {
+    func testActivatingSavedPairDiscardsPreviousTransientPair() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: saved, title: "One")
+        let second = try state.addTab(url: saved, title: "Two")
+        let savedPair = try state.createSplit(with: first)
+        try state.pinSplit(savedPair)
+        let third = try state.addTab(url: saved, title: "Three")
+        _ = try state.addTab(url: saved, title: "Four")
+        let transient = try state.createSplit(with: third)
+        try state.activateSplit(savedPair, focusedEntryID: second)
+        XCTAssertEqual(state.currentSplit?.id, savedPair)
+        XCTAssertFalse(state.currentWorkspace.splits.contains { $0.id == transient })
+        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+    }
+}

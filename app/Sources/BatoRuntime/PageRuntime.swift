@@ -24,6 +24,8 @@ public enum PageEvent: Sendable {
     case unloaded(LivePage)
     case selected(LivePage)
     case selectionCleared
+    case splitRatioChanged(left: LivePage, right: LivePage, ratio: Double)
+    case splitSeparated(left: LivePage, right: LivePage)
 }
 
 /// All calls and events use the main actor. Acceptance of create means the adapter
@@ -32,11 +34,20 @@ public enum PageEvent: Sendable {
 @MainActor
 public protocol PageEngine: AnyObject {
     var supportedProfileIDs: Set<UUID> { get }
+    var supportsSplits: Bool { get }
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool
+    func separateSplit() -> Bool
     func create(_ page: LivePage, url: URL) -> Bool
     /// nil hides any previously visible page. A token whose creation is pending
     /// shows blank/loading content until ready, never a previously selected page.
     func select(_ page: LivePage?)
     func requestClose(_ page: LivePage)
+}
+
+public extension PageEngine {
+    var supportsSplits: Bool { false }
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
+    func separateSplit() -> Bool { true }
 }
 
 public enum PageRuntimeError: Error, Equatable {
@@ -56,6 +67,7 @@ public final class PageRuntime {
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
     public var onStateChange: ((BrowserState) -> Void)?
+    public var supportsSplits: Bool { engine.supportsSplits }
     private let engine: any PageEngine
     private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
     private let commit: (BrowserState) throws -> Void
@@ -163,6 +175,55 @@ public final class PageRuntime {
         return change(reconcileSelection: false) { try $0.movePin(id, toFolder: folderID) }
     }
 
+    @discardableResult
+    public func createSplit(with id: UUID) -> Bool {
+        guard supportsSplits, state.canCreateSplit(with: id),
+              !pendingClose.contains(where: { $0.entryID == id || $0.entryID == state.currentWorkspace.activeEntryID }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change { _ = try $0.createSplit(with: id) }
+    }
+
+    @discardableResult
+    public func activateSplit(_ id: UUID, focusedEntryID: UUID? = nil) -> Bool {
+        guard supportsSplits, let pair = state.currentWorkspace.splits.first(where: { $0.id == id }),
+              !pendingClose.contains(where: { pair.contains($0.entryID) }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change { try $0.activateSplit(id, focusedEntryID: focusedEntryID) }
+    }
+
+    @discardableResult
+    public func deactivateSplit() -> Bool {
+        change { try $0.deactivateSplit() }
+    }
+
+    @discardableResult
+    public func dissolveSplit(_ id: UUID) -> Bool {
+        change { try $0.dissolveSplit(id) }
+    }
+
+    @discardableResult
+    public func pinSplit(_ id: UUID) -> Bool {
+        guard let pair = state.currentWorkspace.splits.first(where: { $0.id == id }),
+              !pendingClose.contains(where: { pair.contains($0.entryID) }),
+              ![pair.leftEntryID, pair.rightEntryID].contains(where: { id in
+                  guard let page = livePages[id] else { return false }
+                  return pagesWithUncommittedNavigation[page] != nil
+              }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.pinSplit(id) }
+    }
+
+    @discardableResult
+    public func updateSplitRatio(_ id: UUID, ratio: Double) -> Bool {
+        change { try $0.updateSplitRatio(id, ratio: ratio) }
+    }
+
     /// Reorders organization without changing page visibility or close semantics.
     @discardableResult
     public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
@@ -176,7 +237,7 @@ public final class PageRuntime {
             lastError = .invalidCommand
             return false
         }
-        let movesSelection = state.currentWorkspace.activeEntryID == id
+        let movesSelection = state.currentWorkspace.activeEntryID == id || state.currentSplit?.contains(id) == true
         return change(reconcileSelection: movesSelection) {
             try $0.moveEntry(id, toWorkspace: destinationID)
         }
@@ -200,7 +261,7 @@ public final class PageRuntime {
             lastError = .invalidCommand
             return false
         }
-        return change(reconcileSelection: false) { try $0.makeTemporary(id) }
+        return change(reconcileSelection: state.currentSplit?.contains(id) == true) { try $0.makeTemporary(id) }
     }
 
     /// Whether a saved page's latest destination is safely represented by committed
@@ -240,10 +301,24 @@ public final class PageRuntime {
 
     public func receive(_ event: PageEvent) {
         switch event {
+        case let .splitRatioChanged(left, right, ratio):
+            guard livePages[left.entryID] == left, livePages[right.entryID] == right,
+                  let pair = state.currentSplit,
+                  pair.leftEntryID == left.entryID, pair.rightEntryID == right.entryID,
+                  ratio.isFinite, ratio > 0, ratio < 1, abs(pair.dividerRatio - ratio) > 0.0001 else { return }
+            _ = change(reconcileSelection: false) { try $0.updateSplitRatio(pair.id, ratio: ratio) }
+        case let .splitSeparated(left, right):
+            guard livePages[left.entryID] == left, livePages[right.entryID] == right,
+                  let pair = state.currentSplit,
+                  pair.leftEntryID == left.entryID, pair.rightEntryID == right.entryID else { return }
+            _ = change(reconcileSelection: false) { try $0.deactivateSplit() }
         case let .selected(page):
             guard livePages[page.entryID] == page else { return }
             if state.currentWorkspace.activeEntryID == page.entryID { return }
-            let accepted = change { candidate in
+            // Chromium already focused this visible split side. Re-presenting
+            // would restore a persisted divider before its pending change event.
+            let isCurrentSplitSide = state.currentSplit?.contains(page.entryID) == true
+            let accepted = change(reconcileSelection: !isCurrentSplitSide) { candidate in
                 if !candidate.visibleEntries.contains(where: { $0.id == page.entryID }) {
                     guard let owner = candidate.workspaces.first(where: {
                         $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
@@ -259,6 +334,7 @@ public final class PageRuntime {
                 guard let index = candidate.workspaces.firstIndex(where: { $0.id == candidate.activeWorkspaceID }) else {
                     throw PageRuntimeError.invalidCommand
                 }
+                try candidate.deactivateSplit()
                 candidate.workspaces[index].activeEntryID = nil
             }
             if !accepted { engine.select(selectedLivePage) }
@@ -273,7 +349,8 @@ public final class PageRuntime {
             livePages.removeValue(forKey: page.entryID)
             pendingClose.remove(page)
             pagesWithUncommittedNavigation.removeValue(forKey: page)
-            lastError = .creationRejected
+            leaveFailedSplit(page)
+            if lastError != .saveFailed { lastError = .creationRejected }
             engine.select(selectedLivePage)
         case let .navigation(page, url, title):
             guard livePages[page.entryID] == page else { return }
@@ -329,6 +406,10 @@ public final class PageRuntime {
         do {
             try mutate(&candidate)
             try candidate.validate()
+            guard candidate.currentSplit == nil || supportsSplits else {
+                lastError = .invalidCommand
+                return false
+            }
             guard engine.supportedProfileIDs.contains(candidate.currentWorkspace.profileID) else {
                 lastError = .unsupportedProfile
                 return false
@@ -354,12 +435,54 @@ public final class PageRuntime {
         }
     }
 
+    private func leaveFailedSplit(_ page: LivePage) {
+        guard let pair = state.currentSplit, pair.contains(page.entryID) else { return }
+        let survivor = pair.leftEntryID == page.entryID ? pair.rightEntryID : pair.leftEntryID
+        _ = change(reconcileSelection: false) { candidate in
+            try candidate.deactivateSplit()
+            try candidate.selectEntry(survivor)
+        }
+        _ = engine.separateSplit()
+    }
+
+    private func ensurePage(_ id: UUID, profileID: UUID) -> LivePage? {
+        if let page = livePages[id] { return page }
+        guard let entry = state.visibleEntries.first(where: { $0.id == id }) else { return nil }
+        let page = LivePage(entryID: id, profileID: profileID)
+        livePages[id] = page
+        guard engine.create(page, url: entry.savedURL ?? entry.lastURL), livePages[id] == page else {
+            if livePages[id] == page { livePages.removeValue(forKey: id) }
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
+            leaveFailedSplit(page)
+            engine.select(selectedLivePage)
+            lastError = .creationRejected
+            return nil
+        }
+        return page
+    }
+
     private func showSelection() -> Bool {
         let workspace = state.currentWorkspace
         guard engine.supportedProfileIDs.contains(workspace.profileID) else {
             lastError = .unsupportedProfile
             return false
         }
+        if let pair = state.currentSplit {
+            guard supportsSplits else { lastError = .invalidCommand; return false }
+            guard let left = ensurePage(pair.leftEntryID, profileID: workspace.profileID),
+                  state.currentSplit?.id == pair.id,
+                  let right = ensurePage(pair.rightEntryID, profileID: workspace.profileID),
+                  let current = state.currentSplit, current.id == pair.id,
+                  livePages[left.entryID] == left, livePages[right.entryID] == right,
+                  let focusedID = state.currentWorkspace.activeEntryID,
+                  let focused = livePages[focusedID], focused == left || focused == right,
+                  engine.presentSplit(left: left, right: right, focused: focused, ratio: current.dividerRatio) else {
+                lastError = .creationRejected
+                return false
+            }
+            return true
+        }
+        guard engine.separateSplit() else { lastError = .creationRejected; return false }
         guard let id = workspace.activeEntryID,
               let entry = state.visibleEntries.first(where: { $0.id == id }) else {
             engine.select(nil)

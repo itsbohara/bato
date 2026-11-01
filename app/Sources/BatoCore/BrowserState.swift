@@ -75,6 +75,26 @@ public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Stable organization references; Chromium split identifiers are never persisted.
+public struct PageSplit: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var leftEntryID: UUID
+    public var rightEntryID: UUID
+    public var dividerRatio: Double
+    public var isPinned: Bool
+
+    public init(id: UUID = UUID(), leftEntryID: UUID, rightEntryID: UUID,
+                dividerRatio: Double = 0.5, isPinned: Bool = false) {
+        self.id = id
+        self.leftEntryID = leftEntryID
+        self.rightEntryID = rightEntryID
+        self.dividerRatio = dividerRatio
+        self.isPinned = isPinned
+    }
+
+    public func contains(_ id: UUID) -> Bool { leftEntryID == id || rightEntryID == id }
+}
+
 public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var profileID: UUID
@@ -84,8 +104,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var folders: [PageFolder]
     public var tabs: [PageEntry]
     public var activeEntryID: UUID?
+    public var splits: [PageSplit]
+    public var activeSplitID: UUID?
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil) {
         self.id = id
         self.profileID = profileID
         self.name = name
@@ -94,6 +116,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.folders = folders
         self.tabs = tabs
         self.activeEntryID = activeEntryID
+        self.splits = splits
+        self.activeSplitID = activeSplitID
     }
 
     public func folder(containingPin id: UUID) -> PageFolder? {
@@ -101,7 +125,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, profileID, name, color, pins, folders, tabs, activeEntryID
+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -113,6 +137,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         pins = try values.decode([PageEntry].self, forKey: .pins)
         folders = try values.decodeIfPresent([PageFolder].self, forKey: .folders) ?? []
         tabs = try values.decode([PageEntry].self, forKey: .tabs)
+        splits = try values.decodeIfPresent([PageSplit].self, forKey: .splits) ?? []
+        activeSplitID = try values.decodeIfPresent(UUID.self, forKey: .activeSplitID)
         activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
     }
 
@@ -126,6 +152,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         // Older documents have no folder field. Empty metadata keeps their shape.
         if !folders.isEmpty { try values.encode(folders, forKey: .folders) }
         try values.encode(tabs, forKey: .tabs)
+        if !splits.isEmpty { try values.encode(splits, forKey: .splits) }
+        try values.encodeIfPresent(activeSplitID, forKey: .activeSplitID)
         try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
     }
 }
@@ -144,6 +172,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
     case invalidSelection
     case missingFolder
     case invalidFolder
+    case invalidSplit
 
     public var errorDescription: String? {
         switch self {
@@ -159,6 +188,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
         case .missingEntry: "The selected page could not be found."
         case .invalidSelection: "The selected page does not belong to this workspace or its Profile."
         case .missingFolder: "The selected folder could not be found."
+        case .invalidSplit: "Choose two distinct workspace pages and a divider ratio greater than zero and less than one."
         case .invalidFolder: "Folders need a name of 1–80 characters and unique pins from their workspace."
         }
     }
@@ -190,6 +220,21 @@ public struct BrowserState: Codable, Equatable, Sendable {
             preconditionFailure("Validate BrowserState before accessing its current workspace")
         }
         return workspace
+    }
+
+    public var currentSplit: PageSplit? {
+        currentWorkspace.splits.first { $0.id == currentWorkspace.activeSplitID }
+    }
+
+    public func split(containingEntry id: UUID) -> PageSplit? {
+        currentWorkspace.splits.first { $0.contains(id) }
+    }
+
+    public func canCreateSplit(with id: UUID) -> Bool {
+        guard let focused = currentWorkspace.activeEntryID, focused != id else { return false }
+        let ids = Set((currentWorkspace.pins + currentWorkspace.tabs).map(\.id))
+        return ids.contains(focused) && ids.contains(id)
+            && split(containingEntry: focused) == nil && split(containingEntry: id) == nil
     }
 
     public var visibleEntries: [PageEntry] {
@@ -263,6 +308,26 @@ public struct BrowserState: Codable, Equatable, Sendable {
                     }
                 }
             }
+            let localEntries = workspace.pins + workspace.tabs
+            let localIDs = Set(localEntries.map(\.id))
+            var splitMembers = Set<UUID>()
+            for split in workspace.splits {
+                try claim(split.id)
+                guard split.leftEntryID != split.rightEntryID,
+                      localIDs.contains(split.leftEntryID), localIDs.contains(split.rightEntryID),
+                      splitMembers.insert(split.leftEntryID).inserted,
+                      splitMembers.insert(split.rightEntryID).inserted,
+                      split.dividerRatio.isFinite, split.dividerRatio > 0, split.dividerRatio < 1,
+                      !split.isPinned || localEntries.filter({ split.contains($0.id) }).allSatisfy({ $0.kind == .pinned }) else {
+                    throw BrowserStateError.invalidSplit
+                }
+            }
+            if let activeSplit = workspace.activeSplitID {
+                guard let split = workspace.splits.first(where: { $0.id == activeSplit }),
+                      let focused = workspace.activeEntryID, split.contains(focused) else {
+                    throw BrowserStateError.invalidSplit
+                }
+            }
             if let activeID = workspace.activeEntryID {
                 let favorites = profiles.first(where: { $0.id == workspace.profileID })!.favorites
                 guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == activeID }) else {
@@ -319,7 +384,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 throw BrowserStateError.missingEntry
             }
             draft.activeWorkspaceID = workspaceID
-            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
+            draft.selectEntryInPlace(id)
         }
     }
 
@@ -437,7 +502,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
             let entry = PageEntry(title: title, lastURL: url, kind: .temporary)
             let workspace = draft.currentWorkspaceIndex
             draft.workspaces[workspace].tabs.append(entry)
-            draft.workspaces[workspace].activeEntryID = entry.id
+            draft.selectEntryInPlace(entry.id)
             return entry.id
         }
     }
@@ -445,7 +510,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
     public mutating func selectEntry(_ id: UUID) throws {
         try transact { draft in
             guard draft.visibleEntries.contains(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
-            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = id
+            draft.selectEntryInPlace(id)
         }
     }
 
@@ -518,6 +583,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
             guard let entry = draft.visibleEntries.first(where: { $0.id == id }) else {
                 throw BrowserStateError.missingEntry
             }
+            draft.removeSplits(containing: id)
             switch entry.kind {
             case .favorite:
                 throw BrowserStateError.invalidEntryOwnership
@@ -600,6 +666,13 @@ public struct BrowserState: Codable, Equatable, Sendable {
             if entry.kind == .temporary {
                 draft.removeEntry(id)
             } else {
+                if let pair = draft.currentSplit, pair.contains(id) {
+                    draft.workspaces[draft.currentWorkspaceIndex].activeSplitID = nil
+                    if !pair.isPinned {
+                        draft.workspaces[draft.currentWorkspaceIndex].splits.removeAll { $0.id == pair.id }
+                    }
+                    draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = pair.leftEntryID == id ? pair.rightEntryID : pair.leftEntryID
+                }
                 draft.updateEntry(id) { $0.lastURL = $0.savedURL! }
                 draft.clearSelections(id)
             }
@@ -615,6 +688,103 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 entry.lastURL = url
                 entry.title = title
             }
+        }
+    }
+
+    @discardableResult
+    public mutating func createSplit(with id: UUID) throws -> UUID {
+        try transact { draft in
+            guard draft.canCreateSplit(with: id), let focused = draft.currentWorkspace.activeEntryID else {
+                throw BrowserStateError.invalidSplit
+            }
+            let split = PageSplit(leftEntryID: focused, rightEntryID: id)
+            let index = draft.currentWorkspaceIndex
+            draft.workspaces[index].splits.append(split)
+            draft.workspaces[index].activeSplitID = split.id
+            return split.id
+        }
+    }
+
+    public mutating func activateSplit(_ id: UUID, focusedEntryID: UUID? = nil) throws {
+        try transact { draft in
+            guard let split = draft.currentWorkspace.splits.first(where: { $0.id == id }) else {
+                throw BrowserStateError.invalidSplit
+            }
+            let focused = focusedEntryID ?? split.leftEntryID
+            guard split.contains(focused) else { throw BrowserStateError.invalidSplit }
+            if let previous = draft.currentSplit, previous.id != id, !previous.isPinned {
+                draft.workspaces[draft.currentWorkspaceIndex].splits.removeAll { $0.id == previous.id }
+            }
+            draft.workspaces[draft.currentWorkspaceIndex].activeSplitID = id
+            draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = focused
+        }
+    }
+
+    public mutating func deactivateSplit() throws {
+        try transact { draft in
+            let index = draft.currentWorkspaceIndex
+            if let pair = draft.currentSplit, !pair.isPinned {
+                draft.workspaces[index].splits.removeAll { $0.id == pair.id }
+            }
+            draft.workspaces[index].activeSplitID = nil
+        }
+    }
+
+    public mutating func dissolveSplit(_ id: UUID) throws {
+        try transact { draft in
+            guard draft.currentWorkspace.splits.contains(where: { $0.id == id }) else { throw BrowserStateError.invalidSplit }
+            let index = draft.currentWorkspaceIndex
+            draft.workspaces[index].splits.removeAll { $0.id == id }
+            if draft.workspaces[index].activeSplitID == id { draft.workspaces[index].activeSplitID = nil }
+        }
+    }
+
+    public mutating func pinSplit(_ id: UUID) throws {
+        try transact { draft in
+            guard let splitIndex = draft.currentWorkspace.splits.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.invalidSplit
+            }
+            let index = draft.currentWorkspaceIndex
+            let pair = draft.workspaces[index].splits[splitIndex]
+            for entryID in [pair.leftEntryID, pair.rightEntryID] {
+                if let tab = draft.workspaces[index].tabs.firstIndex(where: { $0.id == entryID }) {
+                    var entry = draft.workspaces[index].tabs.remove(at: tab)
+                    entry.kind = .pinned
+                    entry.savedURL = entry.lastURL
+                    draft.workspaces[index].pins.append(entry)
+                }
+            }
+            draft.workspaces[index].splits[splitIndex].isPinned = true
+        }
+    }
+
+    public mutating func updateSplitRatio(_ id: UUID, ratio: Double) throws {
+        try transact { draft in
+            guard let index = draft.currentWorkspace.splits.firstIndex(where: { $0.id == id }),
+                  ratio.isFinite, ratio > 0, ratio < 1 else { throw BrowserStateError.invalidSplit }
+            draft.workspaces[draft.currentWorkspaceIndex].splits[index].dividerRatio = ratio
+        }
+    }
+
+    private mutating func selectEntryInPlace(_ id: UUID) {
+        let index = currentWorkspaceIndex
+        if currentSplit?.contains(id) != true {
+            if let pair = currentSplit, !pair.isPinned {
+                workspaces[index].splits.removeAll { $0.id == pair.id }
+            }
+            workspaces[index].activeSplitID = nil
+        }
+        workspaces[index].activeEntryID = id
+    }
+
+    /// Removing a side leaves the other page selected when this pair was displayed.
+    private mutating func removeSplits(containing id: UUID) {
+        for index in workspaces.indices {
+            if let pair = workspaces[index].splits.first(where: { $0.id == workspaces[index].activeSplitID && $0.contains(id) }) {
+                workspaces[index].activeSplitID = nil
+                workspaces[index].activeEntryID = pair.leftEntryID == id ? pair.rightEntryID : pair.leftEntryID
+            }
+            workspaces[index].splits.removeAll { $0.contains(id) }
         }
     }
 
@@ -653,6 +823,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     private mutating func removeEntry(_ id: UUID) {
+        removeSplits(containing: id)
         for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }
         for index in workspaces.indices {
             workspaces[index].pins.removeAll { $0.id == id }

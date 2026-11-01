@@ -10,6 +10,16 @@ private final class FakeEngine: PageEngine {
     var selections: [LivePage?] = []
     var visible: LivePage?
     var closes: [LivePage] = []
+    var supportsSplits = false
+    var presentedSplits: [(LivePage, LivePage, LivePage, Double)] = []
+    var separations = 0
+    var acceptsSplit = true
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
+        presentedSplits.append((left, right, focused, ratio))
+        visible = focused
+        return acceptsSplit
+    }
+    func separateSplit() -> Bool { separations += 1; return true }
     var acceptsCreate = true
     var onCreate: ((LivePage) -> Void)?
     init(_ profileID: UUID) { supportedProfileIDs = [profileID] }
@@ -1356,4 +1366,200 @@ struct PageRuntimeTests {
         #expect(engine.visible == firstPage)
     }
 
+}
+
+extension PageRuntimeTests {
+    @Test func splitCapabilityAndFailedSaveRejectBeforeEngineEffects() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        _ = try state.addTab(url: next, title: "Right")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in commits += 1 })
+        #expect(!runtime.createSplit(with: left))
+        #expect(commits == 0)
+        #expect(engine.created.isEmpty)
+        engine.supportsSplits = true
+        let failing = try PageRuntime(state: state, engine: engine, commit: { _ in throw Failure.disk })
+        #expect(!failing.createSplit(with: left))
+        #expect(failing.lastError == .saveFailed)
+        #expect(failing.state == state)
+        #expect(engine.created.isEmpty)
+        #expect(engine.presentedSplits.isEmpty)
+    }
+
+    @Test func splitLoadsBothSavedDestinationsAndReusesGenerations() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        try state.pinEntry(left)
+        try state.recordNavigation(entryID: left, url: next, title: "Moved")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        #expect(engine.created.count == 2)
+        #expect(engine.created.first(where: { $0.0.entryID == left })?.1 == start)
+        let generations = runtime.livePages
+        #expect(runtime.activateSplit(pair, focusedEntryID: left))
+        #expect(runtime.livePages == generations)
+        #expect(engine.created.count == 2)
+        #expect(engine.presentedSplits.last?.2.entryID == left)
+        #expect(runtime.deactivateSplit())
+        #expect(runtime.state.currentWorkspace.splits.count == 1)
+        #expect(runtime.activateSplit(pair, focusedEntryID: right))
+        #expect(engine.created.count == 2)
+    }
+
+    @Test func splitCloseCancellationAndSavedCloseKeepSurvivingPage() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[right])
+        #expect(runtime.closeEntry(right))
+        #expect(!runtime.activateSplit(pair))
+        runtime.receive(.closeCancelled(page))
+        #expect(runtime.state.currentSplit?.id == pair)
+        #expect(runtime.closeEntry(right))
+        runtime.receive(.closed(page))
+        #expect(runtime.state.currentSplit == nil)
+        #expect(runtime.state.currentWorkspace.splits.count == 1)
+        #expect(runtime.state.currentWorkspace.activeEntryID == left)
+        #expect(engine.visible?.entryID == left)
+        #expect(runtime.livePages[right] == nil)
+        #expect(engine.created.count == 2)
+    }
+
+    @Test func splitObservedRatioAndSeparationRequireExactGenerations() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        var commits = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in commits += 1 })
+        #expect(runtime.start())
+        let descriptor = try #require(runtime.state.currentSplit)
+        let l = try #require(runtime.livePages[descriptor.leftEntryID])
+        let r = try #require(runtime.livePages[descriptor.rightEntryID])
+        let stale = LivePage(entryID: l.entryID, profileID: l.profileID)
+        runtime.receive(.splitRatioChanged(left: stale, right: r, ratio: 0.7))
+        #expect(commits == 0)
+        runtime.receive(.splitRatioChanged(left: l, right: r, ratio: 0.65))
+        #expect(commits == 1)
+        #expect(runtime.state.currentSplit?.dividerRatio == 0.65)
+        #expect(engine.presentedSplits.count == 1)
+        runtime.receive(.splitSeparated(left: stale, right: r))
+        #expect(runtime.state.currentSplit?.id == pair)
+        runtime.receive(.splitSeparated(left: l, right: r))
+        #expect(runtime.state.currentSplit == nil)
+        #expect(runtime.state.currentWorkspace.splits.count == 1)
+        #expect(engine.created.count == 2)
+    }
+}
+
+extension PageRuntimeTests {
+    @Test func splitCreationFailureLeavesSurvivorAndShutdownPreservesSavedPair() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        let original = runtime.state
+        let closing = try #require(runtime.livePages[right])
+        runtime.receive(.unloaded(closing))
+        #expect(runtime.state == original) // Whole-window shutdown must restore the pair next run.
+        #expect(engine.created.count == 2)
+        #expect(runtime.activateSplit(pair))
+        let reopened = try #require(runtime.livePages[right])
+        #expect(reopened != closing)
+        runtime.receive(.creationFailed(closing)) // Stale terminal delivery cannot disturb reopened pair.
+        #expect(runtime.state.currentSplit?.id == pair)
+        runtime.receive(.creationFailed(reopened))
+        #expect(runtime.lastError == .creationRejected)
+        #expect(runtime.state.currentSplit == nil)
+        #expect(runtime.state.currentWorkspace.activeEntryID == left)
+        #expect(engine.visible?.entryID == left)
+        #expect(engine.created.count == 3)
+    }
+
+    @Test func clearedSelectionDiscardsUnpinnedPairWithoutRecreation() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        _ = try state.addTab(url: next, title: "Right")
+        _ = try state.createSplit(with: left)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        runtime.receive(.selectionCleared)
+        #expect(runtime.state.currentWorkspace.activeEntryID == nil)
+        #expect(runtime.state.currentWorkspace.splits.isEmpty)
+        #expect(engine.created.count == 2)
+    }
+}
+
+extension PageRuntimeTests {
+    @Test func splitReentrantCreationCannotPresentUnloadedFirstGeneration() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        _ = try state.addTab(url: next, title: "Second")
+        _ = try state.createSplit(with: first)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        engine.onCreate = { _ in
+            if engine.created.count == 2 { runtime.receive(.unloaded(engine.created[0].0)) }
+        }
+        #expect(!runtime.start())
+        #expect(engine.presentedSplits.isEmpty)
+        #expect(runtime.lastError == .creationRejected)
+        #expect(runtime.livePages.count == 1)
+    }
+}
+
+extension PageRuntimeTests {
+    @Test func nativeSplitSideFocusDoesNotReplayPersistedDivider() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: start, title: "First")
+        _ = try state.addTab(url: next, title: "Second")
+        _ = try state.createSplit(with: first)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        var saved: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { saved.append($0) })
+        #expect(runtime.start())
+        let pair = try #require(runtime.state.currentSplit)
+        let left = try #require(runtime.livePages[pair.leftEntryID])
+        let right = try #require(runtime.livePages[pair.rightEntryID])
+        let presentations = engine.presentedSplits.count
+        let selections = engine.selections
+        let separations = engine.separations
+        // A native drag has changed actual geometry; its ratio callback is still
+        // pending when the user clicks the other visible side.
+        runtime.receive(.selected(right))
+        #expect(runtime.state.currentWorkspace.activeEntryID == right.entryID)
+        #expect(saved.count == 1)
+        #expect(engine.presentedSplits.count == presentations)
+        #expect(engine.selections == selections)
+        #expect(engine.separations == separations)
+        runtime.receive(.splitRatioChanged(left: left, right: right, ratio: 0.7))
+        #expect(runtime.state.currentSplit?.dividerRatio == 0.7)
+        #expect(saved.count == 2)
+        #expect(engine.presentedSplits.count == presentations)
+    }
 }

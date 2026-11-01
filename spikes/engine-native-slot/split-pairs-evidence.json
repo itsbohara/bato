@@ -1,0 +1,55 @@
+{
+  "date": "2026-11-01",
+  "scope": "Bato native split pairs, bounded alpha acceptance",
+  "swift_tests": 116,
+  "test_log": "logs/split-model-focus-tests.log",
+  "engine_images_checked": 527,
+  "engine_exports": 12,
+  "source_overlay_files": 23,
+  "pair_id": "7F746772-7F77-4F65-B0FF-F092CDB1286D",
+  "final_ratio": 0.6,
+  "accepted": [
+    "native two-page split with lazy member creation",
+    "real input in both panes",
+    "pin separate and live reopen",
+    "workspace return",
+    "focused right-pane beforeunload Cancel and Leave",
+    "survivor usability and saved URL reopen",
+    "native width menu resize",
+    "same binary ordered saved pair and ratio reconstruction",
+    "byte-identical corrected Quit/restart organization"
+  ],
+  "runs": [
+    {
+      "name": "v1",
+      "pid": 32029,
+      "exit_code": 0,
+      "issue": "anchor recovery during Quit cleared active layout; retained as failure evidence"
+    },
+    {
+      "name": "v2",
+      "pid": 41996,
+      "exit_code": 0,
+      "quit_preserved_exact_bytes": true
+    },
+    {
+      "name": "v3",
+      "pid": 46782,
+      "exit_code": 0,
+      "restart_passed": true,
+      "before_equals_final_equals_v2_final": true
+    }
+  ],
+  "open": [
+    "pointer dragging produced no observed movement",
+    "slider click plus Right / AX value input did not resize",
+    "Tab traversal remained at native address field, cause not established",
+    "native observed-ratio callback runtime delivery",
+    "fullscreen multiwindow and broad accessibility",
+    "real extension focused-pane acceptance",
+    "previous command-bar renderer anomaly"
+  ],
+  "preview": "/Volumes/Mahesh/personal/bato-build/logs/split-pairs-v3-final.png",
+  "artifacts_root": "/Volumes/Mahesh/personal/bato-build/logs",
+  "running": "fixture server127.0.0.1:18765 only; no owned browser/build/scan"
+}

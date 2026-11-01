@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #include <dlfcn.h>
 #include <cstdio>
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
@@ -28,6 +29,9 @@ extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
     int (*native_focus)(uint64_t), int (*command_id)(int),
     void (*schedule_selection)(uint64_t),
     int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
+extern "C" void BatoSwiftWorkspaceConfigureSplits(
+    int (*present)(uint64_t, int, int, int, double), int (*separate)(uint64_t));
+extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
@@ -42,6 +46,10 @@ using RequestClose = decltype(&bato_native_slot_request_close_v1);
 ActiveBrowserId g_active_browser_id = nullptr;
 NewTab g_new_tab = nullptr;
 RequestClose g_request_close = nullptr;
+using PresentSplit = decltype(&bato_native_slot_present_split_v1);
+using SeparateSplit = decltype(&bato_native_slot_separate_split_v1);
+PresentSplit g_present_split = nullptr;
+SeparateSplit g_separate_split = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
@@ -56,6 +64,10 @@ struct WorkspaceSlot {
   CefRefPtr<CefRequestContext> context;
   std::map<int, BoundPage> pages;
   std::set<int> pending_close;
+  int split_left = 0;
+  int split_right = 0;
+  uint64_t split_revision = 0;
+  uint64_t split_observation = 0;
 };
 // Main-thread-only process storage. Entries and all CEF refs are explicitly
 // released on detach; a process-lifetime container avoids exit-time CEF calls.
@@ -452,11 +464,79 @@ int CloseWorkspacePage(uint64_t token, int identifier) {
   return accepted ? 1 : 0;
 }
 
+int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, double ratio) {
+  auto* slot = AvailableSlot(token);
+  if (!slot || !g_present_split || left == right ||
+      (focused != left && focused != right) || !std::isfinite(ratio) ||
+      ratio <= 0 || ratio >= 1) return 0;
+  for (int identifier : {left, right}) {
+    auto found = slot->pages.find(identifier);
+    if (found == slot->pages.end() || !found->second.browser->IsValid() ||
+        slot->pending_close.contains(identifier)) return 0;
+  }
+  auto a = slot->pages.at(left).browser, b = slot->pages.at(right).browser;
+  if (!SameWindow(a, b) || !slot->context ||
+      !a->GetHost()->GetRequestContext()->IsSame(slot->context) ||
+      !b->GetHost()->GetRequestContext()->IsSame(slot->context)) return 0;
+  if (g_present_split(token, left, right, focused, ratio) != 1) return 0;
+  auto current = WorkspaceSlots().find(token);
+  if (current == WorkspaceSlots().end() || !current->second.pages.contains(left) ||
+      !current->second.pages.contains(right) ||
+      !current->second.pages.at(left).browser->IsSame(a) ||
+      !current->second.pages.at(right).browser->IsSame(b)) return 0;
+  ++current->second.split_revision;
+  current->second.split_left = left;
+  current->second.split_right = right;
+  return 1;
+}
+int SeparateWorkspaceSplit(uint64_t token) {
+  auto* slot = AvailableSlot(token);
+  if (!slot || !g_separate_split || g_separate_split(token) != 1) return 0;
+  auto current = WorkspaceSlots().find(token);
+  if (current == WorkspaceSlots().end()) return 0;
+  ++current->second.split_revision;
+  current->second.split_left = current->second.split_right = 0;
+  return 1;
+}
+void SplitChanged(void*, uint64_t token, int left, int right, double ratio) {
+  auto slot = WorkspaceSlots().find(token);
+  if (slot == WorkspaceSlots().end()) return;
+  const int a = slot->second.split_left, b = slot->second.split_right;
+  if (!a || !b || !slot->second.pages.contains(a) || !slot->second.pages.contains(b)) return;
+  const bool removed = left == 0 && right == 0;
+  if (!removed && (left != a || right != b || !std::isfinite(ratio) || ratio <= 0 || ratio >= 1)) return;
+  const uint64_t revision = slot->second.split_revision;
+  const uint64_t observation = ++slot->second.split_observation;
+  auto first = slot->second.pages.at(a).browser, second = slot->second.pages.at(b).browser;
+  // Chromium may omit an unchanged final ratio event; debounce all observations.
+  CefPostDelayedTask(TID_UI, base::BindOnce(
+      [](uint64_t token, int a, int b, double ratio, bool removed, uint64_t revision, uint64_t observation,
+         CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
+        auto current = WorkspaceSlots().find(token);
+        if (current == WorkspaceSlots().end() || current->second.split_revision != revision ||
+            current->second.split_observation != observation ||
+            current->second.split_left != a || current->second.split_right != b ||
+            !current->second.pages.contains(a) || !current->second.pages.contains(b) ||
+            !current->second.pages.at(a).browser->IsSame(first) ||
+            !current->second.pages.at(b).browser->IsSame(second)) return;
+        if (removed) {
+          current->second.split_left = current->second.split_right = 0;
+          ++current->second.split_revision;
+        }
+        BatoSwiftWorkspaceSplitChanged(token, a, b, ratio, removed ? 1 : 0);
+      }, token, a, b, ratio, removed, revision, observation, first, second), removed ? 0 : 200);
+}
+
 void PostLifecycleEvent(uint64_t token, int identifier, int kind) {
   // A lifecycle callback may run inside TabStripModel mutation. Swift can
   // select a tab, so deliver only after the engine's callback stack unwinds.
   CefPostTask(TID_UI, base::BindOnce(
       [](uint64_t token, int identifier, int kind) {
+        // Anchor loss/readiness may otherwise restart selection during Quit.
+        // Consult the authoritative owned-slot gate before asking Swift to
+        // recover; FindSlot rejects shutdown, close-all and blocked topology.
+        if ((kind == 5 || kind == 7) &&
+            (!g_active_browser_id || g_active_browser_id(token) <= 0)) return;
         if (WorkspaceSlots().contains(token))
           BatoSwiftWorkspacePageEvent(token, identifier, kind, "", "");
       }, token, identifier, kind));
@@ -674,6 +754,10 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
   auto sidebar_geometry = reinterpret_cast<decltype(&bato_native_slot_set_sidebar_v1)>(
       dlsym(loaded, "bato_native_slot_set_sidebar_v1"));
+  auto present_split = reinterpret_cast<PresentSplit>(dlsym(loaded, "bato_native_slot_present_split_v1"));
+  auto separate_split = reinterpret_cast<SeparateSplit>(dlsym(loaded, "bato_native_slot_separate_split_v1"));
+  auto register_splits = reinterpret_cast<decltype(&bato_native_slot_register_split_callbacks_v1)>(
+      dlsym(loaded, "bato_native_slot_register_split_callbacks_v1"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -694,6 +778,15 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     page_callbacks.close_cancelled = CloseCancelled;
     page_callbacks.active_changed = ActiveChanged;
     if (register_pages(&page_callbacks) != 1) return false;
+    if (!present_split || !separate_split || !register_splits) return false;
+    BatoSplitCallbacksV1 split_callbacks = {};
+    split_callbacks.size = sizeof(split_callbacks);
+    split_callbacks.version = 1;
+    split_callbacks.changed = SplitChanged;
+    if (register_splits(&split_callbacks) != 1) return false;
+    g_present_split = present_split;
+    g_separate_split = separate_split;
+    BatoSwiftWorkspaceConfigureSplits(PresentWorkspaceSplit, SeparateWorkspaceSplit);
     g_new_tab = new_tab;
     g_request_close = request_close;
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
