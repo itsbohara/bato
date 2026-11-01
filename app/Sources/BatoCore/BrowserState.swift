@@ -4,6 +4,10 @@ public enum WorkspaceMoveDirection: Sendable {
     case up, down
 }
 
+public enum FolderMoveDirection: Equatable, Sendable {
+    case up, down
+}
+
 public enum EntryMoveDirection: Sendable {
     case up, down
 }
@@ -56,23 +60,73 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
+public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var isCollapsed: Bool
+    public var pinIDs: [UUID]
+
+    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = []) {
+        self.id = id
+        self.name = name
+        self.isCollapsed = isCollapsed
+        self.pinIDs = pinIDs
+    }
+}
+
 public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var profileID: UUID
     public var name: String
     public var color: String
     public var pins: [PageEntry]
+    public var folders: [PageFolder]
     public var tabs: [PageEntry]
     public var activeEntryID: UUID?
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
         self.id = id
         self.profileID = profileID
         self.name = name
         self.color = color
         self.pins = pins
+        self.folders = folders
         self.tabs = tabs
         self.activeEntryID = activeEntryID
+    }
+
+    public func folder(containingPin id: UUID) -> PageFolder? {
+        folders.first { $0.pinIDs.contains(id) }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, profileID, name, color, pins, folders, tabs, activeEntryID
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        profileID = try values.decode(UUID.self, forKey: .profileID)
+        name = try values.decode(String.self, forKey: .name)
+        color = try values.decode(String.self, forKey: .color)
+        pins = try values.decode([PageEntry].self, forKey: .pins)
+        folders = try values.decodeIfPresent([PageFolder].self, forKey: .folders) ?? []
+        tabs = try values.decode([PageEntry].self, forKey: .tabs)
+        activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(profileID, forKey: .profileID)
+        try values.encode(name, forKey: .name)
+        try values.encode(color, forKey: .color)
+        try values.encode(pins, forKey: .pins)
+        // Older documents have no folder field. Empty metadata keeps their shape.
+        if !folders.isEmpty { try values.encode(folders, forKey: .folders) }
+        try values.encode(tabs, forKey: .tabs)
+        try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
     }
 }
 
@@ -88,6 +142,8 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
     case invalidSavedURL
     case missingEntry
     case invalidSelection
+    case missingFolder
+    case invalidFolder
 
     public var errorDescription: String? {
         switch self {
@@ -102,6 +158,8 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
         case .invalidSavedURL: "The saved page destination is invalid."
         case .missingEntry: "The selected page could not be found."
         case .invalidSelection: "The selected page does not belong to this workspace or its Profile."
+        case .missingFolder: "The selected folder could not be found."
+        case .invalidFolder: "Folders need a name of 1–80 characters and unique pins from their workspace."
         }
     }
 }
@@ -194,6 +252,17 @@ public struct BrowserState: Codable, Equatable, Sendable {
             }
             for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
             for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
+            let pinIDs = Set(workspace.pins.map(\.id))
+            var filedPins = Set<UUID>()
+            for folder in workspace.folders {
+                try claim(folder.id)
+                try Self.validateFolderName(folder.name)
+                for id in folder.pinIDs {
+                    guard pinIDs.contains(id), filedPins.insert(id).inserted else {
+                        throw BrowserStateError.invalidFolder
+                    }
+                }
+            }
             if let activeID = workspace.activeEntryID {
                 let favorites = profiles.first(where: { $0.id == workspace.profileID })!.favorites
                 guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == activeID }) else {
@@ -294,6 +363,74 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func createFolder(name: String) throws -> UUID {
+        try transact { draft in
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateFolderName(name)
+            let folder = PageFolder(name: name)
+            draft.workspaces[draft.currentWorkspaceIndex].folders.append(folder)
+            return folder.id
+        }
+    }
+
+    public mutating func renameFolder(_ id: UUID, name: String) throws {
+        try transact { draft in
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateFolderName(name)
+            let index = try draft.currentFolderIndex(id)
+            draft.workspaces[draft.currentWorkspaceIndex].folders[index].name = name
+        }
+    }
+
+    public mutating func setFolderCollapsed(_ id: UUID, collapsed: Bool) throws {
+        try transact { draft in
+            let index = try draft.currentFolderIndex(id)
+            draft.workspaces[draft.currentWorkspaceIndex].folders[index].isCollapsed = collapsed
+        }
+    }
+
+    public func canMoveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
+        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else { return false }
+        switch direction {
+        case .up: return index > 0
+        case .down: return index + 1 < currentWorkspace.folders.count
+        }
+    }
+
+    public mutating func moveFolder(_ id: UUID, direction: FolderMoveDirection) throws {
+        try transact { draft in
+            let index = try draft.currentFolderIndex(id)
+            guard draft.canMoveFolder(id, direction: direction) else { throw BrowserStateError.invalidSelection }
+            let next = direction == .up ? index - 1 : index + 1
+            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, next)
+        }
+    }
+
+    /// Removes only the container. Pins retain their full value, selection and canonical order.
+    public mutating func dissolveFolder(_ id: UUID) throws {
+        try transact { draft in
+            let index = try draft.currentFolderIndex(id)
+            draft.workspaces[draft.currentWorkspaceIndex].folders.remove(at: index)
+        }
+    }
+
+    /// Appends membership to the destination folder, or restores the pin to the unfiled group.
+    public mutating func movePin(_ id: UUID, toFolder folderID: UUID?) throws {
+        try transact { draft in
+            let workspace = draft.currentWorkspaceIndex
+            guard draft.workspaces[workspace].pins.contains(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            let destination = try folderID.map { try draft.currentFolderIndex($0) }
+            if draft.currentWorkspace.folder(containingPin: id)?.id == folderID { return }
+            for index in draft.workspaces[workspace].folders.indices {
+                draft.workspaces[workspace].folders[index].pinIDs.removeAll { $0 == id }
+            }
+            if let destination { draft.workspaces[workspace].folders[destination].pinIDs.append(id) }
+        }
+    }
+
+    @discardableResult
     public mutating func addTab(url: URL, title: String) throws -> UUID {
         try transact { draft in
             try Self.validateURL(url)
@@ -344,7 +481,14 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 let profile = draft.currentProfileIndex
                 draft.profiles[profile].favorites.swapAt(index, destination)
             case .pinned:
-                draft.workspaces[workspace].pins.swapAt(index, destination)
+                if let folder = draft.currentWorkspace.folder(containingPin: id),
+                   let folderIndex = draft.workspaces[workspace].folders.firstIndex(where: { $0.id == folder.id }) {
+                    draft.workspaces[workspace].folders[folderIndex].pinIDs.swapAt(index, destination)
+                } else {
+                    let first = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == section[index].id })!
+                    let second = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == section[destination].id })!
+                    draft.workspaces[workspace].pins.swapAt(first, second)
+                }
             case .temporary:
                 draft.workspaces[workspace].tabs.swapAt(index, destination)
             }
@@ -379,6 +523,9 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 throw BrowserStateError.invalidEntryOwnership
             case .pinned:
                 draft.workspaces[source].pins.removeAll { $0.id == id }
+                for folder in draft.workspaces[source].folders.indices {
+                    draft.workspaces[source].folders[folder].pinIDs.removeAll { $0 == id }
+                }
                 draft.workspaces[destination].pins.append(entry)
             case .temporary:
                 draft.workspaces[source].tabs.removeAll { $0.id == id }
@@ -475,7 +622,13 @@ public struct BrowserState: Codable, Equatable, Sendable {
         let workspace = currentWorkspace
         let favorites = profiles[currentProfileIndex].favorites
         if favorites.contains(where: { $0.id == id }) { return favorites }
-        if workspace.pins.contains(where: { $0.id == id }) { return workspace.pins }
+        if workspace.pins.contains(where: { $0.id == id }) {
+            if let folder = workspace.folder(containingPin: id) {
+                return folder.pinIDs.compactMap { pinID in workspace.pins.first { $0.id == pinID } }
+            }
+            let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
+            return workspace.pins.filter { !filedIDs.contains($0.id) }
+        }
         if workspace.tabs.contains(where: { $0.id == id }) { return workspace.tabs }
         return nil
     }
@@ -503,6 +656,9 @@ public struct BrowserState: Codable, Equatable, Sendable {
         for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }
         for index in workspaces.indices {
             workspaces[index].pins.removeAll { $0.id == id }
+            for folder in workspaces[index].folders.indices {
+                workspaces[index].folders[folder].pinIDs.removeAll { $0 == id }
+            }
             workspaces[index].tabs.removeAll { $0.id == id }
         }
         clearSelections(id)
@@ -521,6 +677,21 @@ public struct BrowserState: Codable, Equatable, Sendable {
             for entry in workspaces[workspace].tabs.indices where workspaces[workspace].tabs[entry].id == id {
                 update(&workspaces[workspace].tabs[entry])
             }
+        }
+    }
+
+    private func currentFolderIndex(_ id: UUID) throws -> Int {
+        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else {
+            throw BrowserStateError.missingFolder
+        }
+        return index
+    }
+
+    private static func validateFolderName(_ name: String) throws {
+        guard !name.isEmpty, name.count <= 80,
+              name == name.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw BrowserStateError.invalidFolder
         }
     }
 

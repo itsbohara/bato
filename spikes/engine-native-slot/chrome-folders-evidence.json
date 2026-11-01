@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "scope": "Attached workspace chrome, engine-delivered site icons and flat persistent pin folders",
+  "status": "source verification, bounded real-host checks and same-provider persistence restart passed",
+  "behavior": {
+    "chrome": "Suppress horizontal tab strip only for attached normal workspace window; retain Chromium toolbar/origin/extension UI and 44-point native window-control strip",
+    "fullscreen_and_unowned": "Stock behavior retained",
+    "icons": {
+      "source": "CEF advertised favicon URL and cookie-free DownloadImage",
+      "allowed_schemes": [
+        "http",
+        "https"
+      ],
+      "requested_max_image_size": 32,
+      "accepted_max_png_dimension": 128,
+      "accepted_max_png_bytes": 262144,
+      "guards": [
+        "slot token",
+        "browser identity",
+        "icon revision",
+        "exact live-page generation"
+      ],
+      "persistence": "none; session-local cache",
+      "terminal_event_policy": "Clear only matching live-generation cached icons",
+      "swift_fetch": false,
+      "third_party_icon_service": false
+    },
+    "folders": {
+      "shape": "Flat ordered PageFolder metadata with pin-ID references to canonical Workspace.pins",
+      "commands": [
+        "create",
+        "rename",
+        "collapse/expand",
+        "reorder folders",
+        "dissolve preserving pins",
+        "move pin into/out of folder",
+        "reorder within folder/unfiled group"
+      ],
+      "legacy_decode": "Missing folders defaults empty",
+      "empty_encode": "Omit empty folder lists",
+      "validation": [
+        "globally unique folder ID",
+        "trimmed name 1\u201380 characters without control characters",
+        "unique pin membership",
+        "same-workspace saved-pin references only"
+      ],
+      "metadata_engine_effects": false,
+      "cleanup": "Unpin/Favorite conversion/workspace transfer remove source references atomically",
+      "pending_close": "Membership changes and affected-folder dissolution rejected"
+    },
+    "engine_abi_change": false,
+    "engine_export_count": 9,
+    "workspace_configure_arguments": 10
+  },
+  "verification": {
+    "swift_tests_passed": 102,
+    "swift_test_breakdown": {
+      "core": 34,
+      "command_bar": 7,
+      "store": 9,
+      "runtime": 49,
+      "shell": 3
+    },
+    "new_folder_tests": 9,
+    "model_test_build_seconds": 11.99,
+    "model_test_log": "logs/folders-model-tests.log",
+    "initial_ui_package_build_seconds": 6.55,
+    "ui_review": "Passed after stable-focus, terminal-icon-cache and New Folder workspace-guard repairs",
+    "fixture_tests_passed": 4,
+    "overlay_runner_tests_passed": 6,
+    "patch_tests_passed": 2,
+    "client_roundtrip_files": 15,
+    "source_mirrors": 11,
+    "overlay_files": 23,
+    "engine_roundtrip_files": 8,
+    "source_host_build": "passed",
+    "runtime_acceptance": "bounded chrome/icon/folder workflows and same-provider restart passed",
+    "extension_retest": false,
+    "final_ui_package_build_seconds": 2.21,
+    "final_ui_build_log": "logs/folders-ui-review-build.log",
+    "initial_source_build_seconds": 82.63,
+    "initial_source_build_steps": 22,
+    "initial_build_wrapper_log": "logs/chrome-folders-source-build.log",
+    "initial_compiler_log": "logs/chrome-folders-initial-compiler.log",
+    "final_source_build_seconds": 9.23,
+    "final_source_build_steps": 2,
+    "final_build_wrapper_log": "logs/chrome-folders-final-build.log",
+    "final_compiler_log": "logs/chrome-folders-final-compiler.log",
+    "arm64_images_checked": 527,
+    "artifact_check": "passed",
+    "artifact_log": "logs/chrome-folders-artifacts.log",
+    "final_overlay_checks": "passed",
+    "engine_roundtrip_context": "normalized patch context",
+    "owned_browser_or_build_running": false,
+    "fixture_server_port": 18765,
+    "renderer_black_observed_this_milestone": false
+  },
+  "runs": [
+    {
+      "id": "chrome-folders-v1",
+      "pid": 96658,
+      "status": "bounded checks and normal Quit passed",
+      "organization": "runtime/chrome-folders-state-v1",
+      "organization_source_preserved": "runtime/arc-sidebar-state-v1",
+      "engine_profile": "runtime/profiles/workspace-v3",
+      "mock_keychain": true,
+      "exit_code": 0,
+      "observations": [
+        "Normal AX has no horizontal tab group; toolbar/origin/site-info and native window-control AX retained",
+        "Loaded modal pin shows real blue B favicon; unloaded entries use fallback symbols",
+        "Real modal activity counter0\u21921",
+        "Folder editor Cancel keeps exact baseline bytes",
+        "Research folder create and background storage/selected modal membership change only folder metadata; all complete entries/selections preserved",
+        "Collapse removes child AX rows; rename to Work retains folder ID/members/collapsed state",
+        "Dissolve restores exact original organization bytes without deleting pins",
+        "Recreated expanded Work folder86AA1306-AAB5-4D5C-A2F6-0B620E382F17 with storage then modal members",
+        "Native View Enter Full Screen restores stock tab group and hides sidebar content at counter1",
+        "Escape2500ms restores normal no-tab-group Work/members/icon at counter1",
+        "Actual site-info origin/security UI opens and dismisses",
+        "Normal application-menu Quit0; exact1detach/loop/shutdown; only anchor+modal browser creations"
+      ],
+      "native_detach_count": 1,
+      "message_loop_exit_count": 1,
+      "cef_shutdown_count": 1,
+      "browser_creations": 2,
+      "final_organization": "Only expected persistent Work folder metadata differs from baseline",
+      "original_organization_unchanged": true,
+      "final_screenshot": "logs/chrome-folders-v1-final.png",
+      "fullscreen_screenshot": "logs/chrome-folders-v1-fullscreen.png"
+    },
+    {
+      "id": "chrome-folders-v2",
+      "pid": 6448,
+      "status": "persistence restart and normal Quit passed",
+      "organization": "runtime/chrome-folders-state-v1",
+      "engine_profile": "runtime/profiles/workspace-v3",
+      "mock_keychain": true,
+      "exit_code": 0,
+      "native_detach_count": 1,
+      "message_loop_exit_count": 1,
+      "cef_shutdown_count": 1,
+      "browser_creations": 2,
+      "organization_exactly_equal_before_final_and_v1_final": true,
+      "final_screenshot": "logs/chrome-folders-v2-final.png",
+      "observations": [
+        "Expanded Work folder86AA1306-AAB5-4D5C-A2F6-0B620E382F17 retains storage/modal member IDs",
+        "Loaded modal receives blue B favicon again; normal AX has no horizontal tab group and retains toolbar/origin UI",
+        "Real activity0\u21921",
+        "CmdT querytab-modal finds folder pin; Escape returns rendered page/counter1",
+        "Normal application-menu Quit0 with exact1detach/loop/shutdown",
+        "No black renderer observed"
+      ]
+    }
+  ],
+  "limits": [
+    "Flat folders only; no nesting or drag-and-drop hierarchy",
+    "Session-local icons only; no unloaded-page prefetch",
+    "Chrome toolbar, origin and extension controls remain",
+    "No broad window/fullscreen/light-mode/AX/extension acceptance",
+    "Previous command-bar renderer anomaly remains open",
+    "No daily-use or production readiness claim",
+    "No actual window dragging, traffic-light click, extension, short-height, light-mode, broad AX, folder reorder or unfile interaction acceptance",
+    "All folder focus-role restoration paths are source-reviewed/package-built, not broadly runtime-accepted"
+  ]
+}

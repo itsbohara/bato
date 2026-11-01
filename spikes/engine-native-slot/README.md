@@ -66,3 +66,8 @@ The opt-in workspace host now connects a real native organization sidebar to Chr
 ## Workspace command bar
 
 The native workspace host now presents a rounded Cmd+T command bar for URL entry, configurable session-local web search, current-Profile page switching and browser commands. Its floating visual uses the existing AppKit sheet lifecycle; engine and organization interfaces are unchanged. See [command-bar results](COMMAND-BAR-RESULTS.md) for verification and limits. The client overlay now contains fifteen files and eleven canonical source mirrors.
+
+
+## Sidebar chrome, site icons and folders
+
+The successfully attached normal workspace window now hides duplicate horizontal tabs; fullscreen and unowned windows keep stock tab access. Chromium still owns origin/security and extension controls. Site icons arrive through size-bounded CEF page callbacks with revision/generation checks, and ordered flat folders organize saved pins without loading pages. See [combined results](CHROME-FOLDERS-RESULTS.md) for source/runtime/restart verification and explicit limits.

@@ -452,3 +452,16 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
         return nil
     }
 }
+
+// The bytes are borrowed only for this C callback. Resolve the exact live
+// generation again; detached slots and closed/replaced pages cannot receive icons.
+@_cdecl("BatoSwiftWorkspacePageIcon")
+@MainActor public func workspacePageIcon(_ token: UInt64, _ browserID: Int32,
+                                        _ png: UnsafePointer<UInt8>?, _ size: Int) {
+    precondition(Thread.isMainThread)
+    guard size >= 0, size <= 256 * 1024,
+          let slot = workspaceSlots[token], let page = slot.engine?.pages[browserID],
+          slot.controller?.runtime.livePages[page.entryID] == page else { return }
+    let data = png.map { Data(bytes: $0, count: size) }
+    slot.controller?.receivePageIcon(entryID: page.entryID, png: data)
+}

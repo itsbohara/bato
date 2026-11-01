@@ -96,17 +96,19 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,716 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
 +#include <map>
 +#include <set>
 +#include <string>
++#include <vector>
 +#include "include/base/cef_callback.h"
 +#include "include/cef_browser.h"
 +#include "include/cef_command_line.h"
 +#include "include/cef_id_mappers.h"
++#include "include/cef_image.h"
 +#include "include/cef_parser.h"
 +#include "include/cef_task.h"
 +#include "include/internal/bato_native_slot.h"
@@ -129,6 +131,9 @@
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 +    int kind, const char* url, const char* title);
 +
++extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
++    const unsigned char* png, size_t size);
++
 +namespace {
 +using ActiveBrowserId = decltype(&bato_native_slot_active_browser_id_v1);
 +using NewTab = decltype(&bato_native_slot_new_tab_v1);
@@ -143,6 +148,7 @@
 +  CefRefPtr<CefBrowser> browser;
 +  std::string url;
 +  std::string title;
++  uint64_t icon_revision = 0;
 +};
 +struct WorkspaceSlot {
 +  CefRefPtr<CefBrowser> anchor;
@@ -396,6 +402,48 @@
 +      }, token, identifier, browser, url, title));
 +}
 +
++// Page-owned favicon delivery uses CEF's image decoder and request context.
++// No separate service, URLSession request, persistent icon store or URL logging.
++void PostPageIcon(uint64_t token, int identifier, CefRefPtr<CefBrowser> browser,
++                  uint64_t revision, std::vector<unsigned char> png) {
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int identifier, CefRefPtr<CefBrowser> browser,
++         uint64_t revision, const std::vector<unsigned char>& png) {
++        auto slot = WorkspaceSlots().find(token);
++        if (slot == WorkspaceSlots().end()) return;
++        auto page = slot->second.pages.find(identifier);
++        if (page == slot->second.pages.end() || !browser->IsValid() ||
++            !page->second.browser->IsSame(browser) ||
++            page->second.icon_revision != revision) return;
++        BatoSwiftWorkspacePageIcon(token, identifier,
++                                  png.empty() ? nullptr : png.data(), png.size());
++      }, token, identifier, browser, revision, std::move(png)));
++}
++
++class WorkspaceIconDownload final : public CefDownloadImageCallback {
++ public:
++  WorkspaceIconDownload(uint64_t token, int identifier,
++                        CefRefPtr<CefBrowser> browser, uint64_t revision)
++      : token_(token), identifier_(identifier), browser_(browser), revision_(revision) {}
++  void OnDownloadImageFinished(const CefString&, int,
++                               CefRefPtr<CefImage> image) override {
++    if (!CefCurrentlyOn(TID_UI) || !image || image->IsEmpty()) return;
++    int width = 0, height = 0;
++    auto bytes = image->GetAsPNG(1.0f, true, width, height);
++    if (!bytes || width <= 0 || height <= 0 || width > 128 || height > 128 ||
++        bytes->GetSize() > 256 * 1024) return;
++    std::vector<unsigned char> png(bytes->GetSize());
++    if (bytes->GetData(png.data(), png.size(), 0) != png.size()) return;
++    PostPageIcon(token_, identifier_, browser_, revision_, std::move(png));
++  }
++ private:
++  const uint64_t token_;
++  const int identifier_;
++  const CefRefPtr<CefBrowser> browser_;
++  const uint64_t revision_;
++  IMPLEMENT_REFCOUNTING(WorkspaceIconDownload);
++};
++
 +int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
 +  auto reject = [](WorkspaceRejection reason) {
 +    LogWorkspaceRejection("create-page", reason);
@@ -596,7 +644,31 @@
 +    auto found = slot.pages.find(identifier);
 +    if (found == slot.pages.end()) continue;
 +    found->second.url = url.ToString();
++    ++found->second.icon_revision;
++    PostPageIcon(token, identifier, browser, found->second.icon_revision, {});
 +    PostPageState(token, identifier, found->second);
++    return;
++  }
++}
++
++void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
++                                        const std::vector<CefString>& urls) {
++  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI) || !browser->IsValid()) return;
++  const int identifier = browser->GetIdentifier();
++  for (auto& [token, slot] : WorkspaceSlots()) {
++    auto found = slot.pages.find(identifier);
++    if (found == slot.pages.end() || !found->second.browser->IsSame(browser)) continue;
++    const auto revision = ++found->second.icon_revision;
++    PostPageIcon(token, identifier, browser, revision, {});
++    // Only the first usable advertised HTTP(S) icon is requested. Browser-owned
++    // decoding is size-bounded; cookies are neither sent nor accepted for favicons.
++    for (const auto& url : urls) {
++      const auto value = url.ToString();
++      if (!ValidDestination(value.c_str())) continue;
++      browser->GetHost()->DownloadImage(url, true, 32, false,
++          new WorkspaceIconDownload(token, identifier, browser, revision));
++      break;
++    }
 +    return;
 +  }
 +}
@@ -743,9 +815,10 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,19 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
++#include <vector>
 +#include "include/cef_browser.h"
 +#include "include/cef_command_line.h"
 +// Called once after loading the matching framework, before CefInitialize.
@@ -758,6 +831,8 @@
 +                                        const CefString& url);
 +void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 +                                      const CefString& title);
++void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
++                                        const std::vector<CefString>& urls);
 +void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
 +#endif
 --- /dev/null
@@ -966,7 +1041,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,467 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1421,6 +1496,19 @@
 +        return nil
 +    }
 +}
++
++// The bytes are borrowed only for this C callback. Resolve the exact live
++// generation again; detached slots and closed/replaced pages cannot receive icons.
++@_cdecl("BatoSwiftWorkspacePageIcon")
++@MainActor public func workspacePageIcon(_ token: UInt64, _ browserID: Int32,
++                                        _ png: UnsafePointer<UInt8>?, _ size: Int) {
++    precondition(Thread.isMainThread)
++    guard size >= 0, size <= 256 * 1024,
++          let slot = workspaceSlots[token], let page = slot.engine?.pages[browserID],
++          slot.controller?.runtime.livePages[page.entryID] == page else { return }
++    let data = png.map { Data(bytes: $0, count: size) }
++    slot.controller?.receivePageIcon(entryID: page.entryID, png: data)
++}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
 @@ -3,6 +3,7 @@
@@ -1457,7 +1545,20 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -133,6 +143,7 @@
+@@ -117,6 +127,12 @@
+     // Set the title of the window using platform APIs.
+     PlatformTitleChange(browser, title);
+   }
++}
++
++void SimpleHandler::OnFaviconURLChange(CefRefPtr<CefBrowser> browser,
++                                       const std::vector<CefString>& icon_urls) {
++  CEF_REQUIRE_UI_THREAD();
++  BatoWorkspaceBrowserFaviconChanged(browser, icon_urls);
+ }
+
+ void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
+@@ -133,6 +149,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -1465,7 +1566,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +164,7 @@
+@@ -153,6 +170,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -1473,7 +1574,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -177,6 +189,18 @@
+@@ -177,6 +195,18 @@
    }
  }
 
@@ -1512,7 +1613,7 @@
 
    // CefCommandHandler methods (opt-in diagnostic only).
    bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
-@@ -33,6 +35,9 @@
+@@ -33,13 +35,26 @@
                         cef_window_open_disposition_t disposition) override;
 
    // CefDisplayHandler methods:
@@ -1521,8 +1622,11 @@
 +                       const CefString& url) override;
    void OnTitleChange(CefRefPtr<CefBrowser> browser,
                       const CefString& title) override;
++
++  void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,
++                          const std::vector<CefString>& icon_urls) override;
 
-@@ -40,6 +45,13 @@
+   // CefLifeSpanHandler methods:
    void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
    bool DoClose(CefRefPtr<CefBrowser> browser) override;
    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
@@ -1538,10 +1642,14 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,707 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
++    case up, down
++}
++
++public enum FolderMoveDirection: Equatable, Sendable {
 +    case up, down
 +}
 +
@@ -1597,23 +1705,73 @@
 +    }
 +}
 +
++/// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
++public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
++    public var id: UUID
++    public var name: String
++    public var isCollapsed: Bool
++    public var pinIDs: [UUID]
++
++    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = []) {
++        self.id = id
++        self.name = name
++        self.isCollapsed = isCollapsed
++        self.pinIDs = pinIDs
++    }
++}
++
 +public struct Workspace: Identifiable, Codable, Equatable, Sendable {
 +    public var id: UUID
 +    public var profileID: UUID
 +    public var name: String
 +    public var color: String
 +    public var pins: [PageEntry]
++    public var folders: [PageFolder]
 +    public var tabs: [PageEntry]
 +    public var activeEntryID: UUID?
 +
-+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
++    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil) {
 +        self.id = id
 +        self.profileID = profileID
 +        self.name = name
 +        self.color = color
 +        self.pins = pins
++        self.folders = folders
 +        self.tabs = tabs
 +        self.activeEntryID = activeEntryID
++    }
++
++    public func folder(containingPin id: UUID) -> PageFolder? {
++        folders.first { $0.pinIDs.contains(id) }
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case id, profileID, name, color, pins, folders, tabs, activeEntryID
++    }
++
++    public init(from decoder: any Decoder) throws {
++        let values = try decoder.container(keyedBy: CodingKeys.self)
++        id = try values.decode(UUID.self, forKey: .id)
++        profileID = try values.decode(UUID.self, forKey: .profileID)
++        name = try values.decode(String.self, forKey: .name)
++        color = try values.decode(String.self, forKey: .color)
++        pins = try values.decode([PageEntry].self, forKey: .pins)
++        folders = try values.decodeIfPresent([PageFolder].self, forKey: .folders) ?? []
++        tabs = try values.decode([PageEntry].self, forKey: .tabs)
++        activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
++    }
++
++    public func encode(to encoder: any Encoder) throws {
++        var values = encoder.container(keyedBy: CodingKeys.self)
++        try values.encode(id, forKey: .id)
++        try values.encode(profileID, forKey: .profileID)
++        try values.encode(name, forKey: .name)
++        try values.encode(color, forKey: .color)
++        try values.encode(pins, forKey: .pins)
++        // Older documents have no folder field. Empty metadata keeps their shape.
++        if !folders.isEmpty { try values.encode(folders, forKey: .folders) }
++        try values.encode(tabs, forKey: .tabs)
++        try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
 +    }
 +}
 +
@@ -1629,6 +1787,8 @@
 +    case invalidSavedURL
 +    case missingEntry
 +    case invalidSelection
++    case missingFolder
++    case invalidFolder
 +
 +    public var errorDescription: String? {
 +        switch self {
@@ -1643,6 +1803,8 @@
 +        case .invalidSavedURL: "The saved page destination is invalid."
 +        case .missingEntry: "The selected page could not be found."
 +        case .invalidSelection: "The selected page does not belong to this workspace or its Profile."
++        case .missingFolder: "The selected folder could not be found."
++        case .invalidFolder: "Folders need a name of 1–80 characters and unique pins from their workspace."
 +        }
 +    }
 +}
@@ -1735,6 +1897,17 @@
 +            }
 +            for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
 +            for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
++            let pinIDs = Set(workspace.pins.map(\.id))
++            var filedPins = Set<UUID>()
++            for folder in workspace.folders {
++                try claim(folder.id)
++                try Self.validateFolderName(folder.name)
++                for id in folder.pinIDs {
++                    guard pinIDs.contains(id), filedPins.insert(id).inserted else {
++                        throw BrowserStateError.invalidFolder
++                    }
++                }
++            }
 +            if let activeID = workspace.activeEntryID {
 +                let favorites = profiles.first(where: { $0.id == workspace.profileID })!.favorites
 +                guard (favorites + workspace.pins + workspace.tabs).contains(where: { $0.id == activeID }) else {
@@ -1835,6 +2008,74 @@
 +    }
 +
 +    @discardableResult
++    public mutating func createFolder(name: String) throws -> UUID {
++        try transact { draft in
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateFolderName(name)
++            let folder = PageFolder(name: name)
++            draft.workspaces[draft.currentWorkspaceIndex].folders.append(folder)
++            return folder.id
++        }
++    }
++
++    public mutating func renameFolder(_ id: UUID, name: String) throws {
++        try transact { draft in
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateFolderName(name)
++            let index = try draft.currentFolderIndex(id)
++            draft.workspaces[draft.currentWorkspaceIndex].folders[index].name = name
++        }
++    }
++
++    public mutating func setFolderCollapsed(_ id: UUID, collapsed: Bool) throws {
++        try transact { draft in
++            let index = try draft.currentFolderIndex(id)
++            draft.workspaces[draft.currentWorkspaceIndex].folders[index].isCollapsed = collapsed
++        }
++    }
++
++    public func canMoveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
++        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else { return false }
++        switch direction {
++        case .up: return index > 0
++        case .down: return index + 1 < currentWorkspace.folders.count
++        }
++    }
++
++    public mutating func moveFolder(_ id: UUID, direction: FolderMoveDirection) throws {
++        try transact { draft in
++            let index = try draft.currentFolderIndex(id)
++            guard draft.canMoveFolder(id, direction: direction) else { throw BrowserStateError.invalidSelection }
++            let next = direction == .up ? index - 1 : index + 1
++            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, next)
++        }
++    }
++
++    /// Removes only the container. Pins retain their full value, selection and canonical order.
++    public mutating func dissolveFolder(_ id: UUID) throws {
++        try transact { draft in
++            let index = try draft.currentFolderIndex(id)
++            draft.workspaces[draft.currentWorkspaceIndex].folders.remove(at: index)
++        }
++    }
++
++    /// Appends membership to the destination folder, or restores the pin to the unfiled group.
++    public mutating func movePin(_ id: UUID, toFolder folderID: UUID?) throws {
++        try transact { draft in
++            let workspace = draft.currentWorkspaceIndex
++            guard draft.workspaces[workspace].pins.contains(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            let destination = try folderID.map { try draft.currentFolderIndex($0) }
++            if draft.currentWorkspace.folder(containingPin: id)?.id == folderID { return }
++            for index in draft.workspaces[workspace].folders.indices {
++                draft.workspaces[workspace].folders[index].pinIDs.removeAll { $0 == id }
++            }
++            if let destination { draft.workspaces[workspace].folders[destination].pinIDs.append(id) }
++        }
++    }
++
++    @discardableResult
 +    public mutating func addTab(url: URL, title: String) throws -> UUID {
 +        try transact { draft in
 +            try Self.validateURL(url)
@@ -1885,7 +2126,14 @@
 +                let profile = draft.currentProfileIndex
 +                draft.profiles[profile].favorites.swapAt(index, destination)
 +            case .pinned:
-+                draft.workspaces[workspace].pins.swapAt(index, destination)
++                if let folder = draft.currentWorkspace.folder(containingPin: id),
++                   let folderIndex = draft.workspaces[workspace].folders.firstIndex(where: { $0.id == folder.id }) {
++                    draft.workspaces[workspace].folders[folderIndex].pinIDs.swapAt(index, destination)
++                } else {
++                    let first = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == section[index].id })!
++                    let second = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == section[destination].id })!
++                    draft.workspaces[workspace].pins.swapAt(first, second)
++                }
 +            case .temporary:
 +                draft.workspaces[workspace].tabs.swapAt(index, destination)
 +            }
@@ -1920,6 +2168,9 @@
 +                throw BrowserStateError.invalidEntryOwnership
 +            case .pinned:
 +                draft.workspaces[source].pins.removeAll { $0.id == id }
++                for folder in draft.workspaces[source].folders.indices {
++                    draft.workspaces[source].folders[folder].pinIDs.removeAll { $0 == id }
++                }
 +                draft.workspaces[destination].pins.append(entry)
 +            case .temporary:
 +                draft.workspaces[source].tabs.removeAll { $0.id == id }
@@ -2016,7 +2267,13 @@
 +        let workspace = currentWorkspace
 +        let favorites = profiles[currentProfileIndex].favorites
 +        if favorites.contains(where: { $0.id == id }) { return favorites }
-+        if workspace.pins.contains(where: { $0.id == id }) { return workspace.pins }
++        if workspace.pins.contains(where: { $0.id == id }) {
++            if let folder = workspace.folder(containingPin: id) {
++                return folder.pinIDs.compactMap { pinID in workspace.pins.first { $0.id == pinID } }
++            }
++            let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
++            return workspace.pins.filter { !filedIDs.contains($0.id) }
++        }
 +        if workspace.tabs.contains(where: { $0.id == id }) { return workspace.tabs }
 +        return nil
 +    }
@@ -2044,6 +2301,9 @@
 +        for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }
 +        for index in workspaces.indices {
 +            workspaces[index].pins.removeAll { $0.id == id }
++            for folder in workspaces[index].folders.indices {
++                workspaces[index].folders[folder].pinIDs.removeAll { $0 == id }
++            }
 +            workspaces[index].tabs.removeAll { $0.id == id }
 +        }
 +        clearSelections(id)
@@ -2062,6 +2322,21 @@
 +            for entry in workspaces[workspace].tabs.indices where workspaces[workspace].tabs[entry].id == id {
 +                update(&workspaces[workspace].tabs[entry])
 +            }
++        }
++    }
++
++    private func currentFolderIndex(_ id: UUID) throws -> Int {
++        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else {
++            throw BrowserStateError.missingFolder
++        }
++        return index
++    }
++
++    private static func validateFolderName(_ name: String) throws {
++        guard !name.isEmpty, name.count <= 80,
++              name == name.trimmingCharacters(in: .whitespacesAndNewlines),
++              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
++            throw BrowserStateError.invalidFolder
 +        }
 +    }
 +
@@ -2276,7 +2551,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,391 @@
 +import Foundation
 +import BatoCore
 +
@@ -2401,6 +2676,45 @@
 +    @discardableResult
 +    public func moveWorkspace(_ id: UUID, direction: WorkspaceMoveDirection) -> Bool {
 +        change(reconcileSelection: false) { try $0.moveWorkspace(id, direction: direction) }
++    }
++
++    @discardableResult
++    public func createFolder(name: String) -> Bool {
++        change(reconcileSelection: false) { _ = try $0.createFolder(name: name) }
++    }
++
++    @discardableResult
++    public func renameFolder(_ id: UUID, name: String) -> Bool {
++        change(reconcileSelection: false) { try $0.renameFolder(id, name: name) }
++    }
++
++    @discardableResult
++    public func setFolderCollapsed(_ id: UUID, collapsed: Bool) -> Bool {
++        change(reconcileSelection: false) { try $0.setFolderCollapsed(id, collapsed: collapsed) }
++    }
++
++    @discardableResult
++    public func moveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
++        change(reconcileSelection: false) { try $0.moveFolder(id, direction: direction) }
++    }
++
++    @discardableResult
++    public func dissolveFolder(_ id: UUID) -> Bool {
++        guard let folder = state.currentWorkspace.folders.first(where: { $0.id == id }),
++              !pendingClose.contains(where: { folder.pinIDs.contains($0.entryID) }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: false) { try $0.dissolveFolder(id) }
++    }
++
++    @discardableResult
++    public func movePin(_ id: UUID, toFolder folderID: UUID?) -> Bool {
++        guard !pendingClose.contains(where: { $0.entryID == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: false) { try $0.movePin(id, toFolder: folderID) }
 +    }
 +
 +    /// Reorders organization without changing page visibility or close semantics.
@@ -2631,7 +2945,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1211 @@
+@@ -0,0 +1,1483 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -2661,10 +2975,13 @@
 +    private let workspaceTitle = NSTextField(labelWithString: "")
 +    private let addressSurface = SidebarSurface()
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
++    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
++    private var pageIcons: [UUID: NSImage] = [:]
 +    private let statusLabel = NSTextField(wrappingLabelWithString: "")
 +    private var workspaceIDs: [UUID] = []
 +    private var hasStarted = false
 +    private var workspaceEditor: WorkspaceEditor?
++    private var folderEditor: FolderEditor?
 +    private var pageFinder: PageFinder?
 +    private var commandBar: CommandBarController?
 +    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
@@ -2706,7 +3023,29 @@
 +    }
 +
 +    public func receive(_ event: PageEvent) {
++        switch event {
++        case .closed(let page), .unloaded(let page), .creationFailed(let page):
++            // A saved entry reopens its saved URL, which can differ from the
++            // last live origin. Late terminal events must not clear a newer icon.
++            if runtime.livePages[page.entryID] == page { pageIcons.removeValue(forKey: page.entryID) }
++        default: break
++        }
 +        runtime.receive(event)
++        render()
++    }
++
++    /// Icons arrive only through the engine's current live-page generation.
++    /// They are session-local presentation data, never organization or a fetch.
++    public func receivePageIcon(entryID: UUID, png: Data?) {
++        let state = runtime.state
++        guard state.profiles.contains(where: { $0.favorites.contains(where: { $0.id == entryID }) }) ||
++              state.workspaces.contains(where: { ($0.pins + $0.tabs).contains(where: { $0.id == entryID }) }) else { return }
++        if let png, !png.isEmpty, png.count <= 262_144, let image = NSImage(data: png) {
++            image.isTemplate = false
++            pageIcons[entryID] = image
++        } else {
++            pageIcons.removeValue(forKey: entryID)
++        }
 +        render()
 +    }
 +
@@ -2714,7 +3053,7 @@
 +    public func newTab() { showCommandBar() }
 +
 +    private func showCommandBar(query: String = "", error: String? = nil) {
-+        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil,
++        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
 +        let bar = CommandBarController(query: query, error: error,
@@ -3022,17 +3361,35 @@
 +        let focusedControl = pageControls.first { _, controls in
 +            root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
 +        }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
++        let focusedFolder = folderControls.compactMap { id, controls -> (id: UUID, role: Int)? in
++            let ordered = [controls.disclosure, controls.title, controls.actions]
++            guard let role = ordered.firstIndex(where: { root.window?.firstResponder === $0 }) else { return nil }
++            return (id, role)
++        }.first
++        let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
 +        pageControls.removeAll()
++        folderControls.removeAll()
++        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
++                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
++        pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
 +        for view in entries.arrangedSubviews {
 +            entries.removeArrangedSubview(view)
 +            view.removeFromSuperview()
 +        }
 +        let favorites = state.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
 +        addSection("Favorites", pages: favorites)
-+        addSection("Pinned", pages: workspace.pins)
++        let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
++        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
++                   totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
++        for folder in workspace.folders { addFolder(folder, workspaceID: workspace.id, pins: workspace.pins) }
 +        addSection("Tabs", pages: workspace.tabs)
 +        if let focusedControl, let controls = pageControls[focusedControl.id] {
 +            root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
++        } else if let focusedFolder, let controls = folderControls[focusedFolder.id] {
++            let ordered = [controls.disclosure, controls.title, controls.actions]
++            root.window?.makeFirstResponder(ordered[focusedFolder.role])
++        } else if let parentOfFocusedPin, let controls = folderControls[parentOfFocusedPin] {
++            root.window?.makeFirstResponder(controls.disclosure)
 +        }
 +        workspaceIDs = state.workspaces.map(\.id)
 +        workspacePicker.removeAllItems()
@@ -3055,17 +3412,17 @@
 +        statusLabel.isHidden = statusLabel.stringValue.isEmpty
 +    }
 +
-+    private func addSection(_ title: String, pages: [PageEntry]) {
++    private func addSection(_ title: String, pages: [PageEntry], totalCount: Int? = nil, includeEmpty: Bool = false) {
 +        // Shared Favorites deserve space when present, without three empty
 +        // diagnostic sections competing with a new workspace's first tab.
-+        guard !pages.isEmpty || title == "Tabs" else { return }
++        guard !pages.isEmpty || title == "Tabs" || includeEmpty else { return }
 +        let heading = NSStackView()
 +        heading.orientation = .horizontal
 +        heading.spacing = 6
 +        let label = NSTextField(labelWithString: title)
 +        label.font = .systemFont(ofSize: 11, weight: .semibold)
 +        label.textColor = .secondaryLabelColor
-+        let count = NSTextField(labelWithString: String(pages.count))
++        let count = NSTextField(labelWithString: String(totalCount ?? pages.count))
 +        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 +        count.textColor = .secondaryLabelColor
 +        let spacer = NSView()
@@ -3076,7 +3433,7 @@
 +        entries.addArrangedSubview(heading)
 +        heading.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
 +        entries.setCustomSpacing(8, after: heading)
-+        if pages.isEmpty {
++        if pages.isEmpty && title == "Tabs" {
 +            let empty = NSTextField(wrappingLabelWithString: "No tabs yet.\nOpen a website to start browsing.")
 +            empty.font = .systemFont(ofSize: 12)
 +            empty.textColor = .secondaryLabelColor
@@ -3117,10 +3474,16 @@
 +        select.bezelStyle = .recessed
 +        select.alignment = tile ? .center : .left
 +        select.font = .systemFont(ofSize: tile ? 11 : 13, weight: tile ? .medium : .regular)
-+        select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
++        if let icon = pageIcons[page.id]?.copy() as? NSImage {
++            icon.size = NSSize(width: tile ? 20 : 16, height: tile ? 20 : 16)
++            select.image = icon
++            select.imageScaling = .scaleProportionallyDown
++        } else {
++            select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
++        }
 +        select.imagePosition = tile ? .imageAbove : .imageLeading
 +        select.imageHugsTitle = true
-+        select.contentTintColor = .labelColor
++        select.contentTintColor = pageIcons[page.id] == nil ? .labelColor : nil
 +        select.setButtonType(.momentaryPushIn)
 +        select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        select.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -3189,6 +3552,37 @@
 +        if let menu = select.menu {
 +            // Boundary actions stay disabled for every entry kind.
 +            menu.autoenablesItems = false
++            if page.kind == .pinned {
++                menu.addItem(.separator())
++                let workspace = runtime.state.currentWorkspace
++                let workspaceID = workspace.id
++                let currentFolderID = workspace.folder(containingPin: page.id)?.id
++                let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
++                let move = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
++                let folders = NSMenu()
++                folders.autoenablesItems = false
++                for folder in workspace.folders {
++                    let folderID = folder.id
++                    let item = ActionMenuItem(title: folder.name) { [weak self] in
++                        guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++                        self.perform { self.runtime.movePin(page.id, toFolder: folderID) }
++                    }
++                    item.state = currentFolderID == folderID ? .on : .off
++                    item.isEnabled = !isClosing && currentFolderID != folderID
++                    folders.addItem(item)
++                }
++                move.submenu = folders
++                move.isEnabled = folders.items.contains(where: \.isEnabled)
++                menu.addItem(move)
++                if currentFolderID != nil {
++                    let unfile = ActionMenuItem(title: "Remove from Folder") { [weak self] in
++                        guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++                        self.perform { self.runtime.movePin(page.id, toFolder: nil) }
++                    }
++                    unfile.isEnabled = !isClosing
++                    menu.addItem(unfile)
++                }
++            }
 +            menu.addItem(.separator())
 +            let moveUp = ActionMenuItem(title: "Move Up") { [weak self] in
 +                guard let self else { return }
@@ -3226,6 +3620,130 @@
 +        }
 +    }
 +
++    private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {
++        let folderID = folder.id
++        let toggle: () -> Void = { [weak self] in
++            guard let self, self.runtime.state.activeWorkspaceID == workspaceID,
++                  let current = self.runtime.state.currentWorkspace.folders.first(where: { $0.id == folderID }) else { return }
++            self.perform { self.runtime.setFolderCollapsed(folderID, collapsed: !current.isCollapsed) }
++        }
++        let disclosure = ActionButton(title: "", invoke: toggle)
++        disclosure.bezelStyle = .disclosure
++        disclosure.setButtonType(.onOff)
++        disclosure.state = folder.isCollapsed ? .off : .on
++        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(folder.name)")
++        disclosure.setAccessibilityIdentifier("bato-folder-disclosure-\(folderID.uuidString)")
++        disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
++        disclosure.heightAnchor.constraint(equalToConstant: 24).isActive = true
++        let title = ActionButton(title: folder.name, invoke: toggle)
++        title.image = sidebarSymbol(folder.isCollapsed ? "folder" : "folder.fill", size: 12)
++        title.imagePosition = .imageLeading
++        title.imageHugsTitle = true
++        title.isBordered = false
++        title.alignment = .left
++        title.font = .systemFont(ofSize: 12, weight: .medium)
++        title.contentTintColor = .secondaryLabelColor
++        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        (title.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
++        title.setAccessibilityLabel(folder.name)
++        title.setAccessibilityIdentifier("bato-folder-\(folderID.uuidString)")
++        title.toolTip = "\(folder.name) · \(folder.pinIDs.count) pinned pages"
++        let count = NSTextField(labelWithString: String(folder.pinIDs.count))
++        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
++        count.textColor = .secondaryLabelColor
++        let actions = ActionButton(title: "") { [weak self, weak title] in
++            guard let title else { return }
++            self?.showFolderActions(folderID, workspaceID: workspaceID, anchor: title)
++        }
++        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(folder.name)")
++        actions.setAccessibilityIdentifier("bato-folder-actions-\(folderID.uuidString)")
++        let heading = NSStackView(views: [disclosure, title, count, actions])
++        heading.spacing = 3
++        heading.orientation = .horizontal
++        entries.addArrangedSubview(heading)
++        heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++        folderControls[folderID] = (disclosure, title, actions)
++        title.menu = folderMenu(folderID, workspaceID: workspaceID)
++        if !folder.isCollapsed {
++            for pinID in folder.pinIDs {
++                guard let pin = pins.first(where: { $0.id == pinID }) else { continue }
++                let row = makePageView(pin, tile: false)
++                let inset = NSView()
++                row.translatesAutoresizingMaskIntoConstraints = false
++                inset.addSubview(row)
++                NSLayoutConstraint.activate([
++                    row.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: 14),
++                    row.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
++                    row.topAnchor.constraint(equalTo: inset.topAnchor),
++                    row.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
++                ])
++                entries.addArrangedSubview(inset)
++                inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++            }
++        }
++        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
++    }
++
++    private func folderMenu(_ folderID: UUID, workspaceID: UUID) -> NSMenu {
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        menu.addItem(ActionMenuItem(title: "Rename Folder…") { [weak self] in
++            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++            self.editFolder(folderID)
++        })
++        for (label, direction) in [("Move Folder Up", FolderMoveDirection.up), ("Move Folder Down", .down)] {
++            let move = ActionMenuItem(title: label) { [weak self] in
++                guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++                self.perform { self.runtime.moveFolder(folderID, direction: direction) }
++            }
++            move.isEnabled = runtime.state.activeWorkspaceID == workspaceID && runtime.state.canMoveFolder(folderID, direction: direction)
++            menu.addItem(move)
++        }
++        menu.addItem(.separator())
++        let dissolve = ActionMenuItem(title: "Dissolve Folder") { [weak self] in
++            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++            self.perform { self.runtime.dissolveFolder(folderID) }
++        }
++        dissolve.toolTip = "Keep every pinned page outside this folder."
++        menu.addItem(dissolve)
++        return menu
++    }
++
++    private func showFolderActions(_ folderID: UUID, workspaceID: UUID, anchor: NSView) {
++        guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
++              runtime.state.currentWorkspace.folders.contains(where: { $0.id == folderID }),
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        requestNativeFocus?()
++        folderMenu(folderID, workspaceID: workspaceID).popUp(positioning: nil,
++            at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
++    }
++
++    private func editFolder(_ folderID: UUID? = nil) {
++        guard hasStarted, folderEditor == nil, workspaceEditor == nil, pageFinder == nil,
++              commandBar == nil, pendingCommandBarAction == nil, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        let workspaceID = runtime.state.activeWorkspaceID
++        let folder = folderID.flatMap { id in runtime.state.currentWorkspace.folders.first(where: { $0.id == id }) }
++        if folderID != nil && folder == nil { return }
++        requestNativeFocus?()
++        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil) { [weak self] name in
++            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return "The workspace is no longer active." }
++            let saved = folderID.map { self.runtime.renameFolder($0, name: name) } ?? self.runtime.createFolder(name: name)
++            guard saved else {
++                return self.runtime.lastError == .saveFailed
++                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
++                    : "Enter a folder name using 1–80 characters without control characters."
++            }
++            self.render()
++            return nil
++        }
++        folderEditor = editor
++        guard let sheet = editor.window else { folderEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] _ in self?.folderEditor = nil }
++        editor.focusName()
++    }
++
 +    private func perform(_ command: () -> Bool) {
 +        guard hasStarted else { return }
 +        _ = command()
@@ -3251,12 +3769,17 @@
 +    }
 +
 +    @objc private func showWorkspaceActions() {
-+        guard hasStarted, workspaceEditor == nil, let window = root.window,
++        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        let id = runtime.state.activeWorkspaceID
 +        requestNativeFocus?()
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
++        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
++            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
++            self.editFolder()
++        })
++        menu.addItem(.separator())
 +        // Capture the workspace, not its position or a later active selection.
 +        // The runtime revalidates its position when the action is invoked.
 +        let moveUp = ActionMenuItem(title: "Move Workspace Up") { [weak self] in
@@ -3275,7 +3798,7 @@
 +    }
 +
 +    private func findPage() {
-+        guard hasStarted, pageFinder == nil, workspaceEditor == nil, let window = root.window,
++        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, let window = root.window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
 +        let finder = PageFinder(search: { [weak self] query in
@@ -3314,7 +3837,7 @@
 +    }
 +
 +    private func editWorkspace() {
-+        guard hasStarted, workspaceEditor == nil, let window = root.window,
++        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        let workspace = runtime.state.currentWorkspace
 +        requestNativeFocus?()
@@ -3622,6 +4145,69 @@
 +        }
 +    }
 +
++    private func dismiss(_ response: NSApplication.ModalResponse) {
++        guard let window, let parent = window.sheetParent else { return }
++        parent.endSheet(window, returnCode: response)
++        window.orderOut(nil)
++    }
++}
++
++/// A local metadata draft; cancellation never changes organization or pages.
++@MainActor
++private final class FolderEditor: NSWindowController {
++    private let field = NSTextField(string: "")
++    private let errorLabel = NSTextField(wrappingLabelWithString: "")
++    private let save: (String) -> String?
++    init(name: String, creating: Bool, save: @escaping (String) -> String?) {
++        self.save = save
++        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 180),
++                            styleMask: [.titled], backing: .buffered, defer: false)
++        panel.title = creating ? "New Folder" : "Rename Folder"
++        panel.isReleasedWhenClosed = false
++        super.init(window: panel)
++        field.stringValue = name
++        field.placeholderString = "Folder name"
++        field.setAccessibilityLabel("Folder name")
++        field.setAccessibilityIdentifier("bato-folder-name")
++        field.cell?.sendsActionOnEndEditing = false
++        errorLabel.font = .systemFont(ofSize: 11)
++        errorLabel.textColor = .systemRed
++        errorLabel.setAccessibilityIdentifier("bato-folder-edit-error")
++        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
++        cancel.keyEquivalent = "\u{1b}"
++        cancel.setAccessibilityIdentifier("bato-folder-edit-cancel")
++        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
++        apply.keyEquivalent = "\r"
++        apply.setAccessibilityIdentifier("bato-folder-edit-save")
++        panel.defaultButtonCell = apply.cell as? NSButtonCell
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let buttons = NSStackView(views: [spacer, cancel, apply])
++        buttons.spacing = 8
++        let stack = NSStackView(views: [NSTextField(labelWithString: "Name"), field, errorLabel, buttons])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 10
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        panel.contentView?.addSubview(stack)
++        if let content = panel.contentView {
++            NSLayoutConstraint.activate([
++                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
++                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
++                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
++                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
++                field.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
++            ])
++        }
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    func focusName() { window?.makeFirstResponder(field); field.selectText(nil) }
++    private func saveDraft() {
++        if let error = save(field.stringValue) { errorLabel.stringValue = error }
++        else { dismiss(.OK) }
++    }
 +    private func dismiss(_ response: NSApplication.ModalResponse) {
 +        guard let window, let parent = window.sheetParent else { return }
 +        parent.endSheet(window, returnCode: response)

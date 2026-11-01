@@ -124,6 +124,45 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.moveWorkspace(id, direction: direction) }
     }
 
+    @discardableResult
+    public func createFolder(name: String) -> Bool {
+        change(reconcileSelection: false) { _ = try $0.createFolder(name: name) }
+    }
+
+    @discardableResult
+    public func renameFolder(_ id: UUID, name: String) -> Bool {
+        change(reconcileSelection: false) { try $0.renameFolder(id, name: name) }
+    }
+
+    @discardableResult
+    public func setFolderCollapsed(_ id: UUID, collapsed: Bool) -> Bool {
+        change(reconcileSelection: false) { try $0.setFolderCollapsed(id, collapsed: collapsed) }
+    }
+
+    @discardableResult
+    public func moveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
+        change(reconcileSelection: false) { try $0.moveFolder(id, direction: direction) }
+    }
+
+    @discardableResult
+    public func dissolveFolder(_ id: UUID) -> Bool {
+        guard let folder = state.currentWorkspace.folders.first(where: { $0.id == id }),
+              !pendingClose.contains(where: { folder.pinIDs.contains($0.entryID) }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.dissolveFolder(id) }
+    }
+
+    @discardableResult
+    public func movePin(_ id: UUID, toFolder folderID: UUID?) -> Bool {
+        guard !pendingClose.contains(where: { $0.entryID == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.movePin(id, toFolder: folderID) }
+    }
+
     /// Reorders organization without changing page visibility or close semantics.
     @discardableResult
     public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {

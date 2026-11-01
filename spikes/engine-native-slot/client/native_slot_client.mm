@@ -4,10 +4,12 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
 #include "include/cef_id_mappers.h"
+#include "include/cef_image.h"
 #include "include/cef_parser.h"
 #include "include/cef_task.h"
 #include "include/internal/bato_native_slot.h"
@@ -30,6 +32,9 @@ extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int brows
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
 
+extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
+    const unsigned char* png, size_t size);
+
 namespace {
 using ActiveBrowserId = decltype(&bato_native_slot_active_browser_id_v1);
 using NewTab = decltype(&bato_native_slot_new_tab_v1);
@@ -44,6 +49,7 @@ struct BoundPage {
   CefRefPtr<CefBrowser> browser;
   std::string url;
   std::string title;
+  uint64_t icon_revision = 0;
 };
 struct WorkspaceSlot {
   CefRefPtr<CefBrowser> anchor;
@@ -297,6 +303,48 @@ void PostPageState(uint64_t token, int identifier, BoundPage& page) {
       }, token, identifier, browser, url, title));
 }
 
+// Page-owned favicon delivery uses CEF's image decoder and request context.
+// No separate service, URLSession request, persistent icon store or URL logging.
+void PostPageIcon(uint64_t token, int identifier, CefRefPtr<CefBrowser> browser,
+                  uint64_t revision, std::vector<unsigned char> png) {
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, int identifier, CefRefPtr<CefBrowser> browser,
+         uint64_t revision, const std::vector<unsigned char>& png) {
+        auto slot = WorkspaceSlots().find(token);
+        if (slot == WorkspaceSlots().end()) return;
+        auto page = slot->second.pages.find(identifier);
+        if (page == slot->second.pages.end() || !browser->IsValid() ||
+            !page->second.browser->IsSame(browser) ||
+            page->second.icon_revision != revision) return;
+        BatoSwiftWorkspacePageIcon(token, identifier,
+                                  png.empty() ? nullptr : png.data(), png.size());
+      }, token, identifier, browser, revision, std::move(png)));
+}
+
+class WorkspaceIconDownload final : public CefDownloadImageCallback {
+ public:
+  WorkspaceIconDownload(uint64_t token, int identifier,
+                        CefRefPtr<CefBrowser> browser, uint64_t revision)
+      : token_(token), identifier_(identifier), browser_(browser), revision_(revision) {}
+  void OnDownloadImageFinished(const CefString&, int,
+                               CefRefPtr<CefImage> image) override {
+    if (!CefCurrentlyOn(TID_UI) || !image || image->IsEmpty()) return;
+    int width = 0, height = 0;
+    auto bytes = image->GetAsPNG(1.0f, true, width, height);
+    if (!bytes || width <= 0 || height <= 0 || width > 128 || height > 128 ||
+        bytes->GetSize() > 256 * 1024) return;
+    std::vector<unsigned char> png(bytes->GetSize());
+    if (bytes->GetData(png.data(), png.size(), 0) != png.size()) return;
+    PostPageIcon(token_, identifier_, browser_, revision_, std::move(png));
+  }
+ private:
+  const uint64_t token_;
+  const int identifier_;
+  const CefRefPtr<CefBrowser> browser_;
+  const uint64_t revision_;
+  IMPLEMENT_REFCOUNTING(WorkspaceIconDownload);
+};
+
 int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
   auto reject = [](WorkspaceRejection reason) {
     LogWorkspaceRejection("create-page", reason);
@@ -497,7 +545,31 @@ void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
     auto found = slot.pages.find(identifier);
     if (found == slot.pages.end()) continue;
     found->second.url = url.ToString();
+    ++found->second.icon_revision;
+    PostPageIcon(token, identifier, browser, found->second.icon_revision, {});
     PostPageState(token, identifier, found->second);
+    return;
+  }
+}
+
+void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
+                                        const std::vector<CefString>& urls) {
+  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI) || !browser->IsValid()) return;
+  const int identifier = browser->GetIdentifier();
+  for (auto& [token, slot] : WorkspaceSlots()) {
+    auto found = slot.pages.find(identifier);
+    if (found == slot.pages.end() || !found->second.browser->IsSame(browser)) continue;
+    const auto revision = ++found->second.icon_revision;
+    PostPageIcon(token, identifier, browser, revision, {});
+    // Only the first usable advertised HTTP(S) icon is requested. Browser-owned
+    // decoding is size-bounded; cookies are neither sent nor accepted for favicons.
+    for (const auto& url : urls) {
+      const auto value = url.ToString();
+      if (!ValidDestination(value.c_str())) continue;
+      browser->GetHost()->DownloadImage(url, true, 32, false,
+          new WorkspaceIconDownload(token, identifier, browser, revision));
+      break;
+    }
     return;
   }
 }

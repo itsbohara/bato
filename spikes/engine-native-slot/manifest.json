@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "490de70f83dc40757bc1a639f0a30c629f0027e35c3cc33e7ba3d138bfd72516",
+  "patch_sha256": "5f79008de2861332082b91f051f055fc47a7670e01acf03185ebbc0eb33e5e4a",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/browser_util.h",
       "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
-      "patched_sha256": "23182116c44efc3d5fc6955783c28efa30eacd62a93451112a84fec696b7bc61"
+      "patched_sha256": "0fda898d8035859ecef96913ffa648c40917437df0b081106b0709656961a76a"
     },
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "4772ac57ad3aa4532aaf5ce4d5f550ddecb4ae235d064d21f9c58a22a4021bf5"
+      "patched_sha256": "33ce8bb533409d52504e5d1b6078edfb643b28021088c0846b7181be90fb93d3"
     },
     {
       "root": "chromium",
@@ -44,7 +44,7 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "fce8f27063785e7f5f2e828c492f39627dbd3e3038f78fa14e0493799951d7c3"
+      "patched_sha256": "e42128a5395e2bdc63ed4046b2681e4bc3ae99868ad0e858925276337624bbb9"
     },
     {
       "root": "cef",

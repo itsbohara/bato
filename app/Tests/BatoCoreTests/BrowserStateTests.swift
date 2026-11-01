@@ -6,6 +6,143 @@ final class BrowserStateTests: XCTestCase {
     private let saved = URL(string: "https://example.invalid/start")!
     private let navigated = URL(string: "https://example.invalid/next")!
 
+    func testFoldersDecodeLegacyAndRoundTripWithoutLosingEntries() throws {
+        var state = BrowserState.initial()
+        let pin = try state.addTab(url: saved, title: "Saved")
+        try state.pinEntry(pin)
+        let legacy = try JSONEncoder().encode(state)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        let workspaces = try XCTUnwrap(json["workspaces"] as? [[String: Any]])
+        XCTAssertNil(workspaces[0]["folders"])
+        XCTAssertEqual(try JSONDecoder().decode(BrowserState.self, from: legacy).currentWorkspace.folders, [])
+        let entry = state.currentWorkspace.pins[0]
+        let folder = try state.createFolder(name: "  Reading  ")
+        try state.movePin(pin, toFolder: folder)
+        try state.renameFolder(folder, name: "  Library  ")
+        try state.setFolderCollapsed(folder, collapsed: true)
+        let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+        try restored.validate()
+        XCTAssertEqual(restored, state)
+        XCTAssertEqual(restored.currentWorkspace.folders[0].name, "Library")
+        XCTAssertTrue(restored.currentWorkspace.folders[0].isCollapsed)
+        XCTAssertEqual(restored.currentWorkspace.pins, [entry])
+        XCTAssertEqual(restored.visibleEntries, [entry])
+        XCTAssertEqual(restored.searchPages(matching: "Saved").map(\.entryID), [pin])
+    }
+
+    func testFolderValidationRejectsDanglingDuplicateAndForeignReferences() throws {
+        var state = BrowserState.initial()
+        let pin = try state.addTab(url: saved, title: "Pin")
+        try state.pinEntry(pin)
+        let folder = try state.createFolder(name: "Folder")
+        try state.movePin(pin, toFolder: folder)
+        for invalidFolders in [
+            [PageFolder(name: "Bad", pinIDs: [UUID()])],
+            [PageFolder(name: "Bad", pinIDs: [pin, pin])],
+            [PageFolder(name: "One", pinIDs: [pin]), PageFolder(name: "Two", pinIDs: [pin])],
+            [PageFolder(name: " ")], [PageFolder(name: String(repeating: "x", count: 81))],
+            [PageFolder(name: "Line\nBreak")], [PageFolder(name: " Untrimmed")]
+        ] {
+            var invalid = state
+            invalid.workspaces[0].folders = invalidFolders
+            XCTAssertThrowsError(try invalid.validate())
+        }
+        var duplicate = state
+        duplicate.workspaces[0].folders[0].id = pin
+        XCTAssertThrowsError(try duplicate.validate()) { XCTAssertEqual($0 as? BrowserStateError, .duplicateIdentity) }
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let foreign = try state.addTab(url: saved, title: "Foreign")
+        try state.pinEntry(foreign)
+        state.workspaces[0].folders[0].pinIDs = [foreign]
+        XCTAssertThrowsError(try state.validate()) { XCTAssertEqual($0 as? BrowserStateError, .invalidFolder) }
+    }
+
+    func testFolderEditsAndDissolvePreserveWholePinsSelectionAndWorkspace() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: saved, title: "First")
+        try state.pinEntry(first)
+        let second = try state.addTab(url: saved, title: "Second")
+        try state.pinEntry(second)
+        try state.recordNavigation(entryID: second, url: navigated, title: "Navigated")
+        let pins = state.currentWorkspace.pins
+        let workspaceID = state.activeWorkspaceID
+        let one = try state.createFolder(name: "One")
+        let two = try state.createFolder(name: "Two")
+        try state.movePin(first, toFolder: one)
+        try state.movePin(second, toFolder: one)
+        try state.movePin(first, toFolder: two)
+        XCTAssertEqual(state.currentWorkspace.folders.map(\.pinIDs), [[second], [first]])
+        try state.moveFolder(two, direction: .up)
+        XCTAssertEqual(state.currentWorkspace.folders.map(\.id), [two, one])
+        try state.movePin(first, toFolder: nil)
+        XCTAssertNil(state.currentWorkspace.folder(containingPin: first))
+        try state.dissolveFolder(one)
+        XCTAssertEqual(state.currentWorkspace.pins, pins)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, second)
+        XCTAssertEqual(state.activeWorkspaceID, workspaceID)
+    }
+
+    func testEntryReorderStaysWithinFolderOrUnfiledGroup() throws {
+        var state = BrowserState.initial()
+        let ids = try (1...4).map { number in
+            let id = try state.addTab(url: saved, title: "Pin \(number)")
+            try state.pinEntry(id)
+            return id
+        }
+        let folder = try state.createFolder(name: "Folder")
+        try state.movePin(ids[1], toFolder: folder)
+        try state.movePin(ids[3], toFolder: folder)
+        XCTAssertFalse(state.canMoveEntry(ids[1], direction: .up))
+        XCTAssertTrue(state.canMoveEntry(ids[1], direction: .down))
+        try state.moveEntry(ids[1], direction: .down)
+        XCTAssertEqual(state.currentWorkspace.folders[0].pinIDs, [ids[3], ids[1]])
+        try state.moveEntry(ids[2], direction: .up)
+        XCTAssertEqual(state.currentWorkspace.pins.map(\.id), [ids[2], ids[1], ids[0], ids[3]])
+        XCTAssertEqual(state.currentWorkspace.folders[0].pinIDs, [ids[3], ids[1]])
+        XCTAssertFalse(state.canMoveEntry(ids[2], direction: .up))
+    }
+
+    func testMovingConvertingAndClosingPinsCleanFolderReferences() throws {
+        var state = BrowserState.initial()
+        let ids = try (1...3).map { number in
+            let id = try state.addTab(url: saved, title: "Pin \(number)")
+            try state.pinEntry(id)
+            return id
+        }
+        let folder = try state.createFolder(name: "Folder")
+        for id in ids { try state.movePin(id, toFolder: folder) }
+        let destination = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        let transferred = state.currentWorkspace.pins[0]
+        try state.moveEntry(ids[0], toWorkspace: destination)
+        XCTAssertEqual(state.workspaces[1].pins, [transferred])
+        XCTAssertEqual(state.currentWorkspace.folders[0].pinIDs, [ids[1], ids[2]])
+        try state.makeTemporary(ids[1])
+        XCTAssertEqual(state.currentWorkspace.folders[0].pinIDs, [ids[2]])
+        try state.closeEntry(ids[2]) // Unloading a saved entry retains its container.
+        XCTAssertEqual(state.currentWorkspace.folders[0].pinIDs, [ids[2]])
+        try state.favoriteEntry(ids[2])
+        XCTAssertTrue(state.currentWorkspace.folders[0].pinIDs.isEmpty)
+        try state.validate()
+    }
+
+    func testRejectedFolderCommandsAreAtomicAndCurrentWorkspaceScoped() throws {
+        var state = BrowserState.initial()
+        let folder = try state.createFolder(name: "Valid")
+        let before = state
+        XCTAssertThrowsError(try state.renameFolder(folder, name: " "))
+        XCTAssertThrowsError(try state.createFolder(name: String(repeating: "x", count: 81)))
+        XCTAssertThrowsError(try state.moveFolder(folder, direction: .up))
+        XCTAssertThrowsError(try state.movePin(UUID(), toFolder: folder))
+        XCTAssertEqual(state, before)
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        let inactive = state
+        XCTAssertThrowsError(try state.renameFolder(folder, name: "Changed"))
+        XCTAssertThrowsError(try state.dissolveFolder(folder))
+        XCTAssertEqual(state, inactive)
+    }
+
     func testFirstLaunchIsEmptyAndValid() throws {
         let state = BrowserState.initial()
         try state.validate()

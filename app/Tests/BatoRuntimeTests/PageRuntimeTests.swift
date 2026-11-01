@@ -28,6 +28,95 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func folderMetadataCommitsBeforePublishingAndNeverTouchesEngine() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { commits.append($0) })
+        #expect(runtime.start())
+        let live = runtime.livePages
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { candidate in
+            #expect(commits.last == candidate)
+            #expect(engine.selections == selections)
+            #expect(engine.created.count == 1)
+            publications += 1
+        }
+        #expect(runtime.createFolder(name: "Reading"))
+        let first = try #require(runtime.state.currentWorkspace.folders.first?.id)
+        #expect(runtime.createFolder(name: "Later"))
+        let second = runtime.state.currentWorkspace.folders[1].id
+        #expect(runtime.movePin(id, toFolder: first))
+        #expect(runtime.renameFolder(first, name: "Library"))
+        #expect(runtime.setFolderCollapsed(first, collapsed: true))
+        #expect(runtime.moveFolder(second, direction: .up))
+        #expect(runtime.dissolveFolder(first))
+        #expect(commits.count == 7)
+        #expect(publications == 7)
+        #expect(runtime.livePages == live)
+        #expect(runtime.state.currentWorkspace.pins == state.currentWorkspace.pins)
+        #expect(runtime.state.currentWorkspace.activeEntryID == id)
+        #expect(engine.selections == selections)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func failedFolderSaveLeavesStateAndLivePageUntouched() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        let folder = try state.createFolder(name: "Folder")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in throw Failure.disk })
+        #expect(runtime.start())
+        let live = runtime.livePages
+        let selections = engine.selections
+        var publications = 0
+        runtime.onStateChange = { _ in publications += 1 }
+        #expect(!runtime.movePin(id, toFolder: folder))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(!runtime.renameFolder(folder, name: "Changed"))
+        #expect(runtime.lastError == .saveFailed)
+        #expect(!runtime.dissolveFolder(folder))
+        #expect(runtime.state == state)
+        #expect(runtime.livePages == live)
+        #expect(engine.selections == selections)
+        #expect(publications == 0)
+        #expect(engine.closes.isEmpty)
+    }
+
+    @Test func folderMembershipWaitsForPendingCloseAndKeepsSavedPinOnClose() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        let folder = try state.createFolder(name: "Folder")
+        try state.movePin(id, toFolder: folder)
+        let other = try state.createFolder(name: "Other")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits = 0
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in commits += 1 })
+        #expect(runtime.start())
+        let page = try #require(runtime.livePages[id])
+        #expect(runtime.closeEntry(id))
+        #expect(!runtime.movePin(id, toFolder: nil))
+        #expect(!runtime.movePin(id, toFolder: other))
+        #expect(!runtime.dissolveFolder(folder))
+        #expect(runtime.lastError == .invalidCommand)
+        #expect(commits == 0)
+        #expect(runtime.state == state)
+        #expect(runtime.pendingClose == [page])
+        runtime.receive(.closeCancelled(page))
+        #expect(runtime.movePin(id, toFolder: other))
+        #expect(runtime.closeEntry(id))
+        runtime.receive(.closed(page))
+        #expect(runtime.state.currentWorkspace.folder(containingPin: id)?.id == other)
+        #expect(runtime.state.currentWorkspace.pins.count == 1)
+        #expect(runtime.livePages.isEmpty)
+        #expect(runtime.pendingClose.isEmpty)
+    }
+
     @Test func searchActivationCommitsOnceBeforeLazyCreationAndReusesLivePage() throws {
         var state = BrowserState.initial()
         let source = state.activeWorkspaceID

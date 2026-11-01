@@ -27,10 +27,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private let workspaceTitle = NSTextField(labelWithString: "")
     private let addressSurface = SidebarSurface()
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
+    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
+    private var pageIcons: [UUID: NSImage] = [:]
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var workspaceIDs: [UUID] = []
     private var hasStarted = false
     private var workspaceEditor: WorkspaceEditor?
+    private var folderEditor: FolderEditor?
     private var pageFinder: PageFinder?
     private var commandBar: CommandBarController?
     private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
@@ -72,7 +75,29 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
 
     public func receive(_ event: PageEvent) {
+        switch event {
+        case .closed(let page), .unloaded(let page), .creationFailed(let page):
+            // A saved entry reopens its saved URL, which can differ from the
+            // last live origin. Late terminal events must not clear a newer icon.
+            if runtime.livePages[page.entryID] == page { pageIcons.removeValue(forKey: page.entryID) }
+        default: break
+        }
         runtime.receive(event)
+        render()
+    }
+
+    /// Icons arrive only through the engine's current live-page generation.
+    /// They are session-local presentation data, never organization or a fetch.
+    public func receivePageIcon(entryID: UUID, png: Data?) {
+        let state = runtime.state
+        guard state.profiles.contains(where: { $0.favorites.contains(where: { $0.id == entryID }) }) ||
+              state.workspaces.contains(where: { ($0.pins + $0.tabs).contains(where: { $0.id == entryID }) }) else { return }
+        if let png, !png.isEmpty, png.count <= 262_144, let image = NSImage(data: png) {
+            image.isTemplate = false
+            pageIcons[entryID] = image
+        } else {
+            pageIcons.removeValue(forKey: entryID)
+        }
         render()
     }
 
@@ -80,7 +105,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     public func newTab() { showCommandBar() }
 
     private func showCommandBar(query: String = "", error: String? = nil) {
-        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil,
+        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
         let bar = CommandBarController(query: query, error: error,
@@ -388,17 +413,35 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
+        let focusedFolder = folderControls.compactMap { id, controls -> (id: UUID, role: Int)? in
+            let ordered = [controls.disclosure, controls.title, controls.actions]
+            guard let role = ordered.firstIndex(where: { root.window?.firstResponder === $0 }) else { return nil }
+            return (id, role)
+        }.first
+        let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
         pageControls.removeAll()
+        folderControls.removeAll()
+        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
+                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
+        pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
         for view in entries.arrangedSubviews {
             entries.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
         let favorites = state.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
         addSection("Favorites", pages: favorites)
-        addSection("Pinned", pages: workspace.pins)
+        let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
+        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
+                   totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
+        for folder in workspace.folders { addFolder(folder, workspaceID: workspace.id, pins: workspace.pins) }
         addSection("Tabs", pages: workspace.tabs)
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
+        } else if let focusedFolder, let controls = folderControls[focusedFolder.id] {
+            let ordered = [controls.disclosure, controls.title, controls.actions]
+            root.window?.makeFirstResponder(ordered[focusedFolder.role])
+        } else if let parentOfFocusedPin, let controls = folderControls[parentOfFocusedPin] {
+            root.window?.makeFirstResponder(controls.disclosure)
         }
         workspaceIDs = state.workspaces.map(\.id)
         workspacePicker.removeAllItems()
@@ -421,17 +464,17 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
     }
 
-    private func addSection(_ title: String, pages: [PageEntry]) {
+    private func addSection(_ title: String, pages: [PageEntry], totalCount: Int? = nil, includeEmpty: Bool = false) {
         // Shared Favorites deserve space when present, without three empty
         // diagnostic sections competing with a new workspace's first tab.
-        guard !pages.isEmpty || title == "Tabs" else { return }
+        guard !pages.isEmpty || title == "Tabs" || includeEmpty else { return }
         let heading = NSStackView()
         heading.orientation = .horizontal
         heading.spacing = 6
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
         label.textColor = .secondaryLabelColor
-        let count = NSTextField(labelWithString: String(pages.count))
+        let count = NSTextField(labelWithString: String(totalCount ?? pages.count))
         count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         count.textColor = .secondaryLabelColor
         let spacer = NSView()
@@ -442,7 +485,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         entries.addArrangedSubview(heading)
         heading.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
         entries.setCustomSpacing(8, after: heading)
-        if pages.isEmpty {
+        if pages.isEmpty && title == "Tabs" {
             let empty = NSTextField(wrappingLabelWithString: "No tabs yet.\nOpen a website to start browsing.")
             empty.font = .systemFont(ofSize: 12)
             empty.textColor = .secondaryLabelColor
@@ -483,10 +526,16 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         select.bezelStyle = .recessed
         select.alignment = tile ? .center : .left
         select.font = .systemFont(ofSize: tile ? 11 : 13, weight: tile ? .medium : .regular)
-        select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
+        if let icon = pageIcons[page.id]?.copy() as? NSImage {
+            icon.size = NSSize(width: tile ? 20 : 16, height: tile ? 20 : 16)
+            select.image = icon
+            select.imageScaling = .scaleProportionallyDown
+        } else {
+            select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
+        }
         select.imagePosition = tile ? .imageAbove : .imageLeading
         select.imageHugsTitle = true
-        select.contentTintColor = .labelColor
+        select.contentTintColor = pageIcons[page.id] == nil ? .labelColor : nil
         select.setButtonType(.momentaryPushIn)
         select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         select.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -555,6 +604,37 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         if let menu = select.menu {
             // Boundary actions stay disabled for every entry kind.
             menu.autoenablesItems = false
+            if page.kind == .pinned {
+                menu.addItem(.separator())
+                let workspace = runtime.state.currentWorkspace
+                let workspaceID = workspace.id
+                let currentFolderID = workspace.folder(containingPin: page.id)?.id
+                let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
+                let move = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
+                let folders = NSMenu()
+                folders.autoenablesItems = false
+                for folder in workspace.folders {
+                    let folderID = folder.id
+                    let item = ActionMenuItem(title: folder.name) { [weak self] in
+                        guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+                        self.perform { self.runtime.movePin(page.id, toFolder: folderID) }
+                    }
+                    item.state = currentFolderID == folderID ? .on : .off
+                    item.isEnabled = !isClosing && currentFolderID != folderID
+                    folders.addItem(item)
+                }
+                move.submenu = folders
+                move.isEnabled = folders.items.contains(where: \.isEnabled)
+                menu.addItem(move)
+                if currentFolderID != nil {
+                    let unfile = ActionMenuItem(title: "Remove from Folder") { [weak self] in
+                        guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+                        self.perform { self.runtime.movePin(page.id, toFolder: nil) }
+                    }
+                    unfile.isEnabled = !isClosing
+                    menu.addItem(unfile)
+                }
+            }
             menu.addItem(.separator())
             let moveUp = ActionMenuItem(title: "Move Up") { [weak self] in
                 guard let self else { return }
@@ -592,6 +672,130 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         }
     }
 
+    private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {
+        let folderID = folder.id
+        let toggle: () -> Void = { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == workspaceID,
+                  let current = self.runtime.state.currentWorkspace.folders.first(where: { $0.id == folderID }) else { return }
+            self.perform { self.runtime.setFolderCollapsed(folderID, collapsed: !current.isCollapsed) }
+        }
+        let disclosure = ActionButton(title: "", invoke: toggle)
+        disclosure.bezelStyle = .disclosure
+        disclosure.setButtonType(.onOff)
+        disclosure.state = folder.isCollapsed ? .off : .on
+        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(folder.name)")
+        disclosure.setAccessibilityIdentifier("bato-folder-disclosure-\(folderID.uuidString)")
+        disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        disclosure.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        let title = ActionButton(title: folder.name, invoke: toggle)
+        title.image = sidebarSymbol(folder.isCollapsed ? "folder" : "folder.fill", size: 12)
+        title.imagePosition = .imageLeading
+        title.imageHugsTitle = true
+        title.isBordered = false
+        title.alignment = .left
+        title.font = .systemFont(ofSize: 12, weight: .medium)
+        title.contentTintColor = .secondaryLabelColor
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        (title.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+        title.setAccessibilityLabel(folder.name)
+        title.setAccessibilityIdentifier("bato-folder-\(folderID.uuidString)")
+        title.toolTip = "\(folder.name) · \(folder.pinIDs.count) pinned pages"
+        let count = NSTextField(labelWithString: String(folder.pinIDs.count))
+        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        count.textColor = .secondaryLabelColor
+        let actions = ActionButton(title: "") { [weak self, weak title] in
+            guard let title else { return }
+            self?.showFolderActions(folderID, workspaceID: workspaceID, anchor: title)
+        }
+        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(folder.name)")
+        actions.setAccessibilityIdentifier("bato-folder-actions-\(folderID.uuidString)")
+        let heading = NSStackView(views: [disclosure, title, count, actions])
+        heading.spacing = 3
+        heading.orientation = .horizontal
+        entries.addArrangedSubview(heading)
+        heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        folderControls[folderID] = (disclosure, title, actions)
+        title.menu = folderMenu(folderID, workspaceID: workspaceID)
+        if !folder.isCollapsed {
+            for pinID in folder.pinIDs {
+                guard let pin = pins.first(where: { $0.id == pinID }) else { continue }
+                let row = makePageView(pin, tile: false)
+                let inset = NSView()
+                row.translatesAutoresizingMaskIntoConstraints = false
+                inset.addSubview(row)
+                NSLayoutConstraint.activate([
+                    row.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: 14),
+                    row.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
+                    row.topAnchor.constraint(equalTo: inset.topAnchor),
+                    row.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
+                ])
+                entries.addArrangedSubview(inset)
+                inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+            }
+        }
+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
+    }
+
+    private func folderMenu(_ folderID: UUID, workspaceID: UUID) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(ActionMenuItem(title: "Rename Folder…") { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+            self.editFolder(folderID)
+        })
+        for (label, direction) in [("Move Folder Up", FolderMoveDirection.up), ("Move Folder Down", .down)] {
+            let move = ActionMenuItem(title: label) { [weak self] in
+                guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+                self.perform { self.runtime.moveFolder(folderID, direction: direction) }
+            }
+            move.isEnabled = runtime.state.activeWorkspaceID == workspaceID && runtime.state.canMoveFolder(folderID, direction: direction)
+            menu.addItem(move)
+        }
+        menu.addItem(.separator())
+        let dissolve = ActionMenuItem(title: "Dissolve Folder") { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+            self.perform { self.runtime.dissolveFolder(folderID) }
+        }
+        dissolve.toolTip = "Keep every pinned page outside this folder."
+        menu.addItem(dissolve)
+        return menu
+    }
+
+    private func showFolderActions(_ folderID: UUID, workspaceID: UUID, anchor: NSView) {
+        guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
+              runtime.state.currentWorkspace.folders.contains(where: { $0.id == folderID }),
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        folderMenu(folderID, workspaceID: workspaceID).popUp(positioning: nil,
+            at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
+    }
+
+    private func editFolder(_ folderID: UUID? = nil) {
+        guard hasStarted, folderEditor == nil, workspaceEditor == nil, pageFinder == nil,
+              commandBar == nil, pendingCommandBarAction == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let workspaceID = runtime.state.activeWorkspaceID
+        let folder = folderID.flatMap { id in runtime.state.currentWorkspace.folders.first(where: { $0.id == id }) }
+        if folderID != nil && folder == nil { return }
+        requestNativeFocus?()
+        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil) { [weak self] name in
+            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return "The workspace is no longer active." }
+            let saved = folderID.map { self.runtime.renameFolder($0, name: name) } ?? self.runtime.createFolder(name: name)
+            guard saved else {
+                return self.runtime.lastError == .saveFailed
+                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
+                    : "Enter a folder name using 1–80 characters without control characters."
+            }
+            self.render()
+            return nil
+        }
+        folderEditor = editor
+        guard let sheet = editor.window else { folderEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] _ in self?.folderEditor = nil }
+        editor.focusName()
+    }
+
     private func perform(_ command: () -> Bool) {
         guard hasStarted else { return }
         _ = command()
@@ -617,12 +821,17 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
 
     @objc private func showWorkspaceActions() {
-        guard hasStarted, workspaceEditor == nil, let window = root.window,
+        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         let id = runtime.state.activeWorkspaceID
         requestNativeFocus?()
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
+            self.editFolder()
+        })
+        menu.addItem(.separator())
         // Capture the workspace, not its position or a later active selection.
         // The runtime revalidates its position when the action is invoked.
         let moveUp = ActionMenuItem(title: "Move Workspace Up") { [weak self] in
@@ -641,7 +850,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
 
     private func findPage() {
-        guard hasStarted, pageFinder == nil, workspaceEditor == nil, let window = root.window,
+        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
         let finder = PageFinder(search: { [weak self] query in
@@ -680,7 +889,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
 
     private func editWorkspace() {
-        guard hasStarted, workspaceEditor == nil, let window = root.window,
+        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         let workspace = runtime.state.currentWorkspace
         requestNativeFocus?()
@@ -988,6 +1197,69 @@ private final class WorkspaceEditor: NSWindowController {
         }
     }
 
+    private func dismiss(_ response: NSApplication.ModalResponse) {
+        guard let window, let parent = window.sheetParent else { return }
+        parent.endSheet(window, returnCode: response)
+        window.orderOut(nil)
+    }
+}
+
+/// A local metadata draft; cancellation never changes organization or pages.
+@MainActor
+private final class FolderEditor: NSWindowController {
+    private let field = NSTextField(string: "")
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let save: (String) -> String?
+    init(name: String, creating: Bool, save: @escaping (String) -> String?) {
+        self.save = save
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 180),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = creating ? "New Folder" : "Rename Folder"
+        panel.isReleasedWhenClosed = false
+        super.init(window: panel)
+        field.stringValue = name
+        field.placeholderString = "Folder name"
+        field.setAccessibilityLabel("Folder name")
+        field.setAccessibilityIdentifier("bato-folder-name")
+        field.cell?.sendsActionOnEndEditing = false
+        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.textColor = .systemRed
+        errorLabel.setAccessibilityIdentifier("bato-folder-edit-error")
+        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
+        cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityIdentifier("bato-folder-edit-cancel")
+        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
+        apply.keyEquivalent = "\r"
+        apply.setAccessibilityIdentifier("bato-folder-edit-save")
+        panel.defaultButtonCell = apply.cell as? NSButtonCell
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let buttons = NSStackView(views: [spacer, cancel, apply])
+        buttons.spacing = 8
+        let stack = NSStackView(views: [NSTextField(labelWithString: "Name"), field, errorLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(stack)
+        if let content = panel.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+                field.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            ])
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+    func focusName() { window?.makeFirstResponder(field); field.selectText(nil) }
+    private func saveDraft() {
+        if let error = save(field.stringValue) { errorLabel.stringValue = error }
+        else { dismiss(.OK) }
+    }
     private func dismiss(_ response: NSApplication.ModalResponse) {
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window, returnCode: response)
