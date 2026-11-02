@@ -6,7 +6,7 @@ Updated 2026-11-02. Rough planning estimate: **45% of a usable V1**, with the po
 | --- | --- | --- |
 | Chromium foundation | Pinned source build; native Swift hosting; real pages and bounded focus/close checks | Remaining window, split, modal, compatibility and production acceptance |
 | Organization | Persistent workspaces; shared Favorites; pins/tabs; ordered flat folders with collapse, membership and safe dissolve; entry/workspace ordering and transfers | Nested folders, broader workspace/Profile lifecycle and import mapping |
-| Page coordination | Stable IDs; lazy creation; live-page reuse; saved/session URLs; confirmed/cancelled close | Broader crash/recovery and lifecycle coverage |
+| Page coordination | Stable IDs; lazy creation; live-page reuse; saved/session URLs; confirmed/cancelled close; sidebar Copy Link | Broader crash/recovery and lifecycle coverage |
 | Find Page | Current-Profile search, atomic activation, unloaded opening and live reuse; integrated command-bar page results | Broader search/ranking polish |
 | Arc-style interface | Adaptive sidebar, Favorites, rounded content, engine-delivered site icons; duplicate horizontal tabs hidden in owned normal windows | Remaining native browser chrome and broader visual polish |
 | Sidebar behavior | Coordinated dock/hide/reveal, Cmd+S, 220–400-point drag/keyboard resizing and accessible controls; bounded real-host checks passed | Persisted preferences, animation, broader window/transition acceptance |
@@ -34,6 +34,8 @@ The first split run quit cleanly but incorrectly cleared active-pair metadata th
 The first small Peek slice adds a process-local session contract for same-Profile parent/preview identities, HTTP(S) link eligibility, confirmed/cancelled dismissal and stale-event protection. Promotion preserves the live identity and requires an unchanged prepared snapshot after host adoption. It is not wired into the runtime or Chromium host, and does not render a preview. All 8 targeted tests passed after a test-macro compilation fix; independent review covered stale promotion snapshots. Completion estimates remain unchanged. See [adapter contract](app/ENGINE-ADAPTER.md).
 
 A second small Peek prerequisite lets organization tab insertion retain a supplied preview entry ID, with atomic collision/invalid-URL rollback and existing split-selection behavior. All 53 core-model tests passed, including 6 new adoption cases. This does not yet transfer a live generation. Pinned-source research found that an overlay also needs explicit CEF preview-role routing, guarded close/focus and origin handling; see [native Peek plan](spikes/engine-native-slot/PEEK-PLAN.md).
+
+Sidebar **Copy Link** now resolves the latest session URL at invocation for Favorites, pins and tabs. The native client build and a navigated-pin copy/paste check passed; saved destination and exact organization bytes were preserved across copy/cancel and clean Quit. Other row kinds and refusal guards share reviewed code but were not separately runtime-exercised. See [Copy Link results](spikes/engine-native-slot/COPY-LINK-RESULTS.md).
 
 ## Next milestones
 

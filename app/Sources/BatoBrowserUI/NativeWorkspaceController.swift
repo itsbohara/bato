@@ -768,6 +768,17 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         if let menu = select.menu {
             // Boundary actions stay disabled for every entry kind.
             menu.autoenablesItems = false
+            let workspaceID = runtime.state.activeWorkspaceID
+            let profileID = runtime.state.currentWorkspace.profileID
+            let entryID = page.id
+            let copy = ActionMenuItem(title: "Copy Link") { [weak self] in
+                self?.copyLink(entryID: entryID, workspaceID: workspaceID, profileID: profileID)
+            }
+            copy.toolTip = "Copy this page’s current address."
+            copy.setAccessibilityIdentifier("bato-copy-link-\(entryID.uuidString)")
+            copy.isEnabled = !runtime.pendingClose.contains(where: { $0.entryID == entryID })
+            menu.addItem(.separator())
+            menu.addItem(copy)
             if runtime.supportsSplits, page.kind != .favorite {
                 let workspaceID = runtime.state.activeWorkspaceID
                 let sourceID = runtime.state.currentWorkspace.activeEntryID
@@ -848,6 +859,24 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 menu.addItem(transfer)
             }
         }
+    }
+
+    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID) {
+        guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
+              runtime.state.currentWorkspace.profileID == profileID,
+              commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil,
+              workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil,
+              !runtime.pendingClose.contains(where: { $0.entryID == entryID }),
+              let entry = runtime.state.visibleEntries.first(where: { $0.id == entryID }),
+              let scheme = entry.lastURL.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = entry.lastURL.host, !host.isEmpty,
+              entry.lastURL.user == nil, entry.lastURL.password == nil else { return }
+        // Resolve at invocation: saved entries may have navigated since the menu
+        // was built, and their saved destination must remain unchanged.
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(entry.lastURL.absoluteString, forType: .string)
     }
 
     private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {

@@ -1,0 +1,17 @@
+# Sidebar Copy Link
+
+Checked 2026-11-02 against the existing pinned native source host. This is a bounded menu check, not a broader browser acceptance pass.
+
+Every Favorite, pin and temporary-page context menu now offers **Copy Link**. The action resolves the entry's latest committed session URL at invocation, rather than capturing the URL when the menu was built. It rejects a stale workspace/Profile/entry, pending close, modal sheet or active editor/command bar. Only credential-free HTTP(S) URLs are copied. It does not navigate, change a saved destination, or mutate organization.
+
+Implementation and independent review used bounded subagents. The source-built client compiled successfully in 38.69 seconds with two executed steps. The client patch roundtrip verified 15 files and 11 canonical mirrors; the native-slot check accepted all 23 staged engine/client files. This also staged the preceding exact-ID core tab-insertion change. Engine source and ABI were unchanged. Existing Swift bridge warnings remain; no extension or full dependency matrix was rerun.
+
+The runtime check used a fresh `runtime/copy-link-state-v1` clone of the preserved split-pair organization and the existing explicitly bound synthetic engine Profile with `--use-mock-keychain`. The fixture server was restarted on loopback port 18765 because the prior server was no longer running. The owned browser PID was 9765.
+
+The selected saved pin navigated from `modal.html` to `modal.html?copy-link-check=1`. Its native context menu exposed Copy Link with the stable entry-specific accessibility identifier. Invoking it and pasting into the floating command bar displayed the exact latest URL, including the query. The command bar was cancelled without submitting. Organization bytes before Copy Link and after cancellation were identical; the pin's saved destination remained the original `modal.html`. Only the deliberate fixture navigation changed its session URL. The original split-pair organization remained byte-identical to its pre-launch snapshot.
+
+Normal native-menu Quit exited 0. Organization bytes before and after Quit matched exactly. The log contained exactly one native detach, message-loop exit and completed CEF shutdown. No owned browser or build remains. The loopback fixture server remains available for the next check.
+
+Private SSD evidence is under `/Volumes/Mahesh/personal/bato-build/logs/`: `copy-link-compiler.log`, `copy-link-build.log`, `copy-link-v1.log`, exit receipt, pre-copy and pre-quit organization snapshots, and the startup process sample. Startup was slow; existing duplicate Objective-C class, cross-volume code-sign clone and WidgetHost message rejection diagnostics were retained. Both fixture panes subsequently rendered. A native typing attempt initially dropped the URL prefix and triggered a synthetic Google query; pasting the full fixture URL corrected navigation. One stale AX target and one changed-app guard required fresh snapshots. None establishes a Copy Link failure or fixes the older renderer anomaly.
+
+Favorites and temporary rows share the reviewed implementation but were not separately invoked in this run. Stale-context/modal/pending-close refusals were source-reviewed, not individually exercised. No clipboard-history behavior, broader focus acceptance or daily-use readiness is claimed. Visible Peek remains unimplemented; see [the proposed native integration plan](PEEK-PLAN.md).
