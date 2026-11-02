@@ -16,7 +16,9 @@ Closing a loaded entry requests an engine close. Only the matching `closed` call
 
 Only an eligible absolute HTTP(S) link can start a session. An occupied session must be dismissed or promoted explicitly before another can open. Dismissal retains the preview identity while the engine resolves beforeunload; cancellation keeps it available. Events must match the full live-page generation. Promotion transfers the existing live page rather than closing and recreating it, and organization adoption must succeed before the host relinquishes preview ownership.
 
-The Chromium overlay, link interception/context menu, Escape/outside-click handling, focus restoration and transactional normal-tab adoption remain unimplemented. This contract does not demonstrate rendered Peek behavior or change persisted organization.
+`BrowserState.addTab(id:url:title:)` can insert a supplied preview entry ID as a normal temporary tab, preserving organization identity for future promotion. It validates global ID uniqueness transactionally and uses ordinary tab-selection/split-leaving rules. This model operation does not transfer a live generation or bind an engine page; the host/runtime adoption boundary must still do that after a successful save. Existing callers can omit the ID to generate a fresh one.
+
+The Chromium overlay, link interception/context menu, Escape/outside-click handling, focus restoration and transactional live-page adoption remain unimplemented. See the pinned-source [native Peek plan](../spikes/engine-native-slot/PEEK-PLAN.md). This contract does not demonstrate rendered Peek behavior or change persisted organization.
 
 ## Exact pinned CEF seam
 

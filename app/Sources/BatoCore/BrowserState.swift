@@ -495,13 +495,18 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// A supplied identity lets a future host adopt an existing live page without
+    /// replacing its token. This only inserts organization metadata.
     @discardableResult
-    public mutating func addTab(url: URL, title: String) throws -> UUID {
+    public mutating func addTab(id: UUID = UUID(), url: URL, title: String) throws -> UUID {
         try transact { draft in
             try Self.validateURL(url)
-            let entry = PageEntry(title: title, lastURL: url, kind: .temporary)
+            let entry = PageEntry(id: id, title: title, lastURL: url, kind: .temporary)
             let workspace = draft.currentWorkspaceIndex
             draft.workspaces[workspace].tabs.append(entry)
+            // Claim the identity before selection can discard an active transient
+            // split whose identifier must not be reused by the adopted page.
+            try draft.validate()
             draft.selectEntryInPlace(entry.id)
             return entry.id
         }
