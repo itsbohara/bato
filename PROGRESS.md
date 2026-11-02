@@ -33,6 +33,8 @@ The first split run quit cleanly but incorrectly cleared active-pair metadata th
 
 ## Next milestones
 
+Reference research on 2026-11-01 added 43 private Dia screenshots with accessibility snapshots, a searchable gallery, coverage index and file manifest. Captures include Apps/Slack connection, grouping preferences and generated group, completed public-page and Slack chat answers, splits and settings. This adds reference coverage, not Bato functionality or completion percentage. See [reference library](REFERENCES.md); personal screenshots stay outside this public repo. AI remains deferred in V1.
+
 1. Add Peek preview, dismiss and promotion. Retain pointer-divider/focus acceptance as explicit open gates; saved pairs and native controls are implemented within recorded limits.
 2. Continue remaining browser-chrome polish, nested organization and preferences alongside broader window/lifecycle acceptance.
 3. Add remaining Profile/import/blocking/essential workflows and release readiness.

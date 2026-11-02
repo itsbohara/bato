@@ -1,8 +1,14 @@
 # Resume Bato
 
-Updated 2026-11-01. Read AGENTS.md and PROGRESS.md. This is the active handoff; historical detail is in milestone reports and Git history.
+Updated 2026-11-02. Read AGENTS.md and PROGRESS.md. This is the active handoff; historical detail is in milestone reports and Git history.
 
 ## Current checkpoint
+
+Reference capture pass completed 2026-11-01 after the split milestone, at the user's request. The private Dia 1.55.1 (89833) library is `/Volumes/Mahesh/personal/bato-references/dia/2026-11-01/`: `gallery.html`, `index.md`, `manifest.json`, 43 JPEG/AX pairs and one Tabs-menu AX-only record. See REFERENCES.md for the public-safe pointer and scope. Two bounded subagents audited sources and reviewed selected images.
+
+Coverage includes Apps, grouping settings, Command-click grouping (name loading in 19; visible later in 27/32/33), completed public-page chat (27), populated split (32), settings/Profile/Skills/history, approved Slack connection (37–39), Tools onboarding with auto-connect off (43), actual Slack request (44), and completed source-linked answer (45–46). Capture 46 does not confirm expanded tool details. Other visible app rows remained Connect; the operator granted no other app access.
+
+Slack remains connected as requested. At the end of the capture pass, the final read-only test chat was open. Existing user tabs were not closed; the created public group and test chat were retained for review, and the synthetic example.com split pane was closed. Native menu screenshots and some coordinate actions were unavailable. Group collapse/rename/resize, global similarity clustering and broader AI/report/meeting states remain gaps. No Bato source behavior/build changed or completion percentage increased. Next implementation remains Peek. Keep raw screenshots, AX text and Slack results private; never stage them into Git.
 
 Split-pairs milestone completed2026-11-01. Actual Chromium TabStripModel splits are now owned by Bato stable organization references. Workspace.splits contains ordered PageSplit{id,leftEntryID,rightEntryID,dividerRatio,isPinned}; activeSplitID selects layout while activeEntryID is focusedmember. References only workspace pins/tabs, Favorites excluded, onepairmembership perpage. Canonical entries/folders stay unchanged. PinPair promotes temporarymembers and preserves saved destinations. Unsavedpairs discard on leaving; savedpairs survive Separate. Savedside close clears activepair, keeps relationship and selects survivor; temporary deletion/transfer/conversion removes dangling relationship. Version1 legacy decoding defaults no split metadata and emptyfields omitted.
 
