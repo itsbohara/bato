@@ -1,6 +1,6 @@
 # Bato progress
 
-Updated 2026-11-01. Rough planning estimate: **45% of a usable V1**, with the polished Arc-style interface around **35–40%**. These estimates reflect feature coverage and remaining integration work, not elapsed time or a measured completion score. The current build is an engineering alpha, not a daily-use release.
+Updated 2026-11-02. Rough planning estimate: **45% of a usable V1**, with the polished Arc-style interface around **35–40%**. These estimates reflect feature coverage and remaining integration work, not elapsed time or a measured completion score. The current build is an engineering alpha, not a daily-use release.
 
 | Area | Current state | Remaining |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ Updated 2026-11-01. Rough planning estimate: **45% of a usable V1**, with the po
 | Sidebar behavior | Coordinated dock/hide/reveal, Cmd+S, 220–400-point drag/keyboard resizing and accessible controls; bounded real-host checks passed | Persisted preferences, animation, broader window/transition acceptance |
 | Command bar | Floating native Cmd+T bar; URL/web search; current-Profile page switching; keyboard selection; browser commands; session-local provider choice | Persisted search settings, broader command coverage and acceptance |
 | Splits | Bato-owned native Chromium pairs; saved pair controls; lazy member opening/live reuse; menu-driven divider ratio; exact clean-quit persistence and same-binary restart | Pointer divider resizing, keyboard/focus acceptance and broader split compatibility |
-| Peek | Not implemented | Preview, dismiss and promote |
+| Peek | Preparatory session lifecycle contract; no visible preview yet | Native overlay, link triggers, dismiss/focus wiring and transactional promotion |
 | Profiles | Synthetic storage sharing/isolation demonstrated | Application context binding and Profile controls |
 | Extensions | Narrow installation/persistence/use checks recorded | Remaining acceptance; extensive testing deferred by user |
 | Blocking | Not implemented | Default blocking, controls and persistent site exceptions |
@@ -31,11 +31,13 @@ Split pairs now have stable Bato ownership, native controls and saved pair metad
 
 The first split run quit cleanly but incorrectly cleared active-pair metadata through anchor recovery. The client now gates recovery against the authoritative active browser. With the final binary, the second normal Quit exited 0 and preserved exact pre-quit/final organization bytes, including the active pair and the 0.6 ratio. The same-binary third launch restored the stable pair UUID, ordered members and the 0.6 ratio as actual side-by-side pages; left-page activity advanced 0→1. Its normal Quit exited 0 with exactly one detach, message-loop return and completed shutdown. Root verified third-launch before/final bytes exactly equal the second final bytes. The prior organization remains untouched, and final state excluding split metadata exactly matches the original baseline pages, URLs, folders and selection. Direct pointer drag and AX slider Right/value-input attempts produced no confirmed divider change; Tab traversal remained in the native address field for an unknown reason. These pointer/focus checks are open. Observed native-ratio debouncing is implemented and covered by tests; only menu-driven ratio changes and persistence are runtime-accepted here.
 
+The first small Peek slice adds a process-local session contract for same-Profile parent/preview identities, HTTP(S) link eligibility, confirmed/cancelled dismissal and stale-event protection. Promotion preserves the live identity and requires an unchanged prepared snapshot after host adoption. It is not wired into the runtime or Chromium host, and does not render a preview. All 8 targeted tests passed after a test-macro compilation fix; independent review covered stale promotion snapshots. Completion estimates remain unchanged. See [adapter contract](app/ENGINE-ADAPTER.md).
+
 ## Next milestones
 
 Reference research on 2026-11-01 added 43 private Dia screenshots with accessibility snapshots, a searchable gallery, coverage index and file manifest. Captures include Apps/Slack connection, grouping preferences and generated group, completed public-page and Slack chat answers, splits and settings. This adds reference coverage, not Bato functionality or completion percentage. See [reference library](REFERENCES.md); personal screenshots stay outside this public repo. AI remains deferred in V1.
 
-1. Add Peek preview, dismiss and promotion. Retain pointer-divider/focus acceptance as explicit open gates; saved pairs and native controls are implemented within recorded limits.
+1. Connect the preparatory Peek session contract to a real native preview, then add link triggers, dismiss/focus handling and transactional promotion. Retain pointer-divider/focus acceptance as explicit open gates; saved pairs and native controls are implemented within recorded limits.
 2. Continue remaining browser-chrome polish, nested organization and preferences alongside broader window/lifecycle acceptance.
 3. Add remaining Profile/import/blocking/essential workflows and release readiness.
 

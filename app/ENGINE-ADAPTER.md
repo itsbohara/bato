@@ -10,6 +10,14 @@ Organization mutations commit before publication and engine creation. A command 
 
 Closing a loaded entry requests an engine close. Only the matching `closed` callback removes a temporary entry or resets/unloads a saved entry. A cancelled beforeunload must report `closeCancelled`, retaining the entry. A failed save after physical closure leaves the committed entry unloaded; it does not immediately recreate it. Old generations cannot navigate or close a reopened entry.
 
+## Preparatory Peek contract
+
+`PeekSession` is a process-local lifecycle contract for a future window-owned preview. It is not connected to `PageRuntime`, `PageEngine` or the native host yet. A host must own one session per window, validate that its parent is still current, and create the preview in the parent's actual Chromium request context; equal Profile UUIDs alone do not establish storage isolation.
+
+Only an eligible absolute HTTP(S) link can start a session. An occupied session must be dismissed or promoted explicitly before another can open. Dismissal retains the preview identity while the engine resolves beforeunload; cancellation keeps it available. Events must match the full live-page generation. Promotion transfers the existing live page rather than closing and recreating it, and organization adoption must succeed before the host relinquishes preview ownership.
+
+The Chromium overlay, link interception/context menu, Escape/outside-click handling, focus restoration and transactional normal-tab adoption remain unimplemented. This contract does not demonstrate rendered Peek behavior or change persisted organization.
+
 ## Exact pinned CEF seam
 
 The authored native-slot `active_browser_id_v1` export resolves a live, unblocked window token to its active WebContents and CEF browser identifier. It returns zero when unavailable. Resolve that identifier with public `CefBrowserHost::GetBrowserByIdentifier`. The diagnostic native navigation action targets the current page on each explicit action; it is not a stable organization binding.
