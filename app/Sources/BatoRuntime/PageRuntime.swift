@@ -95,6 +95,11 @@ public final class PageRuntime {
         engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
             state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }.map { !pendingClose.contains($0) } == true
     }
+    /// Pure: link triggers call this synchronously from inside an engine navigation request.
+    public func canOpenPeek(from parent: LivePage, url: URL) -> Bool {
+        canOpenPeek && PeekSession.isEligibleLink(url) && state.currentWorkspace.activeEntryID == parent.entryID &&
+            livePages[parent.entryID] == parent
+    }
     private let engine: any PageEngine
     private var abandonedPreviews: Set<LivePage> = []
     private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
@@ -347,6 +352,22 @@ public final class PageRuntime {
             return false
         }
         return true
+    }
+
+    /// Revalidates the parent and destination: the page state may have changed since a link trigger fired.
+    @discardableResult
+    public func openPeek(from parent: LivePage, url: URL) -> Bool {
+        guard canOpenPeek(from: parent, url: url) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return openPeek(url: url)
+    }
+
+    /// Dismisses only the named preview, so a late scrim click for an ended Peek cannot close its successor.
+    @discardableResult
+    public func dismissPeek(preview: LivePage) -> Bool {
+        peekSession.preview?.page == preview && dismissPeek()
     }
 
     /// Closure goes through the engine's before-unload confirmation; the preview

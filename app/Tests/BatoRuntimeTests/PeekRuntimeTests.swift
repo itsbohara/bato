@@ -272,4 +272,64 @@ struct PeekRuntimeTests {
         runtime.receive(.peekEnded(preview: preview, reason: .modal))
         #expect(engine.closes == [preview])
     }
+
+    @Test func scrimClickDismissesThroughBeforeUnloadAndIgnoresStalePreview() throws {
+        let (runtime, engine, _) = try make()
+        #expect(runtime.openPeek(url: target))
+        let first = try #require(runtime.peekSession.preview?.page)
+        runtime.receive(.closed(first))
+        runtime.receive(.peekEnded(preview: first, reason: .previewClosed))
+        #expect(runtime.openPeek(url: target))
+        let second = try #require(runtime.peekSession.preview?.page)
+        #expect(!runtime.dismissPeek(preview: first))
+        #expect(engine.closes.isEmpty)
+        #expect(runtime.peekSession.preview?.isPendingDismissal == false)
+        #expect(runtime.dismissPeek(preview: second))
+        #expect(engine.closes == [second])
+        #expect(runtime.peekSession.preview?.isPendingDismissal == true)
+        #expect(!runtime.dismissPeek(preview: second))
+        runtime.receive(.closeCancelled(second))
+        #expect(runtime.peekSession.preview?.page == second)
+    }
+
+    @Test func linkEligibilityRequiresLiveActiveParentWithoutPeekAndEligibleURL() throws {
+        let (runtime, engine, parent) = try make()
+        let organization = runtime.state
+        #expect(runtime.canOpenPeek(from: parent, url: target))
+        #expect(!runtime.canOpenPeek(from: parent, url: URL(string: "javascript:alert(1)")!))
+        #expect(!runtime.canOpenPeek(from: parent, url: URL(string: "https://user:secret@example.invalid/")!))
+        #expect(!runtime.canOpenPeek(from: LivePage(entryID: UUID(), profileID: parent.profileID), url: target))
+        #expect(!runtime.canOpenPeek(from: LivePage(entryID: parent.entryID, profileID: parent.profileID), url: target))
+        engine.supportsPeek = false
+        #expect(!runtime.canOpenPeek(from: parent, url: target))
+        engine.supportsPeek = true
+        #expect(runtime.state == organization)
+        #expect(engine.presented.isEmpty)
+        #expect(runtime.openPeek(url: target))
+        #expect(!runtime.canOpenPeek(from: parent, url: target))
+    }
+
+    @Test func linkEligibilityRejectsParentFromAnotherWorkspace() throws {
+        let (runtime, _, parent) = try make()
+        #expect(runtime.addWorkspace(name: "Other"))
+        #expect(!runtime.canOpenPeek(from: parent, url: target))
+    }
+
+    @Test func linkRequestOpensPeekForParentAndRevalidates() throws {
+        let (runtime, engine, parent) = try make()
+        #expect(runtime.openPeek(from: parent, url: target))
+        #expect(engine.presented.count == 1)
+        #expect(engine.presented[0].parent == parent)
+        #expect(engine.presented[0].url == target)
+        #expect(runtime.peekSession.preview?.url == target)
+        #expect(!runtime.openPeek(from: parent, url: start))
+        #expect(engine.presented.count == 1)
+        let preview = try #require(runtime.peekSession.preview?.page)
+        runtime.receive(.closed(preview))
+        runtime.receive(.peekEnded(preview: preview, reason: .previewClosed))
+        #expect(runtime.addWorkspace(name: "Other"))
+        #expect(!runtime.openPeek(from: parent, url: target))
+        #expect(engine.presented.count == 1)
+        #expect(runtime.peekSession.preview == nil)
+    }
 }
