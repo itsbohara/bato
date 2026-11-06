@@ -73,7 +73,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,696 @@
+@@ -49,3 +49,880 @@
  }
 
  }  // namespace cef
@@ -99,6 +99,7 @@
 +#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 +#include "chrome/browser/ui/unload_controller.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 +#include "components/tabs/public/tab_interface.h"
 +#include "components/web_modal/web_contents_modal_dialog_manager.h"
 +#include "content/public/browser/web_contents.h"
@@ -113,6 +114,8 @@
 +BatoNativeSlotCallbacksV1 g_slot_callbacks = {};
 +BatoPageCallbacksV1 g_page_callbacks = {};
 +BatoSplitCallbacksV1 g_split_callbacks = {};
++BatoPeekCallbacksV1 g_peek_callbacks = {};
++uint64_t g_peek_generation = 0;
 +uint64_t g_slot_generation = 0;
 +bool g_slot_registration_closed = false;
 +class SlotAdapter;
@@ -187,6 +190,7 @@
 +};
 +void NotifyActivePage(uint64_t token, content::WebContents* contents);
 +void NotifyManagedSplit(uint64_t token);
++void RevalidatePeek(uint64_t token);
 +class SlotTabObserver final : public TabStripModelObserver {
 + public:
 +  SlotTabObserver(TabStripModel* model, uint64_t token) : token_(token) {
@@ -195,9 +199,11 @@
 +  void OnTabStripModelChanged(TabStripModel* model,
 +                             const TabStripModelChange& change,
 +                             const TabStripSelectionChange& selection) override {
++    RevalidatePeek(token_);
 +    if (selection.active_tab_changed()) NotifyActivePage(token_, selection.new_contents);
 +  }
 +  void OnSplitTabChanged(const SplitTabChange& change) override {
++    RevalidatePeek(token_);
 +    NotifyManagedSplit(token_);
 +  }
 + private:
@@ -214,6 +220,9 @@
 +  bool changing_split = false;
 +  int split_left = 0;
 +  int split_right = 0;
++  uint64_t peek_generation = 0;  // Zero when no Peek presentation is owned.
++  int peek_parent = 0;
++  int peek_preview = 0;
 +  views::NativeViewHost* host = nullptr;  // BrowserView owns this child.
 +  std::unique_ptr<SlotAdapter> adapter;
 +  std::unique_ptr<SlotTabObserver> tab_observer;
@@ -222,6 +231,7 @@
 +  id __strong did_enter;
 +  id __strong did_exit;
 +  id __strong did_end_sheet;
++  id __strong will_begin_sheet;
 +};
 +auto& Slots() {
 +  static base::NoDestructor<std::map<BrowserView*, SlotState>> slots;
@@ -327,6 +337,8 @@
 +    auto browser = contents ? ChromeBrowserHostImpl::GetBrowserForContents(contents) : nullptr;
 +    const int identifier = browser ? browser->GetIdentifier() : 0;
 +    if (identifier <= 0) return;  // Skip transient insertion/no-active host states.
++    // The presented preview is transient; it must never look like organization selection.
++    if (state.peek_generation && state.peek_preview == identifier) return;
 +    // Client posts this notification before making any tab-strip mutations.
 +    callbacks.active_changed(callbacks.context, token, identifier);
 +    return;  // No access to SlotState after potentially reentrant client code.
@@ -369,6 +381,73 @@
 +    }
 +    const auto callbacks = g_split_callbacks;
 +    if (callbacks.changed) callbacks.changed(callbacks.context, token, left_id, right_id, ratio);
++    return;
++  }
++}
++
++int PeekReasonCode(MultiContentsView::PeekEndReason reason) {
++  using Reason = MultiContentsView::PeekEndReason;
++  switch (reason) {
++    case Reason::kPreviewClosed: return BATO_PEEK_ENDED_PREVIEW_CLOSED;
++    case Reason::kSelectionChanged: return BATO_PEEK_ENDED_SELECTION_CHANGED;
++    case Reason::kFullscreen: return BATO_PEEK_ENDED_FULLSCREEN;
++    case Reason::kModal: return BATO_PEEK_ENDED_MODAL;
++    case Reason::kSplit: return BATO_PEEK_ENDED_SPLIT;
++    case Reason::kParentClosed: return BATO_PEEK_ENDED_PARENT_CLOSED;
++    case Reason::kClosing: return BATO_PEEK_ENDED_CLOSING;
++    case Reason::kTeardown:
++    case Reason::kRequested: break;
++  }
++  return BATO_PEEK_ENDED_TEARDOWN;
++}
++
++// Runs from MultiContentsView after the presentation already ended. A requested
++// end clears the state first, so the generation check makes this a no-op there.
++void PeekEnded(BrowserView* view, uint64_t token, uint64_t generation,
++               MultiContentsView::PeekEndReason reason) {
++  auto found = Slots().find(view);
++  if (found == Slots().end() || found->second.token != token ||
++      found->second.peek_generation != generation) return;
++  const int parent = found->second.peek_parent, preview = found->second.peek_preview;
++  found->second.peek_generation = 0;
++  found->second.peek_parent = found->second.peek_preview = 0;
++  const auto callbacks = g_peek_callbacks;
++  // No access to Slots after client code, which can tear the window down.
++  if (callbacks.ended) {
++    callbacks.ended(callbacks.context, token, generation, parent, preview,
++                    PeekReasonCode(reason));
++  }
++}
++
++// Ends an owned presentation for an engine-side reason. Safe when none exists.
++void EndPeek(BrowserView* view, MultiContentsView::PeekEndReason reason) {
++  auto* multi = view->multi_contents_view();
++  if (multi && multi->EndPeekPresentation(reason)) return;
++  // The policy is gone (or never took hold); still release and report the state.
++  auto found = Slots().find(view);
++  if (found == Slots().end() || !found->second.peek_generation) return;
++  PeekEnded(view, found->second.token, found->second.peek_generation, reason);
++}
++
++// Tab mutations can silently break the presentation's premises. The view layer
++// ends it for selection/detach; this also covers the parent and split pairing.
++void RevalidatePeek(uint64_t token) {
++  for (const auto& [view, state] : Slots()) {
++    if (state.token != token) continue;
++    if (!state.peek_generation) return;
++    using Reason = MultiContentsView::PeekEndReason;
++    auto* model = view->browser()->GetTabStripModel();
++    auto parent = BrowserInSlot(view, state.peek_parent);
++    auto preview = BrowserInSlot(view, state.peek_preview);
++    const int parent_index = parent ? model->GetIndexOfWebContents(parent->GetWebContents()) : TabStripModel::kNoTab;
++    const int preview_index = preview ? model->GetIndexOfWebContents(preview->GetWebContents()) : TabStripModel::kNoTab;
++    BrowserView* const owner = view;
++    if (SlotClosing(owner)) return EndPeek(owner, Reason::kClosing);
++    if (preview_index < 0) return EndPeek(owner, Reason::kPreviewClosed);
++    if (parent_index < 0) return EndPeek(owner, Reason::kParentClosed);
++    if (model->GetSplitForTab(parent_index) || model->GetSplitForTab(preview_index))
++      return EndPeek(owner, Reason::kSplit);
++    if (model->active_index() != preview_index) return EndPeek(owner, Reason::kSelectionChanged);
 +    return;
 +  }
 +}
@@ -416,6 +495,10 @@
 +        [note.name isEqualToString:NSWindowWillEnterFullScreenNotification] ||
 +        [note.name isEqualToString:NSWindowWillExitFullScreenNotification];
 +    if (current.host) current.host->SetVisible(false);
++    EndPeek(view, MultiContentsView::PeekEndReason::kFullscreen);
++    // Client code can tear the slot down; re-find before touching it again.
++    found = Slots().find(view);
++    if (found == Slots().end()) return;
 +    // Recalculate authoritative geometry after the transition completes.
 +    if (!current.transitioning) view->InvalidateLayout();
 +  };
@@ -424,6 +507,14 @@
 +  state.did_enter = [center addObserverForName:NSWindowDidEnterFullScreenNotification object:window queue:nil usingBlock:change];
 +  state.did_exit = [center addObserverForName:NSWindowDidExitFullScreenNotification object:window queue:nil usingBlock:change];
 +  const uint64_t token = state.token;
++  // A window sheet covers the backdrop as well as the preview; end rather than
++  // present under it. Tab-modal dialogs (e.g. beforeunload of the preview) keep it.
++  state.will_begin_sheet = [center addObserverForName:NSWindowWillBeginSheetNotification
++      object:window queue:nil usingBlock:^(NSNotification*) {
++    auto found = Slots().find(view);
++    if (found != Slots().end() && found->second.token == token)
++      EndPeek(view, MultiContentsView::PeekEndReason::kModal);
++  }];
 +  state.did_end_sheet = [center addObserverForName:NSWindowDidEndSheetNotification
 +      object:window queue:nil usingBlock:^(NSNotification* note) {
 +    auto found = Slots().find(view);
@@ -643,6 +734,95 @@
 +  return 1;
 +}
 +
++extern "C" CEF_EXPORT int bato_native_slot_register_peek_callbacks_v1(
++    const BatoPeekCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_peek_callbacks.version || g_slot_registration_closed ||
++      (CefContext::Get() && CefContext::Get()->initialized()) || !callbacks ||
++      callbacks->size != sizeof(BatoPeekCallbacksV1) || callbacks->version != 1 ||
++      !callbacks->ended) return 0;
++  g_peek_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT uint64_t bato_native_slot_peek_present_v1(
++    uint64_t token, int parent_id, int preview_id) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || !g_peek_callbacks.ended ||
++      parent_id <= 0 || preview_id <= 0 || parent_id == preview_id) return 0;
++  BrowserView* view = FindSlot(token);
++  if (!view) return 0;
++  auto* multi = view->multi_contents_view();
++  auto& state = Slots().at(view);
++  // One presentation per window; never replace one or adopt an existing split.
++  if (!state.tab_observer || state.peek_generation || !multi ||
++      multi->IsPeekPresentationActive() || multi->IsInSplitView()) return 0;
++  auto parent = BrowserInSlot(view, parent_id), preview = BrowserInSlot(view, preview_id);
++  if (!parent || !preview ||
++      !parent->GetRequestContext()->IsSame(preview->GetRequestContext())) return 0;
++  auto* model = view->browser()->GetTabStripModel();
++  const int parent_index = model->GetIndexOfWebContents(parent->GetWebContents());
++  const int preview_index = model->GetIndexOfWebContents(preview->GetWebContents());
++  if (parent_index < 0 || preview_index < 0 || model->GetSplitForTab(parent_index) || model->GetSplitForTab(preview_index)) return 0;
++  // Closing the active preview then selects the parent rather than a neighbor.
++  model->SetOpenerOfTabAt(preview_index, model->GetTabAtIndex(parent_index));
++  if (model->active_index() != preview_index) model->ActivateTabAt(preview_index);
++  // Selection runs client and Views code. Revalidate everything.
++  auto current = FindSlot(token);
++  if (current != view) return 0;
++  multi = view->multi_contents_view();
++  auto parent_now = BrowserInSlot(view, parent_id), preview_now = BrowserInSlot(view, preview_id);
++  const int preview_after = preview_now ? model->GetIndexOfWebContents(preview_now->GetWebContents())
++                             : TabStripModel::kNoTab;
++  const int parent_after = parent_now ? model->GetIndexOfWebContents(parent_now->GetWebContents())
++                            : TabStripModel::kNoTab;
++  const uint64_t generation = ++g_peek_generation;
++  bool presented = false;
++  if (multi && preview_after >= 0 && parent_after >= 0 && preview_after == model->active_index() &&
++      !model->GetSplitForTab(parent_after) && !model->GetSplitForTab(preview_after) &&
++      Slots().at(view).token == token) {
++    presented = multi->BeginPeekPresentation(
++        preview_now->GetWebContents(),
++        base::BindOnce(&PeekEnded, view, token, generation));
++  }
++  if (!presented) {
++    if (parent_after >= 0 && model->active_index() != parent_after && FindSlot(token) == view)
++      model->ActivateTabAt(parent_after);
++    return 0;
++  }
++  auto& now = Slots().at(view);
++  now.peek_generation = generation;
++  now.peek_parent = parent_id;
++  now.peek_preview = preview_id;
++  return generation;
++}
++extern "C" CEF_EXPORT int bato_native_slot_peek_end_v1(
++    uint64_t token, uint64_t generation, int restore_parent) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || !generation) return 0;
++  BrowserView* view = nullptr;
++  for (const auto& [candidate, state] : Slots()) {
++    // Deliberately not FindSlot: ending only restores normal layout and must
++    // remain possible in modal, fullscreen and closing states.
++    if (state.token == token && state.peek_generation == generation) view = candidate;
++  }
++  if (!view) return 0;
++  auto& state = Slots().at(view);
++  const int parent_id = state.peek_parent;
++  state.peek_generation = 0;  // Makes the view's own end notification a no-op.
++  state.peek_parent = state.peek_preview = 0;
++  if (auto* multi = view->multi_contents_view()) {
++    multi->EndPeekPresentation(MultiContentsView::PeekEndReason::kRequested);
++  }
++  if (!restore_parent) return 1;
++  if (FindSlot(token) != view) return 2;
++  auto parent = BrowserInSlot(view, parent_id);
++  auto* model = view->browser()->GetTabStripModel();
++  const int parent_index = parent ? model->GetIndexOfWebContents(parent->GetWebContents())
++                        : TabStripModel::kNoTab;
++  if (parent_index < 0) return 2;
++  if (model->active_index() != parent_index) model->ActivateTabAt(parent_index);
++  auto current = Slots().find(view);
++  if (current == Slots().end() || current->second.token != token) return 2;
++  return model->active_index() == parent_index ? 1 : 2;
++}
++
 +extern "C" CEF_EXPORT int bato_native_slot_set_sidebar_v1(
 +    uint64_t token, int width, int mode) {
 +  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || mode < 0 || mode > 2) return 0;
@@ -696,11 +876,15 @@
 +    auto& state = found->second;
 +    for (id observer : @[state.will_enter ?: NSNull.null, state.will_exit ?: NSNull.null,
 +                         state.did_enter ?: NSNull.null, state.did_exit ?: NSNull.null,
-+                         state.did_end_sheet ?: NSNull.null]) {
++                         state.did_end_sheet ?: NSNull.null,
++                         state.will_begin_sheet ?: NSNull.null]) {
 +      if (observer != NSNull.null) [NSNotificationCenter.defaultCenter removeObserver:observer];
 +    }
 +    const uint64_t token = state.token;
 +    const bool attached = !!state.adapter;
++    EndPeek(view, MultiContentsView::PeekEndReason::kTeardown);
++    found = Slots().find(view);
++    if (found == Slots().end()) return;
 +    state.tab_observer.reset();  // Stop selection events before native teardown.
 +    if (state.host) {
 +      state.host->SetVisible(false);
@@ -855,7 +1039,31 @@
    // Return false if this window does not normally display a tabstrip or if the
    // tabstrip is currently hidden, e.g. because we're in fullscreen.
    if (!WindowFeatureController::From(browser_)->SupportsWindowFeature(
-@@ -3605,6 +3625,11 @@
+@@ -2038,6 +2058,12 @@
+                                      int reason) {
+   DCHECK(new_contents);
+   TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
++  // Peek owns the active ContentsWebView only while its preview stays selected.
++  if (multi_contents_view_->IsPeekPresentationActive() &&
++      multi_contents_view_->peek_contents() != new_contents) {
++    multi_contents_view_->EndPeekPresentation(
++        MultiContentsView::PeekEndReason::kSelectionChanged);
++  }
+   views::WebView* active_contents_view = GetActiveContentsWebView();
+   bool tab_change_in_split_view =
+       IsTabChangeInSplitView(old_contents, new_contents);
+@@ -2185,6 +2211,10 @@
+ void BrowserView::OnTabDetached(content::WebContents* contents,
+                                 bool was_active) {
+   DCHECK(contents);
++  if (multi_contents_view_->peek_contents() == contents) {
++    multi_contents_view_->EndPeekPresentation(
++        MultiContentsView::PeekEndReason::kPreviewClosed);
++  }
+   if (!was_active) {
+     return;
+   }
+@@ -3605,6 +3635,11 @@
      if (auto* container =
              multi_contents_view_->GetContentsContainerViewFor(contents)) {
        container->contents_view()->UpdateIsBlockedByModal();
@@ -867,7 +1075,7 @@
      }
    }
 
-@@ -4228,6 +4253,11 @@
+@@ -4228,6 +4263,11 @@
    // Permanently suppress layout during teardown to avoid running layout on
    // destroying child views or widgets.
    suppress_layout_for_teardown_ = true;
@@ -879,7 +1087,16 @@
 
    // Destroy any remaining WebContents early on. Doing so may result in
    // calling back to one of the Views/LayoutManagers or supporting classes of
-@@ -4933,7 +4963,20 @@
+@@ -4398,6 +4438,8 @@
+ }
+
+ void BrowserView::ShowSplitView(bool focus_active_view) {
++  multi_contents_view_->EndPeekPresentation(
++      MultiContentsView::PeekEndReason::kSplit);
+   const int active_index = browser_->GetTabStripModel()->active_index();
+
+   std::optional<split_tabs::SplitTabId> split_tab_id =
+@@ -4933,7 +4975,20 @@
 
  gfx::Size BrowserView::GetMinimumSize() const {
    auto* const layout = GetBrowserViewLayout();
@@ -901,7 +1118,7 @@
  }
 
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5035,21 @@
+@@ -4992,6 +5047,21 @@
    }
 
    LayoutSuperclass<views::View>(this);
@@ -923,10 +1140,12 @@
 
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5667,11 @@
+@@ -5609,6 +5679,13 @@
  }
 
  void BrowserView::PrepareFullscreen(bool fullscreen) {
++  multi_contents_view_->EndPeekPresentation(
++      MultiContentsView::PeekEndReason::kFullscreen);
 +#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
 +  if (auto* delegate = cef::BrowserForBWI(browser_.get())->cef_delegate()) {
 +    delegate->NativeSlotUpdate(this, false, true);
@@ -935,9 +1154,144 @@
    if (top_controls_slide_controller_) {
      top_controls_slide_controller_->OnBrowserFullscreenStateWillChange(
          fullscreen);
+--- a/chrome/browser/ui/views/frame/multi_contents_view.h
++++ b/chrome/browser/ui/views/frame/multi_contents_view.h
+@@ -9,6 +9,7 @@
+ #include <optional>
+
+ #include "base/callback_list.h"
++#include "base/functional/callback.h"
+ #include "base/functional/callback_forward.h"
+ #include "base/gtest_prod_util.h"
+ #include "base/memory/raw_ptr.h"
+@@ -127,6 +128,31 @@
+     return visual_data_.split_layout();
+   }
+   double GetSplitRatio() const { return visual_data_.split_ratio(); }
++
++  // Opt-in Peek presentation. The already-active ContentsWebView of `preview`
++  // is laid out in an inset rectangle above the background; no WebContents is
++  // attached to a second view. Refused (false) while in split view, while
++  // already presenting, or unless `preview` is the active ContentsWebView's
++  // contents and the inactive view is empty. `ended` runs after any later end,
++  // never from this call and never from the destructor.
++  enum class PeekEndReason {
++    kRequested,
++    kPreviewClosed,
++    kSelectionChanged,
++    kFullscreen,
++    kModal,
++    kSplit,
++    kTeardown,
++    kParentClosed,
++    kClosing,
++  };
++  using PeekEndedCallback = base::OnceCallback<void(PeekEndReason)>;
++  bool BeginPeekPresentation(content::WebContents* preview,
++                             PeekEndedCallback ended);
++  // Restores normal layout. Returns false when no presentation is active.
++  bool EndPeekPresentation(PeekEndReason reason);
++  bool IsPeekPresentationActive() const { return peek_contents_ != nullptr; }
++  content::WebContents* peek_contents() const { return peek_contents_; }
+
+   // SplitTabHighlightController::Delegate:
+   void SetHighlightActiveContentsView(bool needs_attention) override;
+@@ -268,6 +294,8 @@
+   void OnReadAnythingOverlayFocused(ContentsContainerView* container,
+                                     views::WebView* web_view);
+
++  gfx::Insets GetPeekInsets(const gfx::Size& available_size) const;
++
+   ViewSizes GetViewSizes(gfx::Rect available_space) const;
+
+   // Clamps to the minimum of kMinWebContentsSize or
+@@ -340,6 +368,11 @@
+   gfx::Insets split_view_insets_;
+
+   bool active_contents_view_highlighted_ = false;
++
++  // Identity only; never dereferenced. BrowserView ends the presentation when
++  // this tab is detached or deselected.
++  raw_ptr<content::WebContents, DanglingUntriaged> peek_contents_ = nullptr;
++  PeekEndedCallback peek_ended_;
+
+   std::optional<int> min_contents_size_for_testing_;
+
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -279,6 +279,40 @@
+       .Then(&SadTabHelper::ReinstallInWebView);
+ }
+
++bool MultiContentsView::BeginPeekPresentation(content::WebContents* preview,
++                                              PeekEndedCallback ended) {
++  if (!preview || !ended || IsPeekPresentationActive() || IsInSplitView() ||
++      GetActiveContentsView()->web_contents() != preview ||
++      GetInactiveContentsView()->web_contents()) {
++    return false;
++  }
++  peek_contents_ = preview;
++  peek_ended_ = std::move(ended);
++  UpdateContentsBorderAndOverlay();
++  InvalidateLayout();
++  return true;
++}
++
++bool MultiContentsView::EndPeekPresentation(PeekEndReason reason) {
++  if (!IsPeekPresentationActive()) {
++    return false;
++  }
++  peek_contents_ = nullptr;
++  PeekEndedCallback ended = std::move(peek_ended_);
++  UpdateContentsBorderAndOverlay();
++  InvalidateLayout();
++  // The callback may re-enter client code; touch no state afterwards.
++  std::move(ended).Run(reason);
++  return true;
++}
++
++gfx::Insets MultiContentsView::GetPeekInsets(
++    const gfx::Size& available_size) const {
++  return gfx::Insets::VH(
++      std::clamp(available_size.height() / 16, 16, 64),
++      std::clamp(available_size.width() / 12, 24, 160));
++}
++
+ void MultiContentsView::ShowSplitView(
+     split_tabs::SplitTabVisualData visual_data) {
+   if (!contents_container_views_[1]->GetVisible()) {
+@@ -507,8 +541,8 @@
+
+   gfx::Rect available_space = gfx::Rect(width, height);
+
+-  const bool show_background =
+-      drop_target_view_->GetVisible() || IsInSplitView();
++  const bool show_background = drop_target_view_->GetVisible() ||
++                               IsInSplitView() || IsPeekPresentationActive();
+   layouts.child_layouts.emplace_back(background_view_.get(), show_background,
+                                      available_space);
+
+@@ -522,6 +556,8 @@
+
+   if (IsInSplitView()) {
+     available_space.Inset(split_view_insets_);
++  } else if (IsPeekPresentationActive()) {
++    available_space.Inset(GetPeekInsets(available_space.size()));
+   }
+   ViewSizes sizes = GetViewSizes(available_space);
+
+@@ -800,7 +836,7 @@
+     const bool is_active =
+         contents_container_view->contents_view() == GetActiveContentsView();
+     contents_container_view->SetRoundedCorners(
+-        is_in_split
++        is_in_split || IsPeekPresentationActive()
+             ? kSplitViewContentRoundedCorners
+             : (is_active ? GetBackgroundRadii() : gfx::RoundedCornersF()));
+     contents_container_view->UpdateBorderAndOverlay(
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,106 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -1003,6 +1357,43 @@
 +CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
 +CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 +CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
++// Peek: an engine-owned, tab-owned link preview. The preview must already be a
++// normal tab in the same window and request context as its parent. Only one
++// presentation exists per window. All Peek functions are main/CEF UI thread only.
++// Ended reasons (BatoPeekCallbacksV1::ended):
++enum {
++  BATO_PEEK_ENDED_PREVIEW_CLOSED = 1,
++  BATO_PEEK_ENDED_SELECTION_CHANGED = 2,
++  BATO_PEEK_ENDED_FULLSCREEN = 3,
++  BATO_PEEK_ENDED_MODAL = 4,
++  BATO_PEEK_ENDED_SPLIT = 5,
++  BATO_PEEK_ENDED_TEARDOWN = 6,
++  BATO_PEEK_ENDED_PARENT_CLOSED = 7,
++  BATO_PEEK_ENDED_CLOSING = 8,
++};
++typedef struct BatoPeekCallbacksV1 {
++  size_t size;
++  uint32_t version;
++  void* context;
++  // Engine-initiated end only, possibly inside a tab-model mutation or layout:
++  // clients must defer work and revalidate. Not called for bato_native_slot_peek_end_v1.
++  // generation is the value returned by present; tabs may still be live.
++  void (*ended)(void* context, uint64_t token, uint64_t generation,
++                int parent_id, int preview_id, int reason);
++} BatoPeekCallbacksV1;
++// Register once before CefInitialize, like the other callback tables.
++CEF_EXPORT int bato_native_slot_register_peek_callbacks_v1(const BatoPeekCallbacksV1* callbacks);
++// Presents preview above a backdrop; the preview becomes the active tab and the
++// parent stays an unmounted live tab. Returns a nonzero process-local generation,
++// or 0 when refused: guarded/blocked/fullscreen/closing slot, unknown or equal
++// identities, different request context, either tab in a split, an existing
++// split layout or presentation, or no peek callbacks registered.
++CEF_EXPORT uint64_t bato_native_slot_peek_present_v1(uint64_t token, int parent_id, int preview_id);
++// Ends the exact presentation. restore_parent != 0 reactivates the parent;
++// 0 leaves the preview active as an ordinary tab (promotion). Returns 0 for an
++// unknown/stale generation, 1 when ended (parent restored if requested), 2 when
++// ended but the requested parent restoration was not possible.
++CEF_EXPORT int bato_native_slot_peek_end_v1(uint64_t token, uint64_t generation, int restore_parent);
 +#ifdef __cplusplus
 +}
 +#endif

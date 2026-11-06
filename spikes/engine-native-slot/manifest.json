@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "42f734a99ad9da62096af2cbe7eba3804ca150ed500a3cff3d7a40605d27530e",
+  "patch_sha256": "b20f1a118f7a1ee8060bd5194310dc5f1bad564249a46cd30bd5ecf702fc51fe",
   "files": [
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "c04f7a07497efcf6fe6aab994846453c0a221477949e629203cb325b373a09fa"
+      "patched_sha256": "99a9605e090967cb3eff380be5e999db76c47a383b07a71a8e50134bba7db994"
     },
     {
       "root": "chromium",
@@ -44,13 +44,25 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "e42128a5395e2bdc63ed4046b2681e4bc3ae99868ad0e858925276337624bbb9"
+      "patched_sha256": "71c947ce9736396c61ab33bf382263521ded006d03ce69f8920d77789d3ce0d6"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/frame/multi_contents_view.h",
+      "original_sha256": "c9758dd16a9379f6aa5fc2b8d307e99011ac6b5c953e48d80c2a9299ca87c1b0",
+      "patched_sha256": "fcbfe225494d13646aa372a261791d57fc74199d0874e9dba2470d272344975b"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/frame/multi_contents_view.cc",
+      "original_sha256": "ff8865424bd11f2705c0dff3b247e6facd98aad40ac1f25407960b2e1a6f727b",
+      "patched_sha256": "7df461504259047d7e20c53ca1962124b2d41ee05c8bb0bbd3b6441fbcebe72b"
     },
     {
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "2382f172cb42a5a83f7e10a09f48c483c6ce09fe6ded897e57cd309a9e1e8378"
+      "patched_sha256": "4bb518b10ca43cce143e4ffac8620410f9e2983bcea88e91c1056202c2217833"
     }
   ]
 }

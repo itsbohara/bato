@@ -63,6 +63,43 @@ CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
 CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
+// Peek: an engine-owned, tab-owned link preview. The preview must already be a
+// normal tab in the same window and request context as its parent. Only one
+// presentation exists per window. All Peek functions are main/CEF UI thread only.
+// Ended reasons (BatoPeekCallbacksV1::ended):
+enum {
+  BATO_PEEK_ENDED_PREVIEW_CLOSED = 1,
+  BATO_PEEK_ENDED_SELECTION_CHANGED = 2,
+  BATO_PEEK_ENDED_FULLSCREEN = 3,
+  BATO_PEEK_ENDED_MODAL = 4,
+  BATO_PEEK_ENDED_SPLIT = 5,
+  BATO_PEEK_ENDED_TEARDOWN = 6,
+  BATO_PEEK_ENDED_PARENT_CLOSED = 7,
+  BATO_PEEK_ENDED_CLOSING = 8,
+};
+typedef struct BatoPeekCallbacksV1 {
+  size_t size;
+  uint32_t version;
+  void* context;
+  // Engine-initiated end only, possibly inside a tab-model mutation or layout:
+  // clients must defer work and revalidate. Not called for bato_native_slot_peek_end_v1.
+  // generation is the value returned by present; tabs may still be live.
+  void (*ended)(void* context, uint64_t token, uint64_t generation,
+                int parent_id, int preview_id, int reason);
+} BatoPeekCallbacksV1;
+// Register once before CefInitialize, like the other callback tables.
+CEF_EXPORT int bato_native_slot_register_peek_callbacks_v1(const BatoPeekCallbacksV1* callbacks);
+// Presents preview above a backdrop; the preview becomes the active tab and the
+// parent stays an unmounted live tab. Returns a nonzero process-local generation,
+// or 0 when refused: guarded/blocked/fullscreen/closing slot, unknown or equal
+// identities, different request context, either tab in a split, an existing
+// split layout or presentation, or no peek callbacks registered.
+CEF_EXPORT uint64_t bato_native_slot_peek_present_v1(uint64_t token, int parent_id, int preview_id);
+// Ends the exact presentation. restore_parent != 0 reactivates the parent;
+// 0 leaves the preview active as an ordinary tab (promotion). Returns 0 for an
+// unknown/stale generation, 1 when ended (parent restored if requested), 2 when
+// ended but the requested parent restoration was not possible.
+CEF_EXPORT int bato_native_slot_peek_end_v1(uint64_t token, uint64_t generation, int restore_parent);
 #ifdef __cplusplus
 }
 #endif

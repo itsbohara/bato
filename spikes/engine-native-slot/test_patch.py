@@ -1,5 +1,6 @@
 """Real overlay round-trip on copied exact targets; source checkout stays read-only."""
 import importlib.util
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -50,6 +51,18 @@ class NativeSlotPatchTest(unittest.TestCase):
             for relative, before in original.items():
                 target = root / relative
                 self.assertEqual(target.read_bytes() if target.exists() else None, before)
+
+    def test_patch_installs_canonical_abi_with_definitions(self):
+        header = (HERE / 'bato_native_slot.h').read_text()
+        added = [line[1:] for line in (HERE / 'engine.patch').read_text().splitlines()
+                 if line.startswith('+') and not line.startswith('+++')]
+        installed = '\n'.join(added)
+        self.assertIn(header.rstrip('\n'), installed)
+        exports = re.findall(r'CEF_EXPORT\s+\w+\s+(bato_native_slot_\w+)\(', header)
+        self.assertIn('bato_native_slot_peek_present_v1', exports)
+        self.assertEqual(len(exports), 15)
+        for name in exports:
+            self.assertRegex(installed, r'extern "C" CEF_EXPORT \w+ ' + name + r'\(')
 
 
 if __name__ == '__main__':

@@ -16,4 +16,11 @@ void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
                                         const std::vector<CefString>& urls);
 void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
+// Peek client entry points for the Swift workspace. Main/CEF UI thread only.
+// Present returns a nonzero engine generation, or 0 when refused. End takes
+// that generation; restore_parent != 0 reactivates the parent. Parent and
+// preview must both be bound workspace pages. See bato_native_slot.h.
+extern "C" uint64_t BatoWorkspacePeekPresent(uint64_t token, int parent_browser_id,
+                                              int preview_browser_id);
+extern "C" int BatoWorkspacePeekEnd(uint64_t token, uint64_t generation, int restore_parent);
 #endif

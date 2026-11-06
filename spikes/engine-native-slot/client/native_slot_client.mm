@@ -31,6 +31,9 @@ extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
     int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 extern "C" void BatoSwiftWorkspaceConfigureSplits(
     int (*present)(uint64_t, int, int, int, double), int (*separate)(uint64_t));
+// Peek hooks are optional Swift exports, resolved with dlsym at registration.
+using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
+using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
 extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
@@ -50,6 +53,11 @@ using PresentSplit = decltype(&bato_native_slot_present_split_v1);
 using SeparateSplit = decltype(&bato_native_slot_separate_split_v1);
 PresentSplit g_present_split = nullptr;
 SeparateSplit g_separate_split = nullptr;
+using PeekPresent = decltype(&bato_native_slot_peek_present_v1);
+using PeekEnd = decltype(&bato_native_slot_peek_end_v1);
+PeekPresent g_peek_present = nullptr;
+PeekEnd g_peek_end = nullptr;
+SwiftPeekEnded g_swift_peek_ended = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
@@ -68,6 +76,12 @@ struct WorkspaceSlot {
   int split_right = 0;
   uint64_t split_revision = 0;
   uint64_t split_observation = 0;
+  // Transient Peek binding; the engine generation is the only authority.
+  uint64_t peek_generation = 0;
+  int peek_parent = 0;
+  int peek_preview = 0;
+  CefRefPtr<CefBrowser> peek_parent_browser;
+  CefRefPtr<CefBrowser> peek_preview_browser;
 };
 // Main-thread-only process storage. Entries and all CEF refs are explicitly
 // released on detach; a process-lifetime container avoids exit-time CEF calls.
@@ -557,6 +571,8 @@ void ActiveChanged(void*, uint64_t token, int identifier) {
         auto slot = WorkspaceSlots().find(token);
         if (slot == WorkspaceSlots().end() || !g_active_browser_id ||
             g_active_browser_id(token) != identifier) return;
+        // The presented preview is transient, never an organization selection.
+        if (slot->second.peek_generation && slot->second.peek_preview == identifier) return;
         int selected = identifier;
         if (slot->second.anchor && slot->second.anchor->GetIdentifier() == identifier) {
           selected = 0;
@@ -565,6 +581,20 @@ void ActiveChanged(void*, uint64_t token, int identifier) {
         }
         BatoSwiftWorkspacePageEvent(token, selected, 6, "", "");
       }, token, identifier));
+}
+
+void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
+  auto slot = WorkspaceSlots().find(token);
+  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
+  slot->second.peek_generation = 0;
+  slot->second.peek_parent = slot->second.peek_preview = 0;
+  slot->second.peek_parent_browser = slot->second.peek_preview_browser = nullptr;
+  // Runs inside a tab-model mutation or layout; Swift may select/close tabs.
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, uint64_t generation, int parent, int preview, int reason) {
+        if (g_swift_peek_ended && WorkspaceSlots().contains(token))
+          g_swift_peek_ended(token, generation, parent, preview, reason);
+      }, token, generation, parent, preview, reason));
 }
 
 // Synchronous diagnostic action only. No URL, credentials or field text logged.
@@ -592,6 +622,56 @@ void Detached(void*, uint64_t token) {
 }
 void* FocusTarget(void*, uint64_t token) { return BatoSwiftNativeSlotFocusTarget(token); }
 }  // namespace
+
+uint64_t BatoWorkspacePeekPresent(uint64_t token, int parent, int preview) {
+  auto* slot = AvailableSlot(token);
+  if (!slot || !g_peek_present || slot->peek_generation || parent <= 0 ||
+      preview <= 0 || parent == preview) return 0;
+  for (int identifier : {parent, preview}) {
+    auto found = slot->pages.find(identifier);
+    if (found == slot->pages.end() || !found->second.browser->IsValid() ||
+        slot->pending_close.contains(identifier)) return 0;
+    // Never adopt a page that belongs to the managed split pair.
+    if (identifier == slot->split_left || identifier == slot->split_right) return 0;
+  }
+  auto parent_browser = slot->pages.at(parent).browser;
+  auto preview_browser = slot->pages.at(preview).browser;
+  if (!slot->context || !SameWindow(parent_browser, preview_browser) ||
+      !parent_browser->GetHost()->GetRequestContext()->IsSame(slot->context) ||
+      !preview_browser->GetHost()->GetRequestContext()->IsSame(slot->context)) return 0;
+  const uint64_t generation = g_peek_present(token, parent, preview);
+  if (!generation) return 0;
+  // The engine call selects tabs and runs layout; revalidate before binding.
+  auto current = WorkspaceSlots().find(token);
+  if (current == WorkspaceSlots().end() || current->second.peek_generation ||
+      !current->second.pages.contains(parent) || !current->second.pages.contains(preview) ||
+      !current->second.pages.at(parent).browser->IsSame(parent_browser) ||
+      !current->second.pages.at(preview).browser->IsSame(preview_browser)) {
+    if (g_peek_end) g_peek_end(token, generation, 0);
+    return 0;
+  }
+  current->second.peek_generation = generation;
+  current->second.peek_parent = parent;
+  current->second.peek_preview = preview;
+  current->second.peek_parent_browser = parent_browser;
+  current->second.peek_preview_browser = preview_browser;
+  return generation;
+}
+
+int BatoWorkspacePeekEnd(uint64_t token, uint64_t generation, int restore_parent) {
+  if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) || !g_peek_end || !generation) return 0;
+  auto slot = WorkspaceSlots().find(token);
+  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return 0;
+  const int result = g_peek_end(token, generation, restore_parent);
+  auto current = WorkspaceSlots().find(token);
+  if (result != 0 && current != WorkspaceSlots().end() &&
+      current->second.peek_generation == generation) {
+    current->second.peek_generation = 0;
+    current->second.peek_parent = current->second.peek_preview = 0;
+    current->second.peek_parent_browser = current->second.peek_preview_browser = nullptr;
+  }
+  return result;
+}
 
 void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
   if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
@@ -758,6 +838,14 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
   auto separate_split = reinterpret_cast<SeparateSplit>(dlsym(loaded, "bato_native_slot_separate_split_v1"));
   auto register_splits = reinterpret_cast<decltype(&bato_native_slot_register_split_callbacks_v1)>(
       dlsym(loaded, "bato_native_slot_register_split_callbacks_v1"));
+  auto register_peeks = reinterpret_cast<decltype(&bato_native_slot_register_peek_callbacks_v1)>(
+      dlsym(loaded, "bato_native_slot_register_peek_callbacks_v1"));
+  auto peek_present = reinterpret_cast<PeekPresent>(dlsym(loaded, "bato_native_slot_peek_present_v1"));
+  auto peek_end = reinterpret_cast<PeekEnd>(dlsym(loaded, "bato_native_slot_peek_end_v1"));
+  auto swift_configure_peek = reinterpret_cast<SwiftConfigurePeek>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePeek"));
+  auto swift_peek_ended = reinterpret_cast<SwiftPeekEnded>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekEnded"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -787,6 +875,19 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     g_present_split = present_split;
     g_separate_split = separate_split;
     BatoSwiftWorkspaceConfigureSplits(PresentWorkspaceSplit, SeparateWorkspaceSplit);
+    // Peek is additive: a framework or Swift library without it keeps working.
+    if (register_peeks && peek_present && peek_end && swift_configure_peek && swift_peek_ended) {
+      BatoPeekCallbacksV1 peek_callbacks = {};
+      peek_callbacks.size = sizeof(peek_callbacks);
+      peek_callbacks.version = 1;
+      peek_callbacks.ended = PeekEnded;
+      if (register_peeks(&peek_callbacks) == 1) {
+        g_peek_present = peek_present;
+        g_peek_end = peek_end;
+        g_swift_peek_ended = swift_peek_ended;
+        swift_configure_peek(BatoWorkspacePeekPresent, BatoWorkspacePeekEnd);
+      }
+    }
     g_new_tab = new_tab;
     g_request_close = request_close;
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
