@@ -26,6 +26,16 @@ public enum PageEvent: Sendable {
     case selectionCleared
     case splitRatioChanged(left: LivePage, right: LivePage, ratio: Double)
     case splitSeparated(left: LivePage, right: LivePage)
+    /// The engine ended the presentation itself; the preview page may still be live.
+    case peekEnded(preview: LivePage, reason: PeekEndReason)
+}
+
+public enum PeekEndReason: Int32, Sendable {
+    case previewClosed = 1, selectionChanged, fullscreen, modal, split, teardown, parentClosed, closing
+}
+
+public enum PeekEndResult: Sendable {
+    case stale, ended, parentRestoreFailed
 }
 
 /// All calls and events use the main actor. Acceptance of create means the adapter
@@ -42,12 +52,24 @@ public protocol PageEngine: AnyObject {
     /// shows blank/loading content until ready, never a previously selected page.
     func select(_ page: LivePage?)
     func requestClose(_ page: LivePage)
+    var supportsPeek: Bool { get }
+    /// Creates the preview page and presents it in one step, so it is never
+    /// shown as an ordinary active tab. The engine owns the page until a terminal event.
+    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool
+    /// Ends the current presentation. Without a parent restore the preview stays an ordinary active page.
+    func endPeek(restoreParent: Bool) -> PeekEndResult
+    /// Routes the preview's later events as an ordinary page's.
+    func adoptPeekPreview(_ preview: LivePage)
 }
 
 public extension PageEngine {
     var supportsSplits: Bool { false }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
     func separateSplit() -> Bool { true }
+    var supportsPeek: Bool { false }
+    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool { false }
+    func endPeek(restoreParent: Bool) -> PeekEndResult { .stale }
+    func adoptPeekPreview(_ preview: LivePage) {}
 }
 
 public enum PageRuntimeError: Error, Equatable {
@@ -66,9 +88,15 @@ public final class PageRuntime {
     public private(set) var livePages: [UUID: LivePage] = [:]
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
+    public private(set) var peekSession = PeekSession()
     public var onStateChange: ((BrowserState) -> Void)?
     public var supportsSplits: Bool { engine.supportsSplits }
+    public var canOpenPeek: Bool {
+        engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
+            state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }.map { !pendingClose.contains($0) } == true
+    }
     private let engine: any PageEngine
+    private var abandonedPreviews: Set<LivePage> = []
     private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
     private let commit: (BrowserState) throws -> Void
 
@@ -299,7 +327,110 @@ public final class PageRuntime {
         return true
     }
 
+    /// Previews the destination above the current live page without touching organization.
+    @discardableResult
+    public func openPeek(url: URL) -> Bool {
+        guard canOpenPeek, let parentID = state.currentWorkspace.activeEntryID, let parent = livePages[parentID] else {
+            lastError = .invalidCommand
+            return false
+        }
+        let preview = LivePage(entryID: UUID(), profileID: parent.profileID)
+        var session = peekSession
+        guard session.open(parent: parent, page: preview, url: url) else {
+            lastError = .invalidCommand
+            return false
+        }
+        peekSession = session
+        guard engine.presentPeek(parent: parent, preview: preview, url: url) else {
+            _ = peekSession.handle(.creationFailed(preview))
+            lastError = .creationRejected
+            return false
+        }
+        return true
+    }
+
+    /// Closure goes through the engine's before-unload confirmation; the preview
+    /// stays owned until the engine reports it closed, and Cancel restores it.
+    @discardableResult
+    public func dismissPeek() -> Bool {
+        guard let page = peekSession.requestDismissal() else { return false }
+        engine.requestClose(page)
+        return true
+    }
+
+    /// Adopts the live preview as the selected tab. Nothing is navigated, reloaded
+    /// or recreated, and a failed save leaves the preview presented.
+    @discardableResult
+    public func promotePeek() -> Bool {
+        guard let prepared = peekSession.preparePromotion(),
+              state.currentWorkspace.activeEntryID == prepared.parent.entryID,
+              state.currentWorkspace.profileID == prepared.page.profileID else {
+            lastError = .invalidCommand
+            return false
+        }
+        var candidate = state
+        var session = peekSession
+        do {
+            _ = try candidate.addTab(id: prepared.page.entryID, url: prepared.url, title: prepared.title)
+            try candidate.validate()
+        } catch {
+            lastError = .invalidCommand
+            return false
+        }
+        guard session.completePromotion(prepared) else {
+            lastError = .invalidCommand
+            return false
+        }
+        let previous = peekSession
+        peekSession = session
+        guard save(candidate) else {
+            peekSession = previous
+            return false
+        }
+        livePages[prepared.page.entryID] = prepared.page
+        engine.adoptPeekPreview(prepared.page)
+        if engine.endPeek(restoreParent: false) != .ended { engine.select(selectedLivePage) }
+        return true
+    }
+
+    private func handlePeekEnded(_ preview: LivePage, _ reason: PeekEndReason) {
+        guard peekSession.preview?.page == preview else { return }
+        peekSession.finish()
+        switch reason {
+        case .selectionChanged, .fullscreen, .modal, .split, .parentClosed:
+            abandonedPreviews.insert(preview)
+            retryAbandonedPreviews()
+        case .previewClosed, .teardown, .closing:
+            break
+        }
+    }
+
+    /// Ends any presentation and closes its preview, restoring the parent. A host
+    /// calls this before showing a window sheet, which the engine would otherwise
+    /// treat as a modal end it cannot clean up while the sheet is attached.
+    public func endPeek() { tearDownPeek(restoreParent: true) }
+
+    /// The engine rejects selection and close while a sheet or modal is attached,
+    /// so a rejected close leaves the preview here for the host to retry after it detaches.
+    public func retryAbandonedPreviews() {
+        guard !abandonedPreviews.isEmpty else { return }
+        engine.select(selectedLivePage)
+        for preview in abandonedPreviews { engine.requestClose(preview) }
+    }
+
+    private func tearDownPeek(restoreParent: Bool = false) {
+        guard let preview = peekSession.preview?.page,
+              engine.endPeek(restoreParent: restoreParent) != .stale else { return }
+        peekSession.finish()
+        abandonedPreviews.insert(preview)
+        retryAbandonedPreviews()
+    }
+
     public func receive(_ event: PageEvent) {
+        if case let .peekEnded(preview, reason) = event { return handlePeekEnded(preview, reason) }
+        if case let .closed(page) = event { abandonedPreviews.remove(page) }
+        if case let .unloaded(page) = event { abandonedPreviews.remove(page) }
+        if peekSession.handle(event) { return }
         switch event {
         case let .splitRatioChanged(left, right, ratio):
             guard livePages[left.entryID] == left, livePages[right.entryID] == right,
@@ -328,6 +459,8 @@ public final class PageRuntime {
                 try candidate.selectEntry(page.entryID)
             }
             if !accepted { engine.select(selectedLivePage) }
+        case .peekEnded:
+            return
         case .selectionCleared:
             guard state.currentWorkspace.activeEntryID != nil else { return }
             let accepted = change { candidate in
@@ -418,7 +551,11 @@ public final class PageRuntime {
             lastError = .invalidCommand
             return false
         }
+        let movesSelection = candidate.activeWorkspaceID != state.activeWorkspaceID ||
+            candidate.currentWorkspace.activeEntryID != state.currentWorkspace.activeEntryID ||
+            candidate.currentSplit?.id != state.currentSplit?.id
         guard save(candidate) else { return false }
+        if movesSelection { tearDownPeek() }
         return reconcileSelection ? showSelection() : true
     }
 

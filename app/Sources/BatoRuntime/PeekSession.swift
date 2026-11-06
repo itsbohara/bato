@@ -83,6 +83,14 @@ public struct PeekSession: Sendable {
         return true
     }
 
+    /// Releases the preview after the engine has ended its presentation; unlike
+    /// promotion, the host still owns closing the page.
+    @discardableResult
+    public mutating func finish() -> Preview? {
+        defer { preview = nil }
+        return preview
+    }
+
     /// Consume only exact live-generation callbacks. Navigation after opening is
     /// engine-authoritative and is not restricted by link interception eligibility.
     @discardableResult

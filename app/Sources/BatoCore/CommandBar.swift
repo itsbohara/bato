@@ -80,6 +80,7 @@ public enum CommandBarCommand: String, CaseIterable, Sendable {
 
 public enum CommandBarAction: Equatable, Sendable {
     case open(URL)
+    case peek(URL)
     case activate(PageSearchResult)
     case command(CommandBarCommand)
 }
@@ -101,6 +102,8 @@ public enum CommandBarResults {
         case .navigate(let url):
             results.append(CommandBarResult(id: "destination", title: "Open \(url.host ?? text)",
                 subtitle: url.absoluteString, action: .open(url)))
+            results.append(CommandBarResult(id: "peek", title: "Open \(url.host ?? text) in Peek",
+                subtitle: url.absoluteString, action: .peek(url)))
         case .search(let url):
             results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
                 subtitle: "Web search", action: .open(url)))
