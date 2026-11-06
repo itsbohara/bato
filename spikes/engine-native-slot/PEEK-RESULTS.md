@@ -44,3 +44,35 @@ Checked 2026-11-06 with the Swift-side fix (the command bar now ends an active P
 | C. Quit | Pass | Native-menu Quit exited 0; one each of native detach, slot-client detach, message-loop exit and CEF shutdown; final organization bytes equal the pre-quit bytes; the preserved source organization is unchanged. |
 
 Second-Peek refusal (check 4) remains unexercised on the real host: Cmd-T now ends the Peek by design, so the refusal is covered only by the runtime guard and unit tests. The remaining v1 "not covered" items still apply. No owned browser remains; the fixture server remains running.
+
+## v3 Peek polish
+
+Checked 2026-11-06 against the polished engine and client build. Fresh `runtime/peek-state-v3` from the same preserved source, wrapper `launch-peek-v3.py`, owned PID 96491. No Bato source was changed. One fixture was added: `spikes/fixtures/www/peek-parent.html`, a synthetic parent page with a fixed top bar showing a once-per-second tick counter, a note field, a click counter, counters for clicks and wheel events landing on the bar, and normal `<a href>` links to `index.html` and `quit.html`. It sends and stores nothing. The fixture server on loopback port 18765 was revalidated and serves it.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Live dimmed parent under Peek | Pass | The parent's top bar stays visible, dimmed, above and around the inset preview, and its tick counter advanced between screenshots while the Peek was presented (22 to 26, and later 23 to 37). The first fixture version had no content outside the inset and could not show this; the bar was added for the check. |
+| 2 | Parent input blocked | Fail | A real wheel event over the dimmed bar incremented the parent's wheel counter, and a real click on the bar incremented its click counter. Input reaches the dimmed parent. |
+| 3 | Scrim click dismisses | Fail | Pointer clicks on the dimmed bar and on the left margin did not dismiss the Peek (the sidebar Peek row stayed). The beforeunload variant (scrim, then Cancel) was therefore not run. |
+| 4 | Shift-click a link | Pass | `mouse-click --modifiers shift` on a parent link presented that page in Peek; the window list still showed one window; organization bytes unchanged. A plain click navigated the parent tab normally. A Command-click showed hover/visited feedback but added no entry to organization and no Peek; no baseline for the earlier background-tab behavior was captured in this run, so this spot-check is inconclusive. |
+| 5 | Promote with sidebar hidden | Pass | With the sidebar hidden by Cmd-S, Cmd-Option-Return promoted the Peek; text typed in the preview survived without reload, and exactly one temporary entry was added and made active. The Peek menu's "Open as Tab" did the same with the sidebar shown. |
+| 6 | Regression | Pass | Escape restored the parent live with state intact and unchanged organization bytes. Cmd-T during Peek ended it: after cancelling the command bar the parent was shown, the preview browser was closed, and organization bytes were unchanged. One `attached-sheet` rejection remains in the log for the whole run. |
+| 7 | Quit | Pass | Native-menu Quit exited 0; one each of native detach, slot-client detach, message-loop exit and CEF shutdown; final organization bytes equal pre-quit bytes; the preserved source organization is unchanged. |
+
+The earlier stated limitation that there is no live parent underneath is demonstrated as resolved. The limitation that the scrim does not block parent input or dismiss the Peek is demonstrated to remain. Because the parent sits dimmed under a scrim that passes input through, a click or scroll in that area acts on the parent page; this should be treated as a defect.
+
+Run notes: early keystrokes went to another application while the browser window was not frontmost (one pasted URL and Return, possibly a harmless GET to the loopback fixture); automation was retried after explicitly focusing the browser. Window screenshots vary in size with focus, so click offsets were derived per capture. `find` on the menu bar timed out once the History menu grew; the menu was driven through a menubar snapshot instead. Not covered: Peek during fullscreen or an alert sheet, real stacking of native overlays, keyboard focus traversal, and the beforeunload scrim path.
+
+## v4 scrim fix
+
+Checked 2026-11-06 against the engine rebuilt with the scrim fix (the scrim takes part in hit testing; the parent page ignores input while the Peek is mounted). Fresh `runtime/peek-state-v4`, wrapper `launch-peek-v4.py`, owned PID 23519, same fixture and discipline as v3. The v3 failures for checks 2 and 3 are retained above as observed.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Parent input blocked | Pass | With the Peek presented, a real wheel event and a real click over the dimmed parent bar left the parent's wheel and bar-click counters at 0 (they became 1 in v3). The parent's tick counter kept advancing. |
+| Scrim click dismisses | Pass | A click on the dimmed bar removed the Peek row and restored the parent live (ticking, note and counters intact). Organization bytes unchanged. |
+| beforeunload scrim path | Pass | With `quit.html` armed by a real click, a scrim click showed "Leave site?". Cancel kept the Peek; a second scrim click then Leave closed the preview and restored the parent; the preview browser close was logged. Organization unchanged. |
+| Regressions | Pass | Shift-click on a parent link presented it in Peek with one window listed; the preview accepted typed input (the first attempt lost its paste, the retry showed the text); the dimmed parent kept ticking under the Peek; Escape restored the parent with organization bytes unchanged. |
+| Quit | Pass | Native-menu Quit exited 0; one each of native detach, slot-client detach, message-loop exit and CEF shutdown; final bytes equal pre-quit bytes; the preserved source organization is unchanged; no `attached-sheet` rejection occurred in this run. |
+
+The stale limitation that the scrim passes input through is resolved on the real host. Not covered: Peek during fullscreen or alert sheets, keyboard focus traversal, native overlay stacking beyond a visual check, and the Command-click background-tab spot-check. No daily-use readiness is claimed. No owned browser remains; the fixture server remains running.

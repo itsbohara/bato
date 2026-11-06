@@ -42,5 +42,31 @@
     "C_quit": "pass",
     "quit_bytes_equal": true,
     "second_peek_refusal": "runtime/unit-test only; Cmd-T ends Peek by design"
+  },
+  "v3": {
+    "pid": 96491,
+    "exit_code": 0,
+    "state": "runtime/peek-state-v3",
+    "fixture_added": "spikes/fixtures/www/peek-parent.html",
+    "1_live_dimmed_parent": "pass (ticks advanced under Peek)",
+    "2_parent_input_blocked": "fail (wheel and click reached parent)",
+    "3_scrim_click_dismiss": "fail (clicks on bar and margin did not dismiss); beforeunload variant not run",
+    "4_shift_click": "pass (Peek, single window); plain click navigates; cmd-click inconclusive",
+    "5_promote_sidebar_hidden": "pass (Cmd-Option-Return and Peek menu)",
+    "6_regression": "pass",
+    "7_quit": "pass",
+    "quit_bytes_equal": true
+  },
+  "v4": {
+    "pid": 23519,
+    "exit_code": 0,
+    "state": "runtime/peek-state-v4",
+    "parent_input_blocked": "pass (wheel and click counters stayed 0)",
+    "scrim_click_dismiss": "pass",
+    "beforeunload_scrim_cancel_leave": "pass",
+    "regressions": "pass (shift-click one window, preview input, live parent, Escape)",
+    "quit": "pass",
+    "quit_bytes_equal": true,
+    "attached_sheet_rejections": 0
   }
 }
