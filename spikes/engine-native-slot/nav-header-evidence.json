@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-06",
+  "scope": "Sidebar navigation header real-host check",
+  "pid": 61383,
+  "exit_code": 0,
+  "state": "runtime/nav-header-state-v1",
+  "checks": {
+    "1_back_forward": "pass",
+    "2_reload_stop_loading_bar": "pass",
+    "3_failed_load": "partial (failure state shown ~1s for refused connection, cleared after error page commit; unsafe-port case not observed)",
+    "4_pill_and_cmd_l": "pass (no new entry; Cmd-L during Peek falls through to Chromium)",
+    "5_cmd_shift_c": "fail (clipboard stayed empty; cause not established)",
+    "6_peek_disabled": "pass",
+    "7_split_focused_side": "pass",
+    "8_quit": "pass"
+  },
+  "quit_bytes_equal": true,
+  "lifecycle_markers_once": true,
+  "visual_deltas": [
+    "controls stacked under title vs top toolbar in Dia/Arc",
+    "redundant address field below pill",
+    "bordered bold pill vs muted borderless",
+    "icon weight/spacing",
+    "loading bar low contrast",
+    "title not aligned with traffic lights",
+    "radii/insets",
+    "no space tint"
+  ],
+  "v2": {
+    "pid": 91877,
+    "exit_code": 0,
+    "state": "runtime/nav-header-state-v2",
+    "a_cmd_shift_c": "fail (no clipboard, no workspace-key-routed line); Page > Copy URL menu passes",
+    "b_failure_state": "fail (red pill seen 1 of 3 attempts, ~1s; not persistent)",
+    "c_slow_load_attempted_url": "pass",
+    "d_layout_and_enter": "pass (3/3 Enter, no new entry, no flake)",
+    "e_regression": "pass (back/forward, peek disabled, quit)",
+    "quit_bytes_equal": true
+  },
+  "v3": {
+    "pid": 11906,
+    "exit_code": 0,
+    "state": "runtime/nav-header-state-v3",
+    "a_cmd_shift_c": "fail (synthetic key presses; no clipboard, no key-routed log); Cmd-Option-C and Peek variant inconclusive",
+    "b_failure_state": "fail (attempted host shown at 1s, not persistent, not 3/3)",
+    "c_visual": "pass (unfilled at rest, hover fill)",
+    "d_regression": "pass (Cmd-L+Enter, back/forward, quit bytes equal)",
+    "quit_bytes_equal": true
+  }
+}
