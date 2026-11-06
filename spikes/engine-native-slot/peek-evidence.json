@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-06",
+  "scope": "Bato Peek real-host acceptance (bounded, synthetic fixtures)",
+  "pid": 93465,
+  "exit_code": 0,
+  "state": "runtime/peek-state-v1 (clone of split-pairs-state-v1)",
+  "checks": {
+    "1_present": "pass",
+    "2_input_origin": "pass",
+    "3_escape_dismiss": "pass",
+    "4_second_request_refused": "not demonstrated (command bar sheet ends Peek first)",
+    "5_beforeunload_cancel_leave": "pass",
+    "6_promotion": "pass",
+    "7_workspace_switch": "pass",
+    "8_split_refusal": "pass (UI filter level)",
+    "9_clean_quit": "pass"
+  },
+  "lifecycle_markers_once": [
+    "native-slot-detached",
+    "slot-client-detached",
+    "cef-message-loop-exited",
+    "cef-shutdown-complete"
+  ],
+  "quit_bytes_equal": true,
+  "preserved_state_unchanged": true,
+  "defects": [
+    "v1 (retained): command bar sheet over a Peek ends it but leaves the preview mounted/unclosed; parent not restored until another selection; fixed Swift-side, verified in v2"
+  ],
+  "observations": [
+    "plain Open of an existing temp-tab URL activates the existing entry",
+    "Memory Saver bubble blocked AX snapshot once",
+    "clipboard helper refused by host; pbcopy used"
+  ],
+  "v2": {
+    "pid": 30859,
+    "exit_code": 0,
+    "state": "runtime/peek-state-v2",
+    "fix": "command bar ends Peek before presenting sheet",
+    "A_cmd_t_during_peek": "pass (parent restored, preview closed, sidebar consistent; one attached-sheet rejection still logged, no stray page)",
+    "B_escape_dismiss": "pass",
+    "B_promotion": "pass",
+    "C_quit": "pass",
+    "quit_bytes_equal": true,
+    "second_peek_refusal": "runtime/unit-test only; Cmd-T ends Peek by design"
+  }
+}

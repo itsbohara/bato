@@ -12,7 +12,7 @@ Updated 2026-11-02. Rough planning estimate: **45% of a usable V1**, with the po
 | Sidebar behavior | Coordinated dock/hide/reveal, Cmd+S, 220–400-point drag/keyboard resizing and accessible controls; bounded real-host checks passed | Persisted preferences, animation, broader window/transition acceptance |
 | Command bar | Floating native Cmd+T bar; URL/web search; current-Profile page switching; keyboard selection; browser commands; session-local provider choice | Persisted search settings, broader command coverage and acceptance |
 | Splits | Bato-owned native Chromium pairs; saved pair controls; lazy member opening/live reuse; menu-driven divider ratio; exact clean-quit persistence and same-binary restart | Pointer divider resizing, keyboard/focus acceptance and broader split compatibility |
-| Peek | Preparatory session lifecycle and exact-ID tab insertion; native integration plan; no visible preview yet | Native overlay, link triggers, dismiss/focus wiring and transactional promotion |
+| Peek | Engine-owned inset preview over a backdrop (tab-owned, same window/context); Cmd-T "Open in Peek"; Escape/Cmd-W/Close dismissal with beforeunload Cancel/Leave; transactional Open as Tab without reload; workspace-switch teardown and split refusal; clean Quit | Live parent underneath/scrim, link triggers (Shift-click), focus/AX polish, real-host second-Peek refusal |
 | Profiles | Synthetic storage sharing/isolation demonstrated | Application context binding and Profile controls |
 | Extensions | Narrow installation/persistence/use checks recorded | Remaining acceptance; extensive testing deferred by user |
 | Blocking | Not implemented | Default blocking, controls and persistent site exceptions |
@@ -41,7 +41,7 @@ Sidebar **Copy Link** now resolves the latest session URL at invocation for Favo
 
 Reference research on 2026-11-01 added 43 private Dia screenshots with accessibility snapshots, a searchable gallery, coverage index and file manifest. Captures include Apps/Slack connection, grouping preferences and generated group, completed public-page and Slack chat answers, splits and settings. This adds reference coverage, not Bato functionality or completion percentage. See [reference library](REFERENCES.md); personal screenshots stay outside this public repo. AI remains deferred in V1.
 
-1. Connect the preparatory Peek session contract to a real native preview, then add link triggers, dismiss/focus handling and transactional promotion. Retain pointer-divider/focus acceptance as explicit open gates; saved pairs and native controls are implemented within recorded limits.
+1. Peek polish: show the live parent under the preview with a scrim, add link triggers (Shift-click), and focus/AX handling; see PEEK-RESULTS.md for limits. Retain pointer-divider/focus acceptance as explicit open gates; saved pairs and native controls are implemented within recorded limits.
 2. Continue remaining browser-chrome polish, nested organization and preferences alongside broader window/lifecycle acceptance.
 3. Add remaining Profile/import/blocking/essential workflows and release readiness.
 
