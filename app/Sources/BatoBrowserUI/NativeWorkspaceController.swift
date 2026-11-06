@@ -6,7 +6,7 @@ import BatoRuntime
 /// The native sidebar only. Chromium owns page views, origin UI and browser data.
 /// The caller must wire the engine's event sink before calling `start()`.
 @MainActor
-public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
+public final class NativeWorkspaceController: NSObject {
     public let root: NSView
     public let runtime: PageRuntime
     public var requestNativeFocus: (() -> Void)?
@@ -16,17 +16,15 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     }
     /// The Chromium host schedules committed page work on its CEF UI task runner.
     public var requestPagePresentation: (() -> Void)?
-    public var focusTarget: NSView { addressField }
+    public var focusTarget: NSView { navigationHeader.pill }
     public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 
-    private let addressField = NSTextField(string: "")
     private let entries = SidebarEntries()
     private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let workspaceActions = NSButton(frame: .zero)
     private let sidebarToggle = NSButton(frame: .zero)
     private let profileLabel = NSTextField(labelWithString: "")
-    private let workspaceTitle = NSTextField(labelWithString: "")
-    private let addressSurface = SidebarSurface()
+    private let navigationHeader = NavigationHeader()
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
     private var pageIcons: [UUID: NSImage] = [:]
@@ -44,6 +42,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
     private weak var pendingCommandBarWindow: NSWindow?
+    private var commandBarNavigationTarget: LivePage?
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 
     /// Load failures throw without replacing the existing document. The factory
@@ -114,17 +113,19 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     /// Opens native navigation, organization search and browser commands.
     public func newTab() { showCommandBar() }
 
-    private func showCommandBar(query: String = "", error: String? = nil) {
+    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil) {
         guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         runtime.endPeek()
         requestNativeFocus?()
+        commandBarNavigationTarget = target
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
                                        providerChanged: { [weak self] in self?.commandBarSearchProvider = $0 }) { [weak self] query in
             guard let self else { return [] }
             return CommandBarResults.make(query: query, state: self.runtime.state,
-                                          provider: self.commandBarSearchProvider).filter { result in
+                                          provider: self.commandBarSearchProvider,
+                                          navigatingCurrentPage: target != nil).filter { result in
                 switch result.action {
                 case .command(.toggleSidebar): return self.requestSidebarToggle != nil
                 case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
@@ -134,7 +135,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             }
         }
         commandBar = bar
-        guard let sheet = bar.window else { commandBar = nil; return }
+        guard let sheet = bar.window else { commandBar = nil; commandBarNavigationTarget = nil; return }
         window.beginSheet(sheet) { [weak self, weak bar, weak window] response in
             guard let self else { return }
             if response == .OK, let bar, let action = bar.chosenAction {
@@ -142,12 +143,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 self.pendingCommandBarWindow = window
             }
             self.commandBar = nil
-            guard response == .OK else { return }
+            guard response == .OK else { self.commandBarNavigationTarget = nil; return }
             // Do not create/select/close a Chromium page inside sheet completion.
             // The host restores its native slot before this scheduled callback.
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let self else { return }
                 guard let window, self.root.window === window else {
+                    self.commandBarNavigationTarget = nil
                     self.pendingCommandBarAction = nil
                     self.pendingCommandBarWindow = nil
                     return
@@ -161,6 +163,9 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
 
     private func executeCommandBarAction(_ pending: (action: CommandBarAction, query: String)) {
         let succeeded: Bool
+        let navigationTarget = commandBarNavigationTarget
+        commandBarNavigationTarget = nil
+        var retryTarget: LivePage?
         switch pending.action {
         case .open(let url):
             // An engine failure may follow a successful save: do not create a
@@ -168,6 +173,9 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             let before = runtime.state
             let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
             succeeded = opened || runtime.state != before
+        case .navigateCurrent(let url):
+            retryTarget = navigationTarget
+            succeeded = navigationTarget.map { runtime.perform(.load(url), on: $0) } ?? false
         case .peek(let url):
             succeeded = runtime.openPeek(url: url)
         case .activate(let result):
@@ -185,7 +193,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             let message = runtime.lastError == .saveFailed
                 ? "Changes couldn’t be saved. Reopen Bato to reload organization."
                 : "This page is unavailable or is closing. Choose another result."
-            showCommandBar(query: pending.query, error: message)
+            showCommandBar(query: pending.query, error: message, navigating: retryTarget)
         }
     }
 
@@ -253,25 +261,33 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
 
     @objc private func toggleSidebar() { requestSidebarToggle?() }
 
+    /// Opens the command bar on the current URL to navigate this page instead of opening a tab.
+    /// False when no live page can be navigated, so the host leaves the key to Chromium.
+    @discardableResult
+    public func editAddress() -> Bool {
+        guard hasStarted, let target = runtime.navigationTarget,
+              let url = runtime.state.visibleEntries.first(where: { $0.id == target.entryID })?.lastURL else { return false }
+        showCommandBar(query: url.absoluteString, navigating: target)
+        return commandBar != nil
+    }
+
+    /// Copies the selected live page's latest URL; false when there is no such page or it is not copyable.
+    @discardableResult
+    public func copyCurrentLink() -> Bool {
+        guard runtime.navigationTarget != nil, let entryID = runtime.state.currentWorkspace.activeEntryID else { return false }
+        return copyLink(entryID: entryID, workspaceID: runtime.state.activeWorkspaceID,
+                        profileID: runtime.state.currentWorkspace.profileID)
+    }
+
     private func configureView() {
         root.setAccessibilityIdentifier("bato-workspace-sidebar")
         if let view = root as? WorkspaceRoot {
             view.newTab = { [weak self] in self?.newTab() }
             view.closeSelection = { [weak self] in self?.closeSelection() }
+            view.editAddress = { [weak self] in self?.editAddress() ?? false }
+            view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
         }
 
-        let title = NSTextField(labelWithString: "bato")
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
-        workspaceTitle.font = .systemFont(ofSize: 11, weight: .medium)
-        workspaceTitle.textColor = .secondaryLabelColor
-        workspaceTitle.lineBreakMode = .byTruncatingTail
-        workspaceTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let identity = NSStackView(views: [title, workspaceTitle])
-        identity.orientation = .vertical
-        identity.alignment = .leading
-        identity.spacing = 1
-        identity.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        workspaceTitle.widthAnchor.constraint(lessThanOrEqualTo: identity.widthAnchor).isActive = true
         let workspaceEdit = ActionButton(title: "") { [weak self] in self?.editWorkspace() }
         configureIcon(workspaceEdit, symbol: "paintpalette", label: "Edit workspace")
         workspaceEdit.setAccessibilityIdentifier("bato-edit-workspace")
@@ -287,38 +303,18 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
         sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
         sidebarToggle.isHidden = requestSidebarToggle == nil
-        let heading = NSStackView(views: [identity, sidebarToggle, workspaceEdit, workspaceActions])
+        navigationHeader.onCommand = { [weak self] command in
+            guard let self else { return }
+            self.perform { self.runtime.perform(command) }
+        }
+        navigationHeader.onEditAddress = { [weak self] in self?.editAddress() }
+        let headingSpacer = NSView()
+        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let heading = NSStackView(views: [sidebarToggle, navigationHeader.controls, headingSpacer, workspaceEdit, workspaceActions])
         heading.orientation = .horizontal
         heading.distribution = .fill
         heading.spacing = 2
 
-        addressField.placeholderString = "Enter a website address"
-        addressField.font = .systemFont(ofSize: 12)
-        addressField.isBordered = false
-        addressField.drawsBackground = false
-        addressField.focusRingType = .exterior
-        addressField.setAccessibilityLabel("New tab address")
-        addressField.setAccessibilityIdentifier("bato-new-tab-address")
-        addressField.delegate = self
-        addressField.target = self
-        addressField.action = #selector(submitAddress)
-        // Return submits explicitly; moving focus must not resubmit the address.
-        addressField.cell?.sendsActionOnEndEditing = false
-        addressField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let add = ActionButton(title: "") { [weak self] in self?.submitAddress() }
-        configureIcon(add, symbol: "arrow.up.right", label: "Open address in new tab")
-        add.setAccessibilityIdentifier("bato-new-tab")
-        let addressRow = NSStackView(views: [addressField, add])
-        addressRow.orientation = .horizontal
-        addressRow.spacing = 4
-        addressRow.translatesAutoresizingMaskIntoConstraints = false
-        addressSurface.addSubview(addressRow)
-        NSLayoutConstraint.activate([
-            addressRow.leadingAnchor.constraint(equalTo: addressSurface.leadingAnchor, constant: 10),
-            addressRow.trailingAnchor.constraint(equalTo: addressSurface.trailingAnchor, constant: -4),
-            addressRow.centerYAnchor.constraint(equalTo: addressSurface.centerYAnchor),
-            addressSurface.heightAnchor.constraint(equalToConstant: 36)
-        ])
         let new = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
         configureTextAction(new, symbol: "plus")
         new.setAccessibilityIdentifier("bato-focus-new-tab")
@@ -407,19 +403,19 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 
-        let stack = NSStackView(views: [heading, addressSurface, pageActions, peekRow, scroll, separator, footer, statusLabel])
+        let stack = NSStackView(views: [heading, navigationHeader.pill, pageActions, peekRow, scroll, separator, footer, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 11
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: SidebarMetrics.sideInset),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -SidebarMetrics.sideInset),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            addressSurface.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            navigationHeader.pill.widthAnchor.constraint(equalTo: stack.widthAnchor),
             pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
             peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -463,8 +459,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
-        addressSurface.accent = accent
-        workspaceTitle.stringValue = workspace.name
+        navigationHeader.update(navigationModel(), accent: accent)
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -526,6 +521,16 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             statusLabel.stringValue = "This action couldn’t be completed."
         }
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
+    }
+
+    private func navigationModel() -> NavigationHeaderModel {
+        let state = runtime.navigationState
+        let toggle: PageNavigationCommand = state?.isLoading == true ? .stop : .reload
+        return NavigationHeaderModel(
+            url: runtime.displayedURL,
+            canGoBack: runtime.canPerform(.back), canGoForward: runtime.canPerform(.forward),
+            isLoading: state?.isLoading == true, canToggleLoading: runtime.canPerform(toggle),
+            canEditAddress: runtime.navigationTarget != nil, failureCode: state?.failureCode)
     }
 
     /// Split controls address organization identities, never Chromium tab indices.
@@ -918,7 +923,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         }
     }
 
-    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID) {
+    @discardableResult
+    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID) -> Bool {
         guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
               runtime.state.currentWorkspace.profileID == profileID,
               commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil,
@@ -928,12 +934,13 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
               let entry = runtime.state.visibleEntries.first(where: { $0.id == entryID }),
               let scheme = entry.lastURL.scheme?.lowercased(), ["http", "https"].contains(scheme),
               let host = entry.lastURL.host, !host.isEmpty,
-              entry.lastURL.user == nil, entry.lastURL.password == nil else { return }
+              entry.lastURL.user == nil, entry.lastURL.password == nil else { return false }
         // Resolve at invocation: saved entries may have navigated since the menu
         // was built, and their saved destination must remain unchanged.
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.lastURL.absoluteString, forType: .string)
+        return true
     }
 
     private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {
@@ -1066,24 +1073,6 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         render()
     }
 
-    @objc private func submitAddress() {
-        guard hasStarted else { return }
-        let text = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = text.contains("://") ? text : "https://" + text
-        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.host?.isEmpty == false, url.user == nil, url.password == nil else {
-            statusLabel.stringValue = "Enter a website address using HTTP or HTTPS."
-            statusLabel.isHidden = false
-            return
-        }
-        let before = runtime.state
-        _ = runtime.addTab(url: url, title: url.host ?? "New tab")
-        // Creation can fail after a successful organization commit. Clear only
-        // when that commit added the entry; preserve text on a failed save.
-        if runtime.state != before { addressField.stringValue = "" }
-        render()
-    }
-
     @objc private func showWorkspaceActions() {
         guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -1189,7 +1178,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
 /// Resolve semantic colors while drawing, rather than caching appearance-bound
 /// CGColors. Display-option changes redraw the same opaque native surfaces.
 @MainActor
-private class AdaptiveSidebarView: NSView {
+class AdaptiveSidebarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         NSWorkspace.shared.notificationCenter.addObserver(self,
@@ -1203,19 +1192,6 @@ private class AdaptiveSidebarView: NSView {
         needsDisplay = true
     }
     @objc private func displayOptionsChanged() { needsDisplay = true }
-}
-
-@MainActor
-private final class SidebarSurface: AdaptiveSidebarView {
-    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 9, yRadius: 9)
-        (NSColor.controlBackgroundColor.blended(withFraction: 0.05, of: accent) ?? .controlBackgroundColor).setFill()
-        path.fill()
-        NSColor.separatorColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0.45).setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
 }
 
 @MainActor
@@ -1270,7 +1246,7 @@ private final class SidebarPageView: AdaptiveSidebarView {
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
         if selected {
             (NSColor.controlBackgroundColor.blended(withFraction: contrast ? 0.3 : 0.2, of: accent) ?? .selectedControlColor).setFill()
         } else if hovered {
@@ -1289,10 +1265,16 @@ private final class SidebarPageView: AdaptiveSidebarView {
     }
 }
 
+/// One radius and one side inset for every sidebar surface, so rows and the pill read as a set.
+enum SidebarMetrics {
+    static let cornerRadius: CGFloat = 10
+    static let sideInset: CGFloat = 10
+}
+
 @MainActor
-private func sidebarSymbol(_ name: String, size: CGFloat) -> NSImage {
+func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regular) -> NSImage {
     let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) ?? NSImage(size: NSSize(width: size, height: size))
-    return image.withSymbolConfiguration(.init(pointSize: size, weight: .regular)) ?? image
+    return image.withSymbolConfiguration(.init(pointSize: size, weight: weight)) ?? image
 }
 
 @MainActor
@@ -1319,20 +1301,24 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     var keyEquivalentsEnabled = true
     var newTab: (() -> Void)?
     var closeSelection: (() -> Void)?
+    var editAddress: (() -> Bool)?
+    var copyLink: (() -> Bool)?
     override var isFlipped: Bool { true }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
     override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
-        guard keyEquivalentsEnabled, modifiers == .command else {
-            return super.performKeyEquivalent(with: event)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        guard keyEquivalentsEnabled else { return super.performKeyEquivalent(with: event) }
+        switch (modifiers, key) {
+        case (.command, "t"): newTab?(); return true
+        case (.command, "w"): closeSelection?(); return true
+        case (.command, "l"): if editAddress?() == true { return true }
+        case ([.command, .shift], "c"): if copyLink?() == true { return true }
+        default: break
         }
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "t": newTab?(); return true
-        case "w": closeSelection?(); return true
-        default: return super.performKeyEquivalent(with: event)
-        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

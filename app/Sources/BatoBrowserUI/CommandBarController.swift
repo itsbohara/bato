@@ -29,6 +29,8 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
                                     styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.title = "New Tab"
+        panel.initialFirstResponder = field
+        panel.searchField = field
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -189,6 +191,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         let symbol: String
         switch result.action {
         case .open: symbol = "arrow.up.right"
+        case .navigateCurrent: symbol = "arrow.right"
         case .peek: symbol = "rectangle.center.inset.filled"
         case .activate: symbol = "rectangle.on.rectangle"
         case .command: symbol = "command"
@@ -246,7 +249,18 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
 
 @MainActor
 private final class CommandBarPanel: NSPanel {
+    weak var searchField: NSSearchField?
+    private var focusedOnFirstKey = false
     override var canBecomeKey: Bool { true }
+    /// A sheet becomes key after beginSheet returns, which can reset the first responder set
+    /// before then; Return would then reach neither the field nor the default button.
+    override func becomeKey() {
+        super.becomeKey()
+        guard !focusedOnFirstKey, let searchField else { return }
+        focusedOnFirstKey = true
+        makeFirstResponder(searchField)
+        searchField.selectText(nil)
+    }
 }
 
 @MainActor

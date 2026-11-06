@@ -12,6 +12,7 @@ private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
+private typealias NavigatePage = @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32
 @MainActor private var workspaceDirectory: URL?
 @MainActor private var createPage: CreatePage?
 @MainActor private var selectPage: PageAction?
@@ -26,6 +27,7 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 @MainActor private var separateSplitPages: ActivePage?
 @MainActor private var presentPeekPages: PresentPeek?
 @MainActor private var endPeekPages: EndPeek?
+@MainActor private var navigatePage: NavigatePage?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 
 @MainActor private final class WorkspaceEngine: PageEngine {
@@ -90,6 +92,18 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
         case 1: peek = nil; return .ended
         case 2: peek = nil; return .parentRestoreFailed
         default: return .stale
+        }
+    }
+    var supportsNavigation: Bool { navigatePage != nil }
+    /// Organization pages only: a transient preview is never a header target.
+    func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool {
+        guard let id = pages.first(where: { $0.value == page })?.key, let navigatePage else { return false }
+        switch command {
+        case .back: return navigatePage(token, id, 0, nil) == 1
+        case .forward: return navigatePage(token, id, 1, nil) == 1
+        case .reload: return navigatePage(token, id, 2, nil) == 1
+        case .stop: return navigatePage(token, id, 3, nil) == 1
+        case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, 4, $0) } == 1
         }
     }
     func adoptPeekPreview(_ preview: LivePage) {
@@ -271,7 +285,8 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
                       !preview.isPendingDismissal else { return false }
                 controller.promotePeek()
                 return true
-            })
+            }, editAddress: { [weak controller] in controller?.editAddress() ?? false },
+               copyLink: { [weak controller] in controller?.copyCurrentLink() ?? false })
             menuRouter = router
             root.onAttach = { [weak self, weak controller, weak router] in
                 self?.installPointerMonitor()
@@ -404,6 +419,7 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
     guard let controller = workspaceSlots[token]?.controller else { return }
     if command == 3 { controller.resumeCommittedSelection() }
     if command == 1 { controller.newTab() }
+    if command == 4 { controller.copyCurrentLink() }
     if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
         controller.dismissPeek()
     } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
@@ -427,16 +443,22 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
     private let toggle: () -> Bool
     private let dismissPeek: () -> Bool
     private let promotePeek: () -> Bool
+    private let editAddress: () -> Bool
+    private let copyLink: () -> Bool
     private var sidebarMenuItem: NSMenuItem?
     private var peekMenuItem: NSMenuItem?
+    private var pageMenuItem: NSMenuItem?
     init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
-         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool) {
+         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
+         editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool) {
         self.token = token; self.root = root; self.toggle = toggle
         self.dismissPeek = dismissPeek; self.promotePeek = promotePeek
+        self.editAddress = editAddress; self.copyLink = copyLink
         super.init()
     }
     @objc private func toggleFromMenu() { _ = toggle() }
     @objc private func promotePeekFromMenu() { _ = promotePeek() }
+    @objc private func copyLinkFromMenu() { _ = copyLink() }
     func install() {
         if let window = root?.window { ownedWindow = window }
         if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
@@ -461,6 +483,17 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
             mainMenu.addItem(item)
             peekMenuItem = item
         }
+        if pageMenuItem == nil, let mainMenu = NSApp.mainMenu {
+            let item = NSMenuItem(title: "Page", action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: "Page")
+            let copyItem = NSMenuItem(title: "Copy URL", action: #selector(copyLinkFromMenu), keyEquivalent: "c")
+            copyItem.target = self
+            copyItem.keyEquivalentModifierMask = [.command, .shift]
+            menu.addItem(copyItem)
+            item.submenu = menu
+            mainMenu.addItem(item)
+            pageMenuItem = item
+        }
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
                 // AppKit delivers local event monitors on the main thread.
@@ -483,12 +516,17 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
         sidebarMenuItem = nil
         if let peekMenuItem { peekMenuItem.menu?.removeItem(peekMenuItem) }
         peekMenuItem = nil
+        if let pageMenuItem { pageMenuItem.menu?.removeItem(pageMenuItem) }
+        pageMenuItem = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
         deactivationObserver = nil
         acceptedKeys.removeAll()
         ownedWindow = nil
+    }
+    private func logKeyRouting(_ key: String, handled: Bool) {
+        FileHandle.standardError.write(Data("{\"event\":\"workspace-key-routed\",\"key\":\"\(key)\",\"handled\":\(handled)}\n".utf8))
     }
     private func routeKey(_ event: NSEvent) -> NSEvent? {
         if event.type == .keyUp {
@@ -508,6 +546,23 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
         if event.keyCode == 36, modifiers == [.command, .option], NSApp.isActive, let window = ownedWindow,
            event.window === window, NSApp.keyWindow === window,
            window.attachedSheet == nil, NSApp.modalWindow == nil, promotePeek() { return nil }
+        // Cmd-L and Cmd-Shift-C are claimed only for a live Bato page, ahead of Chromium's accelerators
+        // (Cmd-Shift-C is its Inspect Element, still on Cmd-Option-C and the context menu). An untracked Chrome tab,
+        // the blank anchor, a presented Peek or a sheet leave the key to Chromium (Cmd-L keeps
+        // focusing its omnibox, which remains visible and authoritative for origin/security UI).
+        if (modifiers == .command || modifiers == [.command, .shift]),
+           let key = event.charactersIgnoringModifiers?.lowercased(),
+           (modifiers == .command && key == "l") || (modifiers != .command && key == "c"),
+           NSApp.isActive, let window = ownedWindow, event.window === window, NSApp.keyWindow === window,
+           window.attachedSheet == nil, NSApp.modalWindow == nil {
+            if event.isARepeat { return acceptedKeys.contains(event.keyCode) ? nil : event }
+            acceptedKeys.remove(event.keyCode)
+            let handled = key == "l" ? editAddress() : copyLink()
+            if key == "c" { logKeyRouting("copy-url", handled: handled) }
+            guard handled else { return event }
+            acceptedKeys.insert(event.keyCode)
+            return nil
+        }
         guard modifiers == .command,
               let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
               NSApp.isActive, let window = ownedWindow,
@@ -630,4 +685,27 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
     guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
           let page = engine.pages[parent], let address = URL(string: text) else { return }
     controller.openPeek(from: page, url: address)
+}
+
+@_cdecl("BatoSwiftWorkspaceConfigureNavigation")
+@MainActor public func configureWorkspaceNavigation(
+    _ navigate: @escaping @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32) {
+    precondition(Thread.isMainThread)
+    navigatePage = navigate
+}
+
+/// Delivered after the CEF handler stack unwinds. The exact page generation is
+/// resolved here, so state for a closed or replaced page is dropped by the runtime.
+@_cdecl("BatoSwiftWorkspaceNavigationState")
+@MainActor public func workspaceNavigationState(_ token: UInt64, _ browserID: Int32, _ canGoBack: Int32,
+                                               _ canGoForward: Int32, _ isLoading: Int32, _ errorCode: Int32,
+                                               _ attemptedURL: UnsafePointer<CChar>?) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine,
+          let page = engine.pages[browserID] ?? engine.transient[browserID] else { return }
+    slot.controller?.receive(.navigationState(page, PageNavigationState(
+        canGoBack: canGoBack != 0, canGoForward: canGoForward != 0, isLoading: isLoading != 0,
+        failureCode: errorCode == 0 ? nil : errorCode,
+        attemptedURL: attemptedURL.flatMap { URL(string: String(cString: $0)) }
+            .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil })))
 }

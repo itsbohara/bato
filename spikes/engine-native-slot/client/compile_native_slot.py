@@ -23,7 +23,7 @@ def main():
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
-                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
+                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift', 'NavigationHeader.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
