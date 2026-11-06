@@ -17,6 +17,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     /// The Chromium host schedules committed page work on its CEF UI task runner.
     public var requestPagePresentation: (() -> Void)?
     public var focusTarget: NSView { addressField }
+    public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 
     private let addressField = NSTextField(string: "")
     private let entries = SidebarEntries()
@@ -30,9 +31,12 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
     private var pageIcons: [UUID: NSImage] = [:]
     private var splitControls: [String: NSButton] = [:]
+    private let peekRow = NSStackView()
+    private let peekLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var workspaceIDs: [UUID] = []
     private var hasStarted = false
+    private var sheetObserver: NSObjectProtocol?
     private var workspaceEditor: WorkspaceEditor?
     private var folderEditor: FolderEditor?
     private var pageFinder: PageFinder?
@@ -71,6 +75,11 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     public func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        sheetObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didEndSheetNotification, object: root.window, queue: .main) { [weak self] _ in
+            // Let the sheet finish detaching before the engine is asked to select or close.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.runtime.retryAbandonedPreviews() } }
+        }
         _ = runtime.start()
         render()
     }
@@ -108,6 +117,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     private func showCommandBar(query: String = "", error: String? = nil) {
         guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        runtime.endPeek()
         requestNativeFocus?()
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
@@ -118,6 +128,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
                 switch result.action {
                 case .command(.toggleSidebar): return self.requestSidebarToggle != nil
                 case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
+                case .peek: return self.runtime.canOpenPeek
                 default: return true
                 }
             }
@@ -157,6 +168,8 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             let before = runtime.state
             let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
             succeeded = opened || runtime.state != before
+        case .peek(let url):
+            succeeded = runtime.openPeek(url: url)
         case .activate(let result):
             succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
         case .command(let command):
@@ -219,6 +232,15 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
     public func closeSelection() {
         guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
         perform { runtime.closeEntry(id) }
+    }
+
+    /// Escape and the Close control both land here; Chromium may confirm before closing.
+    public func dismissPeek() {
+        perform { runtime.dismissPeek() }
+    }
+
+    public func promotePeek() {
+        perform { runtime.promotePeek() }
     }
 
     @objc private func toggleSidebar() { requestSidebarToggle?() }
@@ -296,6 +318,29 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         configureTextAction(find, symbol: "magnifyingglass")
         find.setAccessibilityLabel("Find Page")
         find.setAccessibilityIdentifier("bato-find-page")
+        peekLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        peekLabel.textColor = .secondaryLabelColor
+        peekLabel.lineBreakMode = .byTruncatingTail
+        peekLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        peekLabel.setAccessibilityIdentifier("bato-peek-title")
+        let promote = ActionButton(title: "Open as Tab") { [weak self] in self?.promotePeek() }
+        configureTextAction(promote, symbol: "arrow.up.left.and.arrow.down.right")
+        promote.setAccessibilityIdentifier("bato-peek-promote")
+        let closePeek = ActionButton(title: "Close") { [weak self] in self?.dismissPeek() }
+        configureTextAction(closePeek, symbol: "xmark")
+        closePeek.toolTip = "Close Peek (Esc)"
+        closePeek.setAccessibilityIdentifier("bato-peek-close")
+        let peekActions = NSStackView(views: [promote, closePeek])
+        peekActions.orientation = .horizontal
+        peekActions.distribution = .fillEqually
+        peekActions.spacing = 6
+        peekRow.setViews([peekLabel, peekActions], in: .leading)
+        peekRow.orientation = .vertical
+        peekRow.alignment = .leading
+        peekRow.spacing = 4
+        peekRow.isHidden = true
+        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
+        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         let pageActions = NSStackView(views: [new, find])
         pageActions.orientation = .horizontal
         pageActions.distribution = .fillEqually
@@ -354,7 +399,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 
-        let stack = NSStackView(views: [heading, addressSurface, pageActions, scroll, separator, footer, statusLabel])
+        let stack = NSStackView(views: [heading, addressSurface, pageActions, peekRow, scroll, separator, footer, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 11
@@ -368,6 +413,7 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
             heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
             addressSurface.widthAnchor.constraint(equalTo: stack.widthAnchor),
             pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -456,6 +502,9 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
         profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
         pageFinder?.refresh()
+        let peek = runtime.peekSession.preview
+        peekRow.isHidden = peek == nil
+        peekLabel.stringValue = peek.map { "Peek · " + ($0.title.isEmpty ? ($0.url.host ?? $0.url.absoluteString) : $0.title) } ?? ""
         switch runtime.lastError {
         case .none:
             statusLabel.stringValue = runtime.pendingClose.isEmpty ? "" : "Waiting for page to close…"

@@ -10,6 +10,8 @@ private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int
 private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32
 private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
+private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
+private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
 @MainActor private var createPage: CreatePage?
 @MainActor private var selectPage: PageAction?
@@ -22,12 +24,17 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 @MainActor private var pageFocus: ActivePage?
 @MainActor private var presentSplitPages: PresentSplit?
 @MainActor private var separateSplitPages: ActivePage?
+@MainActor private var presentPeekPages: PresentPeek?
+@MainActor private var endPeekPages: EndPeek?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 
 @MainActor private final class WorkspaceEngine: PageEngine {
     let supportedProfileIDs: Set<UUID>
     let token: UInt64
     var pages: [Int32: LivePage] = [:]
+    /// Previews are never organization pages: they stay here until promoted or terminal.
+    var transient: [Int32: LivePage] = [:]
+    var peek: (generation: UInt64, parent: Int32, preview: Int32)?
     var onEvent: ((PageEvent) -> Void)?
     var onAnchorLost: (() -> Void)?
     init(token: UInt64, profileID: UUID) {
@@ -61,25 +68,56 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
         return presentSplitPages?(token, a, b, f, ratio) == 1
     }
     func separateSplit() -> Bool { separateSplitPages?(token) == 1 }
+    var supportsPeek: Bool { presentPeekPages != nil && endPeekPages != nil }
+    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool {
+        guard peek == nil, supportedProfileIDs.contains(preview.profileID),
+              let parentID = pages.first(where: { $0.value == parent })?.key else { return false }
+        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
+        guard id > 0, pages[id] == nil, transient[id] == nil else { return false }
+        transient[id] = preview
+        let generation = presentPeekPages?(token, parentID, id) ?? 0
+        guard generation != 0 else {
+            _ = selectPage?(token, parentID)
+            _ = closePage?(token, id)
+            return false
+        }
+        peek = (generation, parentID, id)
+        return true
+    }
+    func endPeek(restoreParent: Bool) -> PeekEndResult {
+        guard let current = peek else { return .stale }
+        switch endPeekPages?(token, current.generation, restoreParent ? 1 : 0) {
+        case 1: peek = nil; return .ended
+        case 2: peek = nil; return .parentRestoreFailed
+        default: return .stale
+        }
+    }
+    func adoptPeekPreview(_ preview: LivePage) {
+        guard let id = transient.first(where: { $0.value == preview })?.key else { return }
+        transient.removeValue(forKey: id)
+        pages[id] = preview
+    }
     func requestClose(_ page: LivePage) {
-        guard let id = pages.first(where: { $0.value == page })?.key else { return }
+        guard let id = (pages.first(where: { $0.value == page }) ?? transient.first(where: { $0.value == page }))?.key else { return }
         if closePage?(token, id) != 1 { onEvent?(.closeCancelled(page)) }
     }
     func receive(id: Int32, kind: Int32, url: String, title: String) {
         if kind == 5 || kind == 7 { onAnchorLost?(); return }
         if kind == 6 && id == 0 { onEvent?(.selectionCleared); return }
-        guard let page = pages[id] else { return }
+        guard let page = pages[id] ?? transient[id] else { return }
         switch kind {
-        case 6: onEvent?(.selected(page))
+        case 6: if transient[id] == nil { onEvent?(.selected(page)) }
         case 1:
             guard let address = URL(string: url) else { return }
             onEvent?(.navigation(page, url: address, title: title))
         case 2:
             pages.removeValue(forKey: id)
+            transient.removeValue(forKey: id)
             onEvent?(.closed(page))
         case 3: onEvent?(.closeCancelled(page))
         case 4:
             pages.removeValue(forKey: id)
+            transient.removeValue(forKey: id)
             onEvent?(.unloaded(page))
         default: break
         }
@@ -222,7 +260,13 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
             root.addSubview(controller.root, positioned: .below, relativeTo: nil)
             root.needsLayout = true
             let router = WorkspaceKeyRouter(token: token, root: root,
-                                            toggle: { [weak self] in self?.toggle() ?? false })
+                                            toggle: { [weak self] in self?.toggle() ?? false },
+                                            dismissPeek: { [weak controller] in
+                guard let controller, let preview = controller.runtime.peekSession.preview,
+                      !preview.isPendingDismissal else { return false }
+                controller.dismissPeek()
+                return true
+            })
             menuRouter = router
             root.onAttach = { [weak self, weak controller, weak router] in
                 self?.installPointerMonitor()
@@ -355,7 +399,9 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
     guard let controller = workspaceSlots[token]?.controller else { return }
     if command == 3 { controller.resumeCommittedSelection() }
     if command == 1 { controller.newTab() }
-    if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
+    if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
+        controller.dismissPeek()
+    } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
         controller.receive(.selected(page))
         if controller.runtime.state.currentWorkspace.activeEntryID == page.entryID {
             controller.closeSelection()
@@ -374,9 +420,10 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
     private var acceptedKeys: Set<UInt16> = []
     private var deactivationObserver: NSObjectProtocol?
     private let toggle: () -> Bool
+    private let dismissPeek: () -> Bool
     private var sidebarMenuItem: NSMenuItem?
-    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool) {
-        self.token = token; self.root = root; self.toggle = toggle
+    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool, dismissPeek: @escaping () -> Bool) {
+        self.token = token; self.root = root; self.toggle = toggle; self.dismissPeek = dismissPeek
         super.init()
     }
     @objc private func toggleFromMenu() { _ = toggle() }
@@ -430,6 +477,11 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
             return event
         }
         let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        // Escape is consumed only while a dismissable Peek is presented, so a
+        // pending before-unload prompt still receives it.
+        if event.keyCode == 53, modifiers.isEmpty, NSApp.isActive, let window = ownedWindow,
+           event.window === window, NSApp.keyWindow === window,
+           window.attachedSheet == nil, NSApp.modalWindow == nil, dismissPeek() { return nil }
         guard modifiers == .command,
               let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
               NSApp.isActive, let window = ownedWindow,
@@ -498,4 +550,26 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
           controller.runtime.livePages[b.entryID] == b else { return }
     if removed == 1 { controller.receive(.splitSeparated(left: a, right: b)) }
     else { controller.receive(.splitRatioChanged(left: a, right: b, ratio: ratio)) }
+}
+
+@_cdecl("BatoSwiftWorkspaceConfigurePeek")
+@MainActor public func configureWorkspacePeek(
+    _ present: @escaping @convention(c) (UInt64, Int32, Int32) -> UInt64,
+    _ end: @escaping @convention(c) (UInt64, UInt64, Int32) -> Int32) {
+    precondition(Thread.isMainThread)
+    presentPeekPages = present
+    endPeekPages = end
+}
+
+@_cdecl("BatoSwiftWorkspacePeekEnded")
+@MainActor public func workspacePeekEnded(_ token: UInt64, _ generation: UInt64, _ parent: Int32,
+                                         _ preview: Int32, _ reason: Int32) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
+          let current = engine.peek, current.generation == generation,
+          current.parent == parent, current.preview == preview,
+          let page = engine.transient[preview] ?? engine.pages[preview],
+          let reason = PeekEndReason(rawValue: reason) else { return }
+    engine.peek = nil
+    controller.receive(.peekEnded(preview: page, reason: reason))
 }

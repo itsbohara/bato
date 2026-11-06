@@ -96,7 +96,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,809 @@
+@@ -0,0 +1,910 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -130,6 +130,9 @@
 +    int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 +extern "C" void BatoSwiftWorkspaceConfigureSplits(
 +    int (*present)(uint64_t, int, int, int, double), int (*separate)(uint64_t));
++// Peek hooks are optional Swift exports, resolved with dlsym at registration.
++using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
++using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
 +extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
 +extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
@@ -149,6 +152,11 @@
 +using SeparateSplit = decltype(&bato_native_slot_separate_split_v1);
 +PresentSplit g_present_split = nullptr;
 +SeparateSplit g_separate_split = nullptr;
++using PeekPresent = decltype(&bato_native_slot_peek_present_v1);
++using PeekEnd = decltype(&bato_native_slot_peek_end_v1);
++PeekPresent g_peek_present = nullptr;
++PeekEnd g_peek_end = nullptr;
++SwiftPeekEnded g_swift_peek_ended = nullptr;
 +bool g_workspace_enabled = false;
 +int g_initial_browser_id = 0;
 +
@@ -167,6 +175,12 @@
 +  int split_right = 0;
 +  uint64_t split_revision = 0;
 +  uint64_t split_observation = 0;
++  // Transient Peek binding; the engine generation is the only authority.
++  uint64_t peek_generation = 0;
++  int peek_parent = 0;
++  int peek_preview = 0;
++  CefRefPtr<CefBrowser> peek_parent_browser;
++  CefRefPtr<CefBrowser> peek_preview_browser;
 +};
 +// Main-thread-only process storage. Entries and all CEF refs are explicitly
 +// released on detach; a process-lifetime container avoids exit-time CEF calls.
@@ -656,6 +670,8 @@
 +        auto slot = WorkspaceSlots().find(token);
 +        if (slot == WorkspaceSlots().end() || !g_active_browser_id ||
 +            g_active_browser_id(token) != identifier) return;
++        // The presented preview is transient, never an organization selection.
++        if (slot->second.peek_generation && slot->second.peek_preview == identifier) return;
 +        int selected = identifier;
 +        if (slot->second.anchor && slot->second.anchor->GetIdentifier() == identifier) {
 +          selected = 0;
@@ -664,6 +680,20 @@
 +        }
 +        BatoSwiftWorkspacePageEvent(token, selected, 6, "", "");
 +      }, token, identifier));
++}
++
++void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
++  auto slot = WorkspaceSlots().find(token);
++  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
++  slot->second.peek_generation = 0;
++  slot->second.peek_parent = slot->second.peek_preview = 0;
++  slot->second.peek_parent_browser = slot->second.peek_preview_browser = nullptr;
++  // Runs inside a tab-model mutation or layout; Swift may select/close tabs.
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, uint64_t generation, int parent, int preview, int reason) {
++        if (g_swift_peek_ended && WorkspaceSlots().contains(token))
++          g_swift_peek_ended(token, generation, parent, preview, reason);
++      }, token, generation, parent, preview, reason));
 +}
 +
 +// Synchronous diagnostic action only. No URL, credentials or field text logged.
@@ -691,6 +721,56 @@
 +}
 +void* FocusTarget(void*, uint64_t token) { return BatoSwiftNativeSlotFocusTarget(token); }
 +}  // namespace
++
++uint64_t BatoWorkspacePeekPresent(uint64_t token, int parent, int preview) {
++  auto* slot = AvailableSlot(token);
++  if (!slot || !g_peek_present || slot->peek_generation || parent <= 0 ||
++      preview <= 0 || parent == preview) return 0;
++  for (int identifier : {parent, preview}) {
++    auto found = slot->pages.find(identifier);
++    if (found == slot->pages.end() || !found->second.browser->IsValid() ||
++        slot->pending_close.contains(identifier)) return 0;
++    // Never adopt a page that belongs to the managed split pair.
++    if (identifier == slot->split_left || identifier == slot->split_right) return 0;
++  }
++  auto parent_browser = slot->pages.at(parent).browser;
++  auto preview_browser = slot->pages.at(preview).browser;
++  if (!slot->context || !SameWindow(parent_browser, preview_browser) ||
++      !parent_browser->GetHost()->GetRequestContext()->IsSame(slot->context) ||
++      !preview_browser->GetHost()->GetRequestContext()->IsSame(slot->context)) return 0;
++  const uint64_t generation = g_peek_present(token, parent, preview);
++  if (!generation) return 0;
++  // The engine call selects tabs and runs layout; revalidate before binding.
++  auto current = WorkspaceSlots().find(token);
++  if (current == WorkspaceSlots().end() || current->second.peek_generation ||
++      !current->second.pages.contains(parent) || !current->second.pages.contains(preview) ||
++      !current->second.pages.at(parent).browser->IsSame(parent_browser) ||
++      !current->second.pages.at(preview).browser->IsSame(preview_browser)) {
++    if (g_peek_end) g_peek_end(token, generation, 0);
++    return 0;
++  }
++  current->second.peek_generation = generation;
++  current->second.peek_parent = parent;
++  current->second.peek_preview = preview;
++  current->second.peek_parent_browser = parent_browser;
++  current->second.peek_preview_browser = preview_browser;
++  return generation;
++}
++
++int BatoWorkspacePeekEnd(uint64_t token, uint64_t generation, int restore_parent) {
++  if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) || !g_peek_end || !generation) return 0;
++  auto slot = WorkspaceSlots().find(token);
++  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return 0;
++  const int result = g_peek_end(token, generation, restore_parent);
++  auto current = WorkspaceSlots().find(token);
++  if (result != 0 && current != WorkspaceSlots().end() &&
++      current->second.peek_generation == generation) {
++    current->second.peek_generation = 0;
++    current->second.peek_parent = current->second.peek_preview = 0;
++    current->second.peek_parent_browser = current->second.peek_preview_browser = nullptr;
++  }
++  return result;
++}
 +
 +void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
 +  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
@@ -857,6 +937,14 @@
 +  auto separate_split = reinterpret_cast<SeparateSplit>(dlsym(loaded, "bato_native_slot_separate_split_v1"));
 +  auto register_splits = reinterpret_cast<decltype(&bato_native_slot_register_split_callbacks_v1)>(
 +      dlsym(loaded, "bato_native_slot_register_split_callbacks_v1"));
++  auto register_peeks = reinterpret_cast<decltype(&bato_native_slot_register_peek_callbacks_v1)>(
++      dlsym(loaded, "bato_native_slot_register_peek_callbacks_v1"));
++  auto peek_present = reinterpret_cast<PeekPresent>(dlsym(loaded, "bato_native_slot_peek_present_v1"));
++  auto peek_end = reinterpret_cast<PeekEnd>(dlsym(loaded, "bato_native_slot_peek_end_v1"));
++  auto swift_configure_peek = reinterpret_cast<SwiftConfigurePeek>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePeek"));
++  auto swift_peek_ended = reinterpret_cast<SwiftPeekEnded>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekEnded"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -886,6 +974,19 @@
 +    g_present_split = present_split;
 +    g_separate_split = separate_split;
 +    BatoSwiftWorkspaceConfigureSplits(PresentWorkspaceSplit, SeparateWorkspaceSplit);
++    // Peek is additive: a framework or Swift library without it keeps working.
++    if (register_peeks && peek_present && peek_end && swift_configure_peek && swift_peek_ended) {
++      BatoPeekCallbacksV1 peek_callbacks = {};
++      peek_callbacks.size = sizeof(peek_callbacks);
++      peek_callbacks.version = 1;
++      peek_callbacks.ended = PeekEnded;
++      if (register_peeks(&peek_callbacks) == 1) {
++        g_peek_present = peek_present;
++        g_peek_end = peek_end;
++        g_swift_peek_ended = swift_peek_ended;
++        swift_configure_peek(BatoWorkspacePeekPresent, BatoWorkspacePeekEnd);
++      }
++    }
 +    g_new_tab = new_tab;
 +    g_request_close = request_close;
 +    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
@@ -908,7 +1009,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,26 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#include <vector>
@@ -927,6 +1028,13 @@
 +void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
 +                                        const std::vector<CefString>& urls);
 +void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
++// Peek client entry points for the Swift workspace. Main/CEF UI thread only.
++// Present returns a nonzero engine generation, or 0 when refused. End takes
++// that generation; restore_parent != 0 reactivates the parent. Parent and
++// preview must both be bound workspace pages. See bato_native_slot.h.
++extern "C" uint64_t BatoWorkspacePeekPresent(uint64_t token, int parent_browser_id,
++                                              int preview_browser_id);
++extern "C" int BatoWorkspacePeekEnd(uint64_t token, uint64_t generation, int restore_parent);
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
@@ -955,7 +1063,7 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift']),
-+                           ('BatoRuntime', ['PageRuntime.swift']),
++                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
@@ -1134,7 +1242,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,501 @@
+@@ -0,0 +1,575 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1147,6 +1255,8 @@
 +private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32
 +private typealias ActivePage = @convention(c) (UInt64) -> Int32
 +private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
++private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
++private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 +@MainActor private var workspaceDirectory: URL?
 +@MainActor private var createPage: CreatePage?
 +@MainActor private var selectPage: PageAction?
@@ -1159,12 +1269,17 @@
 +@MainActor private var pageFocus: ActivePage?
 +@MainActor private var presentSplitPages: PresentSplit?
 +@MainActor private var separateSplitPages: ActivePage?
++@MainActor private var presentPeekPages: PresentPeek?
++@MainActor private var endPeekPages: EndPeek?
 +@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 +
 +@MainActor private final class WorkspaceEngine: PageEngine {
 +    let supportedProfileIDs: Set<UUID>
 +    let token: UInt64
 +    var pages: [Int32: LivePage] = [:]
++    /// Previews are never organization pages: they stay here until promoted or terminal.
++    var transient: [Int32: LivePage] = [:]
++    var peek: (generation: UInt64, parent: Int32, preview: Int32)?
 +    var onEvent: ((PageEvent) -> Void)?
 +    var onAnchorLost: (() -> Void)?
 +    init(token: UInt64, profileID: UUID) {
@@ -1198,25 +1313,56 @@
 +        return presentSplitPages?(token, a, b, f, ratio) == 1
 +    }
 +    func separateSplit() -> Bool { separateSplitPages?(token) == 1 }
++    var supportsPeek: Bool { presentPeekPages != nil && endPeekPages != nil }
++    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool {
++        guard peek == nil, supportedProfileIDs.contains(preview.profileID),
++              let parentID = pages.first(where: { $0.value == parent })?.key else { return false }
++        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
++        guard id > 0, pages[id] == nil, transient[id] == nil else { return false }
++        transient[id] = preview
++        let generation = presentPeekPages?(token, parentID, id) ?? 0
++        guard generation != 0 else {
++            _ = selectPage?(token, parentID)
++            _ = closePage?(token, id)
++            return false
++        }
++        peek = (generation, parentID, id)
++        return true
++    }
++    func endPeek(restoreParent: Bool) -> PeekEndResult {
++        guard let current = peek else { return .stale }
++        switch endPeekPages?(token, current.generation, restoreParent ? 1 : 0) {
++        case 1: peek = nil; return .ended
++        case 2: peek = nil; return .parentRestoreFailed
++        default: return .stale
++        }
++    }
++    func adoptPeekPreview(_ preview: LivePage) {
++        guard let id = transient.first(where: { $0.value == preview })?.key else { return }
++        transient.removeValue(forKey: id)
++        pages[id] = preview
++    }
 +    func requestClose(_ page: LivePage) {
-+        guard let id = pages.first(where: { $0.value == page })?.key else { return }
++        guard let id = (pages.first(where: { $0.value == page }) ?? transient.first(where: { $0.value == page }))?.key else { return }
 +        if closePage?(token, id) != 1 { onEvent?(.closeCancelled(page)) }
 +    }
 +    func receive(id: Int32, kind: Int32, url: String, title: String) {
 +        if kind == 5 || kind == 7 { onAnchorLost?(); return }
 +        if kind == 6 && id == 0 { onEvent?(.selectionCleared); return }
-+        guard let page = pages[id] else { return }
++        guard let page = pages[id] ?? transient[id] else { return }
 +        switch kind {
-+        case 6: onEvent?(.selected(page))
++        case 6: if transient[id] == nil { onEvent?(.selected(page)) }
 +        case 1:
 +            guard let address = URL(string: url) else { return }
 +            onEvent?(.navigation(page, url: address, title: title))
 +        case 2:
 +            pages.removeValue(forKey: id)
++            transient.removeValue(forKey: id)
 +            onEvent?(.closed(page))
 +        case 3: onEvent?(.closeCancelled(page))
 +        case 4:
 +            pages.removeValue(forKey: id)
++            transient.removeValue(forKey: id)
 +            onEvent?(.unloaded(page))
 +        default: break
 +        }
@@ -1359,7 +1505,13 @@
 +            root.addSubview(controller.root, positioned: .below, relativeTo: nil)
 +            root.needsLayout = true
 +            let router = WorkspaceKeyRouter(token: token, root: root,
-+                                            toggle: { [weak self] in self?.toggle() ?? false })
++                                            toggle: { [weak self] in self?.toggle() ?? false },
++                                            dismissPeek: { [weak controller] in
++                guard let controller, let preview = controller.runtime.peekSession.preview,
++                      !preview.isPendingDismissal else { return false }
++                controller.dismissPeek()
++                return true
++            })
 +            menuRouter = router
 +            root.onAttach = { [weak self, weak controller, weak router] in
 +                self?.installPointerMonitor()
@@ -1492,7 +1644,9 @@
 +    guard let controller = workspaceSlots[token]?.controller else { return }
 +    if command == 3 { controller.resumeCommittedSelection() }
 +    if command == 1 { controller.newTab() }
-+    if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
++    if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
++        controller.dismissPeek()
++    } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
 +        controller.receive(.selected(page))
 +        if controller.runtime.state.currentWorkspace.activeEntryID == page.entryID {
 +            controller.closeSelection()
@@ -1511,9 +1665,10 @@
 +    private var acceptedKeys: Set<UInt16> = []
 +    private var deactivationObserver: NSObjectProtocol?
 +    private let toggle: () -> Bool
++    private let dismissPeek: () -> Bool
 +    private var sidebarMenuItem: NSMenuItem?
-+    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool) {
-+        self.token = token; self.root = root; self.toggle = toggle
++    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool, dismissPeek: @escaping () -> Bool) {
++        self.token = token; self.root = root; self.toggle = toggle; self.dismissPeek = dismissPeek
 +        super.init()
 +    }
 +    @objc private func toggleFromMenu() { _ = toggle() }
@@ -1567,6 +1722,11 @@
 +            return event
 +        }
 +        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
++        // Escape is consumed only while a dismissable Peek is presented, so a
++        // pending before-unload prompt still receives it.
++        if event.keyCode == 53, modifiers.isEmpty, NSApp.isActive, let window = ownedWindow,
++           event.window === window, NSApp.keyWindow === window,
++           window.attachedSheet == nil, NSApp.modalWindow == nil, dismissPeek() { return nil }
 +        guard modifiers == .command,
 +              let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
 +              NSApp.isActive, let window = ownedWindow,
@@ -1635,6 +1795,28 @@
 +          controller.runtime.livePages[b.entryID] == b else { return }
 +    if removed == 1 { controller.receive(.splitSeparated(left: a, right: b)) }
 +    else { controller.receive(.splitRatioChanged(left: a, right: b, ratio: ratio)) }
++}
++
++@_cdecl("BatoSwiftWorkspaceConfigurePeek")
++@MainActor public func configureWorkspacePeek(
++    _ present: @escaping @convention(c) (UInt64, Int32, Int32) -> UInt64,
++    _ end: @escaping @convention(c) (UInt64, UInt64, Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    presentPeekPages = present
++    endPeekPages = end
++}
++
++@_cdecl("BatoSwiftWorkspacePeekEnded")
++@MainActor public func workspacePeekEnded(_ token: UInt64, _ generation: UInt64, _ parent: Int32,
++                                         _ preview: Int32, _ reason: Int32) {
++    precondition(Thread.isMainThread)
++    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
++          let current = engine.peek, current.generation == generation,
++          current.parent == parent, current.preview == preview,
++          let page = engine.transient[preview] ?? engine.pages[preview],
++          let reason = PeekEndReason(rawValue: reason) else { return }
++    engine.peek = nil
++    controller.receive(.peekEnded(preview: page, reason: reason))
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
@@ -2854,7 +3036,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,651 @@
 +import Foundation
 +import BatoCore
 +
@@ -2883,6 +3065,16 @@
 +    case selectionCleared
 +    case splitRatioChanged(left: LivePage, right: LivePage, ratio: Double)
 +    case splitSeparated(left: LivePage, right: LivePage)
++    /// The engine ended the presentation itself; the preview page may still be live.
++    case peekEnded(preview: LivePage, reason: PeekEndReason)
++}
++
++public enum PeekEndReason: Int32, Sendable {
++    case previewClosed = 1, selectionChanged, fullscreen, modal, split, teardown, parentClosed, closing
++}
++
++public enum PeekEndResult: Sendable {
++    case stale, ended, parentRestoreFailed
 +}
 +
 +/// All calls and events use the main actor. Acceptance of create means the adapter
@@ -2899,12 +3091,24 @@
 +    /// shows blank/loading content until ready, never a previously selected page.
 +    func select(_ page: LivePage?)
 +    func requestClose(_ page: LivePage)
++    var supportsPeek: Bool { get }
++    /// Creates the preview page and presents it in one step, so it is never
++    /// shown as an ordinary active tab. The engine owns the page until a terminal event.
++    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool
++    /// Ends the current presentation. Without a parent restore the preview stays an ordinary active page.
++    func endPeek(restoreParent: Bool) -> PeekEndResult
++    /// Routes the preview's later events as an ordinary page's.
++    func adoptPeekPreview(_ preview: LivePage)
 +}
 +
 +public extension PageEngine {
 +    var supportsSplits: Bool { false }
 +    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
 +    func separateSplit() -> Bool { true }
++    var supportsPeek: Bool { false }
++    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool { false }
++    func endPeek(restoreParent: Bool) -> PeekEndResult { .stale }
++    func adoptPeekPreview(_ preview: LivePage) {}
 +}
 +
 +public enum PageRuntimeError: Error, Equatable {
@@ -2923,9 +3127,15 @@
 +    public private(set) var livePages: [UUID: LivePage] = [:]
 +    public private(set) var pendingClose: Set<LivePage> = []
 +    public private(set) var lastError: PageRuntimeError?
++    public private(set) var peekSession = PeekSession()
 +    public var onStateChange: ((BrowserState) -> Void)?
 +    public var supportsSplits: Bool { engine.supportsSplits }
++    public var canOpenPeek: Bool {
++        engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
++            state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }.map { !pendingClose.contains($0) } == true
++    }
 +    private let engine: any PageEngine
++    private var abandonedPreviews: Set<LivePage> = []
 +    private var pagesWithUncommittedNavigation: [LivePage: UUID] = [:]
 +    private let commit: (BrowserState) throws -> Void
 +
@@ -3156,7 +3366,110 @@
 +        return true
 +    }
 +
++    /// Previews the destination above the current live page without touching organization.
++    @discardableResult
++    public func openPeek(url: URL) -> Bool {
++        guard canOpenPeek, let parentID = state.currentWorkspace.activeEntryID, let parent = livePages[parentID] else {
++            lastError = .invalidCommand
++            return false
++        }
++        let preview = LivePage(entryID: UUID(), profileID: parent.profileID)
++        var session = peekSession
++        guard session.open(parent: parent, page: preview, url: url) else {
++            lastError = .invalidCommand
++            return false
++        }
++        peekSession = session
++        guard engine.presentPeek(parent: parent, preview: preview, url: url) else {
++            _ = peekSession.handle(.creationFailed(preview))
++            lastError = .creationRejected
++            return false
++        }
++        return true
++    }
++
++    /// Closure goes through the engine's before-unload confirmation; the preview
++    /// stays owned until the engine reports it closed, and Cancel restores it.
++    @discardableResult
++    public func dismissPeek() -> Bool {
++        guard let page = peekSession.requestDismissal() else { return false }
++        engine.requestClose(page)
++        return true
++    }
++
++    /// Adopts the live preview as the selected tab. Nothing is navigated, reloaded
++    /// or recreated, and a failed save leaves the preview presented.
++    @discardableResult
++    public func promotePeek() -> Bool {
++        guard let prepared = peekSession.preparePromotion(),
++              state.currentWorkspace.activeEntryID == prepared.parent.entryID,
++              state.currentWorkspace.profileID == prepared.page.profileID else {
++            lastError = .invalidCommand
++            return false
++        }
++        var candidate = state
++        var session = peekSession
++        do {
++            _ = try candidate.addTab(id: prepared.page.entryID, url: prepared.url, title: prepared.title)
++            try candidate.validate()
++        } catch {
++            lastError = .invalidCommand
++            return false
++        }
++        guard session.completePromotion(prepared) else {
++            lastError = .invalidCommand
++            return false
++        }
++        let previous = peekSession
++        peekSession = session
++        guard save(candidate) else {
++            peekSession = previous
++            return false
++        }
++        livePages[prepared.page.entryID] = prepared.page
++        engine.adoptPeekPreview(prepared.page)
++        if engine.endPeek(restoreParent: false) != .ended { engine.select(selectedLivePage) }
++        return true
++    }
++
++    private func handlePeekEnded(_ preview: LivePage, _ reason: PeekEndReason) {
++        guard peekSession.preview?.page == preview else { return }
++        peekSession.finish()
++        switch reason {
++        case .selectionChanged, .fullscreen, .modal, .split, .parentClosed:
++            abandonedPreviews.insert(preview)
++            retryAbandonedPreviews()
++        case .previewClosed, .teardown, .closing:
++            break
++        }
++    }
++
++    /// Ends any presentation and closes its preview, restoring the parent. A host
++    /// calls this before showing a window sheet, which the engine would otherwise
++    /// treat as a modal end it cannot clean up while the sheet is attached.
++    public func endPeek() { tearDownPeek(restoreParent: true) }
++
++    /// The engine rejects selection and close while a sheet or modal is attached,
++    /// so a rejected close leaves the preview here for the host to retry after it detaches.
++    public func retryAbandonedPreviews() {
++        guard !abandonedPreviews.isEmpty else { return }
++        engine.select(selectedLivePage)
++        for preview in abandonedPreviews { engine.requestClose(preview) }
++    }
++
++    private func tearDownPeek(restoreParent: Bool = false) {
++        guard let preview = peekSession.preview?.page,
++              engine.endPeek(restoreParent: restoreParent) != .stale else { return }
++        peekSession.finish()
++        abandonedPreviews.insert(preview)
++        retryAbandonedPreviews()
++    }
++
 +    public func receive(_ event: PageEvent) {
++        if case let .peekEnded(preview, reason) = event { return handlePeekEnded(preview, reason) }
++        if case let .closed(page) = event { abandonedPreviews.remove(page) }
++        if case let .unloaded(page) = event { abandonedPreviews.remove(page) }
++        if peekSession.handle(event) { return }
 +        switch event {
 +        case let .splitRatioChanged(left, right, ratio):
 +            guard livePages[left.entryID] == left, livePages[right.entryID] == right,
@@ -3185,6 +3498,8 @@
 +                try candidate.selectEntry(page.entryID)
 +            }
 +            if !accepted { engine.select(selectedLivePage) }
++        case .peekEnded:
++            return
 +        case .selectionCleared:
 +            guard state.currentWorkspace.activeEntryID != nil else { return }
 +            let accepted = change { candidate in
@@ -3275,7 +3590,11 @@
 +            lastError = .invalidCommand
 +            return false
 +        }
++        let movesSelection = candidate.activeWorkspaceID != state.activeWorkspaceID ||
++            candidate.currentWorkspace.activeEntryID != state.currentWorkspace.activeEntryID ||
++            candidate.currentSplit?.id != state.currentSplit?.id
 +        guard save(candidate) else { return false }
++        if movesSelection { tearDownPeek() }
 +        return reconcileSelection ? showSelection() : true
 +    }
 +
@@ -3370,8 +3689,128 @@
 +    }
 +}
 --- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoRuntime/PeekSession.swift
+@@ -0,0 +1,117 @@
++import Foundation
++import Darwin
++import BatoCore
++
++/// Process-local bookkeeping for one window's transient preview. This does not
++/// create, render, close or persist a page; a future host must perform those effects.
++/// In particular, requesting dismissal must still go through the engine's normal
++/// before-unload confirmation, and promotion must attach the returned live page.
++public struct PeekSession: Sendable {
++    public struct Preview: Equatable, Sendable {
++        fileprivate var revision = UUID()
++        public let parent: LivePage
++        public let page: LivePage
++        public fileprivate(set) var url: URL
++        public fileprivate(set) var title: String
++        public fileprivate(set) var isPendingDismissal: Bool
++    }
++
++    public private(set) var preview: Preview?
++
++    public init() {}
++
++    /// Link interception is restricted to absolute, credential-free HTTP(S).
++    /// This is input eligibility, not an origin/security or navigation policy.
++    public static func isEligibleLink(_ url: URL) -> Bool {
++        guard url.baseURL == nil,
++              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
++              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
++              case .navigate = CommandBarInput.resolve(url.absoluteString),
++              let host = components.host, !host.hasPrefix("."), !host.hasSuffix("..") else {
++            return false
++        }
++        // Validate bracketed IP literals explicitly. For ordinary hosts,
++        // disallow empty labels and malformed DNS label boundaries as well.
++        if host.hasPrefix("[") && host.hasSuffix("]") {
++            var address = in6_addr()
++            return String(host.dropFirst().dropLast()).withCString { inet_pton(AF_INET6, $0, &address) == 1 }
++        }
++        let labels = host.hasSuffix(".") ? host.dropLast().split(separator: ".", omittingEmptySubsequences: false)
++            : host[...].split(separator: ".", omittingEmptySubsequences: false)
++        return !labels.isEmpty && labels.allSatisfy {
++            !$0.isEmpty && $0.utf8.count <= 63 && $0.first != "-" && $0.last != "-" &&
++            $0.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || $0 == "-" }
++        }
++    }
++
++    /// The caller supplies a fresh live token only after arranging its engine
++    /// context. Matching Profile UUIDs express intent, not proven engine isolation.
++    /// An occupied preview is never implicitly replaced (it may have unsaved work).
++    @discardableResult
++    public mutating func open(parent: LivePage, page: LivePage, url: URL, title: String = "") -> Bool {
++        guard preview == nil, Self.isEligibleLink(url), parent.profileID == page.profileID,
++              parent.entryID != page.entryID else { return false }
++        preview = Preview(parent: parent, page: page, url: url, title: title, isPendingDismissal: false)
++        return true
++    }
++
++    /// Returns the token to pass to requestClose, once. Keep the preview until
++    /// the engine confirms closure; cancellation restores normal interaction.
++    public mutating func requestDismissal() -> LivePage? {
++        guard var current = preview, !current.isPendingDismissal else { return nil }
++        current.isPendingDismissal = true
++        current.revision = UUID()
++        preview = current
++        return current.page
++    }
++
++    /// Snapshot for the host's adoption/save attempt. Preparing leaves the live
++    /// preview owned here, so a failed attempt needs no rollback in this session.
++    public func preparePromotion() -> Preview? {
++        guard let current = preview, !current.isPendingDismissal else { return nil }
++        return current
++    }
++
++    /// Finish only after the host successfully adopts this exact snapshot. The
++    /// host must revalidate before committing if callbacks can reenter its work.
++    /// Navigation, dismissal or replacement makes an old preparation stale.
++    /// No engine close/recreation or organization save occurs here.
++    @discardableResult
++    public mutating func completePromotion(_ prepared: Preview) -> Bool {
++        guard let current = preview, !current.isPendingDismissal, current == prepared else { return false }
++        preview = nil
++        return true
++    }
++
++    /// Releases the preview after the engine has ended its presentation; unlike
++    /// promotion, the host still owns closing the page.
++    @discardableResult
++    public mutating func finish() -> Preview? {
++        defer { preview = nil }
++        return preview
++    }
++
++    /// Consume only exact live-generation callbacks. Navigation after opening is
++    /// engine-authoritative and is not restricted by link interception eligibility.
++    @discardableResult
++    public mutating func handle(_ event: PageEvent) -> Bool {
++        guard var current = preview else { return false }
++        switch event {
++        case let .navigation(page, url, title) where page == current.page:
++            current.revision = UUID()
++            current.url = url
++            current.title = title
++            preview = current
++        case let .closeCancelled(page) where page == current.page && current.isPendingDismissal:
++            current.revision = UUID()
++            current.isPendingDismissal = false
++            preview = current
++        case let .closed(page), let .creationFailed(page), let .unloaded(page):
++            guard page == current.page else { return false }
++            preview = nil
++        default:
++            return false
++        }
++        return true
++    }
++}
+--- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1690 @@
+@@ -0,0 +1,1739 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -3391,6 +3830,7 @@
 +    /// The Chromium host schedules committed page work on its CEF UI task runner.
 +    public var requestPagePresentation: (() -> Void)?
 +    public var focusTarget: NSView { addressField }
++    public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 +
 +    private let addressField = NSTextField(string: "")
 +    private let entries = SidebarEntries()
@@ -3404,9 +3844,12 @@
 +    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
 +    private var pageIcons: [UUID: NSImage] = [:]
 +    private var splitControls: [String: NSButton] = [:]
++    private let peekRow = NSStackView()
++    private let peekLabel = NSTextField(labelWithString: "")
 +    private let statusLabel = NSTextField(wrappingLabelWithString: "")
 +    private var workspaceIDs: [UUID] = []
 +    private var hasStarted = false
++    private var sheetObserver: NSObjectProtocol?
 +    private var workspaceEditor: WorkspaceEditor?
 +    private var folderEditor: FolderEditor?
 +    private var pageFinder: PageFinder?
@@ -3445,6 +3888,11 @@
 +    public func start() {
 +        guard !hasStarted else { return }
 +        hasStarted = true
++        sheetObserver = NotificationCenter.default.addObserver(
++            forName: NSWindow.didEndSheetNotification, object: root.window, queue: .main) { [weak self] _ in
++            // Let the sheet finish detaching before the engine is asked to select or close.
++            DispatchQueue.main.async { MainActor.assumeIsolated { self?.runtime.retryAbandonedPreviews() } }
++        }
 +        _ = runtime.start()
 +        render()
 +    }
@@ -3482,6 +3930,7 @@
 +    private func showCommandBar(query: String = "", error: String? = nil) {
 +        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        runtime.endPeek()
 +        requestNativeFocus?()
 +        let bar = CommandBarController(query: query, error: error,
 +                                       provider: commandBarSearchProvider,
@@ -3492,6 +3941,7 @@
 +                switch result.action {
 +                case .command(.toggleSidebar): return self.requestSidebarToggle != nil
 +                case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
++                case .peek: return self.runtime.canOpenPeek
 +                default: return true
 +                }
 +            }
@@ -3531,6 +3981,8 @@
 +            let before = runtime.state
 +            let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
 +            succeeded = opened || runtime.state != before
++        case .peek(let url):
++            succeeded = runtime.openPeek(url: url)
 +        case .activate(let result):
 +            succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
 +        case .command(let command):
@@ -3593,6 +4045,15 @@
 +    public func closeSelection() {
 +        guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
 +        perform { runtime.closeEntry(id) }
++    }
++
++    /// Escape and the Close control both land here; Chromium may confirm before closing.
++    public func dismissPeek() {
++        perform { runtime.dismissPeek() }
++    }
++
++    public func promotePeek() {
++        perform { runtime.promotePeek() }
 +    }
 +
 +    @objc private func toggleSidebar() { requestSidebarToggle?() }
@@ -3670,6 +4131,29 @@
 +        configureTextAction(find, symbol: "magnifyingglass")
 +        find.setAccessibilityLabel("Find Page")
 +        find.setAccessibilityIdentifier("bato-find-page")
++        peekLabel.font = .systemFont(ofSize: 11, weight: .medium)
++        peekLabel.textColor = .secondaryLabelColor
++        peekLabel.lineBreakMode = .byTruncatingTail
++        peekLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        peekLabel.setAccessibilityIdentifier("bato-peek-title")
++        let promote = ActionButton(title: "Open as Tab") { [weak self] in self?.promotePeek() }
++        configureTextAction(promote, symbol: "arrow.up.left.and.arrow.down.right")
++        promote.setAccessibilityIdentifier("bato-peek-promote")
++        let closePeek = ActionButton(title: "Close") { [weak self] in self?.dismissPeek() }
++        configureTextAction(closePeek, symbol: "xmark")
++        closePeek.toolTip = "Close Peek (Esc)"
++        closePeek.setAccessibilityIdentifier("bato-peek-close")
++        let peekActions = NSStackView(views: [promote, closePeek])
++        peekActions.orientation = .horizontal
++        peekActions.distribution = .fillEqually
++        peekActions.spacing = 6
++        peekRow.setViews([peekLabel, peekActions], in: .leading)
++        peekRow.orientation = .vertical
++        peekRow.alignment = .leading
++        peekRow.spacing = 4
++        peekRow.isHidden = true
++        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
++        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        let pageActions = NSStackView(views: [new, find])
 +        pageActions.orientation = .horizontal
 +        pageActions.distribution = .fillEqually
@@ -3728,7 +4212,7 @@
 +        statusLabel.textColor = .secondaryLabelColor
 +        statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 +
-+        let stack = NSStackView(views: [heading, addressSurface, pageActions, scroll, separator, footer, statusLabel])
++        let stack = NSStackView(views: [heading, addressSurface, pageActions, peekRow, scroll, separator, footer, statusLabel])
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
 +        stack.spacing = 11
@@ -3742,6 +4226,7 @@
 +            heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            addressSurface.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -3830,6 +4315,9 @@
 +        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
 +        profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
 +        pageFinder?.refresh()
++        let peek = runtime.peekSession.preview
++        peekRow.isHidden = peek == nil
++        peekLabel.stringValue = peek.map { "Peek · " + ($0.title.isEmpty ? ($0.url.host ?? $0.url.absoluteString) : $0.title) } ?? ""
 +        switch runtime.lastError {
 +        case .none:
 +            statusLabel.stringValue = runtime.pendingClose.isEmpty ? "" : "Waiting for page to close…"
@@ -5064,7 +5552,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,124 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -5147,6 +5635,7 @@
 +
 +public enum CommandBarAction: Equatable, Sendable {
 +    case open(URL)
++    case peek(URL)
 +    case activate(PageSearchResult)
 +    case command(CommandBarCommand)
 +}
@@ -5168,6 +5657,8 @@
 +        case .navigate(let url):
 +            results.append(CommandBarResult(id: "destination", title: "Open \(url.host ?? text)",
 +                subtitle: url.absoluteString, action: .open(url)))
++            results.append(CommandBarResult(id: "peek", title: "Open \(url.host ?? text) in Peek",
++                subtitle: url.absoluteString, action: .peek(url)))
 +        case .search(let url):
 +            results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
 +                subtitle: "Web search", action: .open(url)))
@@ -5188,7 +5679,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,273 @@
 +import AppKit
 +import BatoCore
 +
@@ -5380,6 +5871,7 @@
 +        let symbol: String
 +        switch result.action {
 +        case .open: symbol = "arrow.up.right"
++        case .peek: symbol = "rectangle.center.inset.filled"
 +        case .activate: symbol = "rectangle.on.rectangle"
 +        case .command: symbol = "command"
 +        }

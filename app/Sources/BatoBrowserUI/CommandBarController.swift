@@ -189,6 +189,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         let symbol: String
         switch result.action {
         case .open: symbol = "arrow.up.right"
+        case .peek: symbol = "rectangle.center.inset.filled"
         case .activate: symbol = "rectangle.on.rectangle"
         case .command: symbol = "command"
         }

@@ -22,7 +22,7 @@ def main():
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift']),
-                           ('BatoRuntime', ['PageRuntime.swift']),
+                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
                            ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
