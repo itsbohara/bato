@@ -266,6 +266,11 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
                       !preview.isPendingDismissal else { return false }
                 controller.dismissPeek()
                 return true
+            }, promotePeek: { [weak controller] in
+                guard let controller, let preview = controller.runtime.peekSession.preview,
+                      !preview.isPendingDismissal else { return false }
+                controller.promotePeek()
+                return true
             })
             menuRouter = router
             root.onAttach = { [weak self, weak controller, weak router] in
@@ -421,12 +426,17 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
     private var deactivationObserver: NSObjectProtocol?
     private let toggle: () -> Bool
     private let dismissPeek: () -> Bool
+    private let promotePeek: () -> Bool
     private var sidebarMenuItem: NSMenuItem?
-    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool, dismissPeek: @escaping () -> Bool) {
-        self.token = token; self.root = root; self.toggle = toggle; self.dismissPeek = dismissPeek
+    private var peekMenuItem: NSMenuItem?
+    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
+         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool) {
+        self.token = token; self.root = root; self.toggle = toggle
+        self.dismissPeek = dismissPeek; self.promotePeek = promotePeek
         super.init()
     }
     @objc private func toggleFromMenu() { _ = toggle() }
+    @objc private func promotePeekFromMenu() { _ = promotePeek() }
     func install() {
         if let window = root?.window { ownedWindow = window }
         if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
@@ -439,6 +449,17 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
             item.submenu = menu
             mainMenu.addItem(item)
             sidebarMenuItem = item
+        }
+        if peekMenuItem == nil, let mainMenu = NSApp.mainMenu {
+            let item = NSMenuItem(title: "Peek", action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: "Peek")
+            let promoteItem = NSMenuItem(title: "Open as Tab", action: #selector(promotePeekFromMenu), keyEquivalent: "\r")
+            promoteItem.target = self
+            promoteItem.keyEquivalentModifierMask = [.command, .option]
+            menu.addItem(promoteItem)
+            item.submenu = menu
+            mainMenu.addItem(item)
+            peekMenuItem = item
         }
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
@@ -460,6 +481,8 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
     func restore() {
         if let sidebarMenuItem { sidebarMenuItem.menu?.removeItem(sidebarMenuItem) }
         sidebarMenuItem = nil
+        if let peekMenuItem { peekMenuItem.menu?.removeItem(peekMenuItem) }
+        peekMenuItem = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
@@ -482,6 +505,9 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
         if event.keyCode == 53, modifiers.isEmpty, NSApp.isActive, let window = ownedWindow,
            event.window === window, NSApp.keyWindow === window,
            window.attachedSheet == nil, NSApp.modalWindow == nil, dismissPeek() { return nil }
+        if event.keyCode == 36, modifiers == [.command, .option], NSApp.isActive, let window = ownedWindow,
+           event.window === window, NSApp.keyWindow === window,
+           window.attachedSheet == nil, NSApp.modalWindow == nil, promotePeek() { return nil }
         guard modifiers == .command,
               let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
               NSApp.isActive, let window = ownedWindow,
@@ -572,4 +598,36 @@ private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
           let reason = PeekEndReason(rawValue: reason) else { return }
     engine.peek = nil
     controller.receive(.peekEnded(preview: page, reason: reason))
+}
+
+@_cdecl("BatoSwiftWorkspacePeekScrimClicked")
+@MainActor public func workspacePeekScrimClicked(_ token: UInt64, _ generation: UInt64,
+                                                _ parent: Int32, _ preview: Int32) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
+          let current = engine.peek, current.generation == generation,
+          current.parent == parent, current.preview == preview,
+          let page = engine.transient[preview] else { return }
+    controller.dismissPeek(preview: page)
+}
+
+/// Runs inside the engine's navigation request: no mutation here.
+@_cdecl("BatoSwiftWorkspacePeekLinkEligible")
+@MainActor public func workspacePeekLinkEligible(_ token: UInt64, _ parent: Int32,
+                                                _ url: UnsafePointer<CChar>) -> Int32 {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
+          engine.peek == nil, let page = engine.pages[parent],
+          let address = URL(string: String(cString: url)) else { return 0 }
+    return controller.runtime.canOpenPeek(from: page, url: address) ? 1 : 0
+}
+
+@_cdecl("BatoSwiftWorkspacePeekLinkRequested")
+@MainActor public func workspacePeekLinkRequested(_ token: UInt64, _ parent: Int32,
+                                                 _ url: UnsafePointer<CChar>) {
+    precondition(Thread.isMainThread)
+    let text = String(cString: url)
+    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
+          let page = engine.pages[parent], let address = URL(string: text) else { return }
+    controller.openPeek(from: page, url: address)
 }

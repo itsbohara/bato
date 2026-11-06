@@ -96,7 +96,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,910 @@
+@@ -0,0 +1,977 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -133,6 +133,14 @@
 +// Peek hooks are optional Swift exports, resolved with dlsym at registration.
 +using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
 +using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
++// Peek interaction hooks are optional Swift exports, resolved with dlsym.
++// ScrimClicked(token, generation, parent, preview): deferred notification.
++// LinkEligible(token, parent, url): synchronous and side-effect free; nonzero
++// when Swift will open the link in Peek. LinkRequested(token, parent, url):
++// deferred open after a nonzero eligibility answer.
++using SwiftPeekScrimClicked = void (*)(uint64_t, uint64_t, int, int);
++using SwiftPeekLinkEligible = int (*)(uint64_t, int, const char*);
++using SwiftPeekLinkRequested = void (*)(uint64_t, int, const char*);
 +extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
 +extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
@@ -157,6 +165,9 @@
 +PeekPresent g_peek_present = nullptr;
 +PeekEnd g_peek_end = nullptr;
 +SwiftPeekEnded g_swift_peek_ended = nullptr;
++SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
++SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
++SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
 +bool g_workspace_enabled = false;
 +int g_initial_browser_id = 0;
 +
@@ -696,6 +707,39 @@
 +      }, token, generation, parent, preview, reason));
 +}
 +
++void PeekScrimClicked(void*, uint64_t token, uint64_t generation, int parent, int preview) {
++  auto slot = WorkspaceSlots().find(token);
++  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
++  // Runs inside Views input handling; Swift may end the Peek and select tabs.
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, uint64_t generation, int parent, int preview) {
++        auto slot = WorkspaceSlots().find(token);
++        if (!g_swift_peek_scrim_clicked || slot == WorkspaceSlots().end() ||
++            slot->second.peek_generation != generation) return;
++        g_swift_peek_scrim_clicked(token, generation, parent, preview);
++      }, token, generation, parent, preview));
++}
++
++// Runs synchronously inside the engine's navigation request: answer only from
++// bound state and the pure Swift predicate, then defer the real work.
++int PeekLinkRequested(void*, uint64_t token, int parent, const char* utf8_url) {
++  auto slot = WorkspaceSlots().find(token);
++  if (slot == WorkspaceSlots().end() || !g_swift_peek_link_eligible ||
++      !g_swift_peek_link_requested || slot->second.peek_generation ||
++      !ValidDestination(utf8_url)) return 0;
++  auto page = slot->second.pages.find(parent);
++  if (page == slot->second.pages.end() || !page->second.browser->IsValid() ||
++      slot->second.pending_close.contains(parent) ||
++      parent == slot->second.split_left || parent == slot->second.split_right) return 0;
++  if (!g_swift_peek_link_eligible(token, parent, utf8_url)) return 0;
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int parent, std::string url) {
++        if (g_swift_peek_link_requested && WorkspaceSlots().contains(token))
++          g_swift_peek_link_requested(token, parent, url.c_str());
++      }, token, parent, std::string(utf8_url)));
++  return 1;
++}
++
 +// Synchronous diagnostic action only. No URL, credentials or field text logged.
 +int NavigateCurrentPage(uint64_t token, const char* utf8_url) {
 +  if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
@@ -945,6 +989,15 @@
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePeek"));
 +  auto swift_peek_ended = reinterpret_cast<SwiftPeekEnded>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekEnded"));
++  auto register_peek_interactions =
++      reinterpret_cast<decltype(&bato_native_slot_register_peek_interaction_callbacks_v1)>(
++          dlsym(loaded, "bato_native_slot_register_peek_interaction_callbacks_v1"));
++  auto swift_scrim_clicked = reinterpret_cast<SwiftPeekScrimClicked>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekScrimClicked"));
++  auto swift_link_eligible = reinterpret_cast<SwiftPeekLinkEligible>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkEligible"));
++  auto swift_link_requested = reinterpret_cast<SwiftPeekLinkRequested>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -985,6 +1038,20 @@
 +        g_peek_end = peek_end;
 +        g_swift_peek_ended = swift_peek_ended;
 +        swift_configure_peek(BatoWorkspacePeekPresent, BatoWorkspacePeekEnd);
++        // Scrim dismissal and Shift-click links are further additive layers.
++        if (register_peek_interactions && swift_scrim_clicked && swift_link_eligible &&
++            swift_link_requested) {
++          BatoPeekInteractionCallbacksV1 interactions = {};
++          interactions.size = sizeof(interactions);
++          interactions.version = 1;
++          interactions.scrim_clicked = PeekScrimClicked;
++          interactions.link_requested = PeekLinkRequested;
++          if (register_peek_interactions(&interactions) == 1) {
++            g_swift_peek_scrim_clicked = swift_scrim_clicked;
++            g_swift_peek_link_eligible = swift_link_eligible;
++            g_swift_peek_link_requested = swift_link_requested;
++          }
++        }
 +      }
 +    }
 +    g_new_tab = new_tab;
@@ -1242,7 +1309,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,633 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1511,6 +1578,11 @@
 +                      !preview.isPendingDismissal else { return false }
 +                controller.dismissPeek()
 +                return true
++            }, promotePeek: { [weak controller] in
++                guard let controller, let preview = controller.runtime.peekSession.preview,
++                      !preview.isPendingDismissal else { return false }
++                controller.promotePeek()
++                return true
 +            })
 +            menuRouter = router
 +            root.onAttach = { [weak self, weak controller, weak router] in
@@ -1666,12 +1738,17 @@
 +    private var deactivationObserver: NSObjectProtocol?
 +    private let toggle: () -> Bool
 +    private let dismissPeek: () -> Bool
++    private let promotePeek: () -> Bool
 +    private var sidebarMenuItem: NSMenuItem?
-+    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool, dismissPeek: @escaping () -> Bool) {
-+        self.token = token; self.root = root; self.toggle = toggle; self.dismissPeek = dismissPeek
++    private var peekMenuItem: NSMenuItem?
++    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
++         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool) {
++        self.token = token; self.root = root; self.toggle = toggle
++        self.dismissPeek = dismissPeek; self.promotePeek = promotePeek
 +        super.init()
 +    }
 +    @objc private func toggleFromMenu() { _ = toggle() }
++    @objc private func promotePeekFromMenu() { _ = promotePeek() }
 +    func install() {
 +        if let window = root?.window { ownedWindow = window }
 +        if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
@@ -1684,6 +1761,17 @@
 +            item.submenu = menu
 +            mainMenu.addItem(item)
 +            sidebarMenuItem = item
++        }
++        if peekMenuItem == nil, let mainMenu = NSApp.mainMenu {
++            let item = NSMenuItem(title: "Peek", action: nil, keyEquivalent: "")
++            let menu = NSMenu(title: "Peek")
++            let promoteItem = NSMenuItem(title: "Open as Tab", action: #selector(promotePeekFromMenu), keyEquivalent: "\r")
++            promoteItem.target = self
++            promoteItem.keyEquivalentModifierMask = [.command, .option]
++            menu.addItem(promoteItem)
++            item.submenu = menu
++            mainMenu.addItem(item)
++            peekMenuItem = item
 +        }
 +        if keyMonitor == nil {
 +            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
@@ -1705,6 +1793,8 @@
 +    func restore() {
 +        if let sidebarMenuItem { sidebarMenuItem.menu?.removeItem(sidebarMenuItem) }
 +        sidebarMenuItem = nil
++        if let peekMenuItem { peekMenuItem.menu?.removeItem(peekMenuItem) }
++        peekMenuItem = nil
 +        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
 +        keyMonitor = nil
 +        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
@@ -1727,6 +1817,9 @@
 +        if event.keyCode == 53, modifiers.isEmpty, NSApp.isActive, let window = ownedWindow,
 +           event.window === window, NSApp.keyWindow === window,
 +           window.attachedSheet == nil, NSApp.modalWindow == nil, dismissPeek() { return nil }
++        if event.keyCode == 36, modifiers == [.command, .option], NSApp.isActive, let window = ownedWindow,
++           event.window === window, NSApp.keyWindow === window,
++           window.attachedSheet == nil, NSApp.modalWindow == nil, promotePeek() { return nil }
 +        guard modifiers == .command,
 +              let key = event.charactersIgnoringModifiers, key == "t" || key == "w" || key == "s",
 +              NSApp.isActive, let window = ownedWindow,
@@ -1817,6 +1910,38 @@
 +          let reason = PeekEndReason(rawValue: reason) else { return }
 +    engine.peek = nil
 +    controller.receive(.peekEnded(preview: page, reason: reason))
++}
++
++@_cdecl("BatoSwiftWorkspacePeekScrimClicked")
++@MainActor public func workspacePeekScrimClicked(_ token: UInt64, _ generation: UInt64,
++                                                _ parent: Int32, _ preview: Int32) {
++    precondition(Thread.isMainThread)
++    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
++          let current = engine.peek, current.generation == generation,
++          current.parent == parent, current.preview == preview,
++          let page = engine.transient[preview] else { return }
++    controller.dismissPeek(preview: page)
++}
++
++/// Runs inside the engine's navigation request: no mutation here.
++@_cdecl("BatoSwiftWorkspacePeekLinkEligible")
++@MainActor public func workspacePeekLinkEligible(_ token: UInt64, _ parent: Int32,
++                                                _ url: UnsafePointer<CChar>) -> Int32 {
++    precondition(Thread.isMainThread)
++    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
++          engine.peek == nil, let page = engine.pages[parent],
++          let address = URL(string: String(cString: url)) else { return 0 }
++    return controller.runtime.canOpenPeek(from: page, url: address) ? 1 : 0
++}
++
++@_cdecl("BatoSwiftWorkspacePeekLinkRequested")
++@MainActor public func workspacePeekLinkRequested(_ token: UInt64, _ parent: Int32,
++                                                 _ url: UnsafePointer<CChar>) {
++    precondition(Thread.isMainThread)
++    let text = String(cString: url)
++    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
++          let page = engine.pages[parent], let address = URL(string: text) else { return }
++    controller.openPeek(from: page, url: address)
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
@@ -3036,7 +3161,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,651 @@
+@@ -0,0 +1,672 @@
 +import Foundation
 +import BatoCore
 +
@@ -3133,6 +3258,11 @@
 +    public var canOpenPeek: Bool {
 +        engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
 +            state.currentWorkspace.activeEntryID.flatMap { livePages[$0] }.map { !pendingClose.contains($0) } == true
++    }
++    /// Pure: link triggers call this synchronously from inside an engine navigation request.
++    public func canOpenPeek(from parent: LivePage, url: URL) -> Bool {
++        canOpenPeek && PeekSession.isEligibleLink(url) && state.currentWorkspace.activeEntryID == parent.entryID &&
++            livePages[parent.entryID] == parent
 +    }
 +    private let engine: any PageEngine
 +    private var abandonedPreviews: Set<LivePage> = []
@@ -3386,6 +3516,22 @@
 +            return false
 +        }
 +        return true
++    }
++
++    /// Revalidates the parent and destination: the page state may have changed since a link trigger fired.
++    @discardableResult
++    public func openPeek(from parent: LivePage, url: URL) -> Bool {
++        guard canOpenPeek(from: parent, url: url) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return openPeek(url: url)
++    }
++
++    /// Dismisses only the named preview, so a late scrim click for an ended Peek cannot close its successor.
++    @discardableResult
++    public func dismissPeek(preview: LivePage) -> Bool {
++        peekSession.preview?.page == preview && dismissPeek()
 +    }
 +
 +    /// Closure goes through the engine's before-unload confirmation; the preview
@@ -3810,7 +3956,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1739 @@
+@@ -0,0 +1,1747 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -4052,8 +4198,16 @@
 +        perform { runtime.dismissPeek() }
 +    }
 +
++    public func dismissPeek(preview: LivePage) {
++        perform { runtime.dismissPeek(preview: preview) }
++    }
++
 +    public func promotePeek() {
 +        perform { runtime.promotePeek() }
++    }
++
++    public func openPeek(from parent: LivePage, url: URL) {
++        perform { runtime.openPeek(from: parent, url: url) }
 +    }
 +
 +    @objc private func toggleSidebar() { requestSidebarToggle?() }

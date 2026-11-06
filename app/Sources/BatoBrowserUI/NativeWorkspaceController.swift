@@ -239,8 +239,16 @@ public final class NativeWorkspaceController: NSObject, NSTextFieldDelegate {
         perform { runtime.dismissPeek() }
     }
 
+    public func dismissPeek(preview: LivePage) {
+        perform { runtime.dismissPeek(preview: preview) }
+    }
+
     public func promotePeek() {
         perform { runtime.promotePeek() }
+    }
+
+    public func openPeek(from parent: LivePage, url: URL) {
+        perform { runtime.openPeek(from: parent, url: url) }
     }
 
     @objc private func toggleSidebar() { requestSidebarToggle?() }
