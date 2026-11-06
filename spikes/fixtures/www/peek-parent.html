@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato Peek parent fixture</title><link rel="stylesheet" href="style.css">
+<style>#bar output{display:inline;background:none;padding:0;margin:0}</style>
+<div id="bar" style="position:fixed;top:0;left:0;right:0;padding:8px 14px;background:#1f6f43;color:#fff;font-weight:600">Parent ticks: <output id="ticks-bar">0</output> | clicks: <output id="clicks-bar">0</output> | note: <output id="note-bar"></output> | bar clicks: <output id="bar-clicks">0</output> | wheel: <output id="bar-wheel">0</output></div>
+<main><a href="/">Fixtures</a><h1>Peek parent</h1>
+<p>A synthetic parent page with a running tick counter, a text field and a click counter. It sends nothing and stores nothing.</p>
+<p>Ticks: <output id="ticks">0</output></p>
+<label>Note <input id="note" autocomplete="off" placeholder="type here"></label>
+<button id="clicks">Count clicks</button> <output id="click-count">0</output>
+<p><a id="peek-link" href="index.html">Link to the fixtures index</a> and <a id="peek-link-2" href="quit.html">link to the quit fixture</a></p>
+</main><script>
+let t=0;setInterval(()=>{document.getElementById('ticks').textContent=document.getElementById('ticks-bar').textContent=++t},1000);
+let c=0;document.getElementById('clicks').addEventListener('click',e=>{if(e.isTrusted)document.getElementById('click-count').textContent=document.getElementById('clicks-bar').textContent=++c});
+document.getElementById('note').addEventListener('input',e=>{document.getElementById('note-bar').textContent=e.target.value});
+let bc=0,bw=0;const bar=document.getElementById('bar');bar.addEventListener('click',e=>{if(e.isTrusted)document.getElementById('bar-clicks').textContent=++bc});bar.addEventListener('wheel',e=>{if(e.isTrusted)document.getElementById('bar-wheel').textContent=++bw},{passive:true});
+</script></html>
