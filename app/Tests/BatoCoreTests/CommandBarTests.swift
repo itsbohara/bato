@@ -100,3 +100,27 @@ final class CommandBarTests: XCTestCase {
         XCTAssertTrue(CommandBarResults.make(query: "javascript:alert(1)", state: state).isEmpty)
     }
 }
+
+final class CurrentPageNavigationTests: XCTestCase {
+    private let page = URL(string: "https://example.invalid/page")!
+
+    func testNavigatingBarOffersNoNewTabOrPeek() {
+        let results = CommandBarResults.make(query: page.absoluteString, state: BrowserState.initial(), navigatingCurrentPage: true)
+        XCTAssertEqual(results.first?.action, .navigateCurrent(page))
+        for result in results {
+            if case .open = result.action { XCTFail("Unexpected new-tab result") }
+            if case .peek = result.action { XCTFail("Unexpected Peek result") }
+        }
+    }
+
+    func testSearchesNavigateTheCurrentPageToo() {
+        let results = CommandBarResults.make(query: "swift testing", state: BrowserState.initial(), navigatingCurrentPage: true)
+        guard case .navigateCurrent(let url)? = results.first?.action else { return XCTFail("Expected a current-page search") }
+        XCTAssertEqual(url.host, "duckduckgo.com")
+    }
+
+    func testDefaultBarStillOpensTabsAndPeek() {
+        let results = CommandBarResults.make(query: page.absoluteString, state: BrowserState.initial())
+        XCTAssertEqual(Array(results.map(\.action).prefix(2)), [.open(page), .peek(page)])
+    }
+}

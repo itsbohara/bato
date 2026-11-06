@@ -80,6 +80,8 @@ public enum CommandBarCommand: String, CaseIterable, Sendable {
 
 public enum CommandBarAction: Equatable, Sendable {
     case open(URL)
+    /// Loads the destination in the page the bar was opened for, instead of a new tab.
+    case navigateCurrent(URL)
     case peek(URL)
     case activate(PageSearchResult)
     case command(CommandBarCommand)
@@ -95,18 +97,24 @@ public struct CommandBarResult: Identifiable, Equatable, Sendable {
 public enum CommandBarResults {
     /// Stable IDs let the UI preserve selection while organization events arrive.
     /// Results never mutate state; activation must revalidate through PageRuntime.
-    public static func make(query: String, state: BrowserState, provider: CommandBarSearchProvider = .duckDuckGo) -> [CommandBarResult] {
+    public static func make(query: String, state: BrowserState, provider: CommandBarSearchProvider = .duckDuckGo,
+                            navigatingCurrentPage: Bool = false) -> [CommandBarResult] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var results: [CommandBarResult] = []
         switch CommandBarInput.resolve(text, provider: provider) {
         case .navigate(let url):
-            results.append(CommandBarResult(id: "destination", title: "Open \(url.host ?? text)",
-                subtitle: url.absoluteString, action: .open(url)))
-            results.append(CommandBarResult(id: "peek", title: "Open \(url.host ?? text) in Peek",
-                subtitle: url.absoluteString, action: .peek(url)))
+            if navigatingCurrentPage {
+                results.append(CommandBarResult(id: "destination", title: "Go to \(url.host ?? text)",
+                    subtitle: url.absoluteString, action: .navigateCurrent(url)))
+            } else {
+                results.append(CommandBarResult(id: "destination", title: "Open \(url.host ?? text)",
+                    subtitle: url.absoluteString, action: .open(url)))
+                results.append(CommandBarResult(id: "peek", title: "Open \(url.host ?? text) in Peek",
+                    subtitle: url.absoluteString, action: .peek(url)))
+            }
         case .search(let url):
             results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
-                subtitle: "Web search", action: .open(url)))
+                subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
         case .empty, .invalid: break
         }
         results += state.searchPages(matching: text).map {
