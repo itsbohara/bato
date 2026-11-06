@@ -16,6 +16,13 @@ void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
                                         const std::vector<CefString>& urls);
 void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
+void BatoWorkspaceBrowserLoadingStateChanged(CefRefPtr<CefBrowser> browser, bool loading,
+                                             bool can_go_back, bool can_go_forward);
+// Main-frame navigation start. Clears a previous failure and records the destination.
+void BatoWorkspaceBrowserNavigationStarted(CefRefPtr<CefBrowser> browser, const CefString& url);
+// Main-frame failures only; the caller filters ERR_ABORTED.
+void BatoWorkspaceBrowserLoadFailed(CefRefPtr<CefBrowser> browser, int error_code,
+                                    const CefString& failed_url);
 // Peek client entry points for the Swift workspace. Main/CEF UI thread only.
 // Present returns a nonzero engine generation, or 0 when refused. End takes
 // that generation; restore_parent != 0 reactivates the parent. Parent and
