@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "b20f1a118f7a1ee8060bd5194310dc5f1bad564249a46cd30bd5ecf702fc51fe",
+  "patch_sha256": "0da20688c9981c544a8a00f9fa0e435a39920fa6fd8e7c8a52ad1799d732baa6",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/browser_util.h",
       "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
-      "patched_sha256": "0fda898d8035859ecef96913ffa648c40917437df0b081106b0709656961a76a"
+      "patched_sha256": "5df4e448c0acd5757d513bf8eb2e95b2979ada20cf7d1d2286bd0f546817b957"
     },
     {
       "root": "cef",
@@ -32,7 +32,13 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "99a9605e090967cb3eff380be5e999db76c47a383b07a71a8e50134bba7db994"
+      "patched_sha256": "9bc67dc742e7046bde8f16d0db8352aeba04400c469c6abe3c8b2e3871c9d089"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/chrome/chrome_browser_web_contents_delegate.cc",
+      "original_sha256": "e6df7e225a666a2b753d86686f93815221072e241453539c22b19e79675928c5",
+      "patched_sha256": "e46dbd462c02f4e258e44aee64d5d08963db00ace4c2f3dec38d639b0532c814"
     },
     {
       "root": "chromium",
@@ -44,25 +50,25 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "71c947ce9736396c61ab33bf382263521ded006d03ce69f8920d77789d3ce0d6"
+      "patched_sha256": "53d70103b340f671a63fa5ee876cd3d3f16cd0647ae3e1b85c348e65df4b5da6"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/multi_contents_view.h",
       "original_sha256": "c9758dd16a9379f6aa5fc2b8d307e99011ac6b5c953e48d80c2a9299ca87c1b0",
-      "patched_sha256": "fcbfe225494d13646aa372a261791d57fc74199d0874e9dba2470d272344975b"
+      "patched_sha256": "bc9b6e7a3dcfdc71ad64753d370490efdf498d2be9732dede89265c12a0690b4"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/multi_contents_view.cc",
       "original_sha256": "ff8865424bd11f2705c0dff3b247e6facd98aad40ac1f25407960b2e1a6f727b",
-      "patched_sha256": "7df461504259047d7e20c53ca1962124b2d41ee05c8bb0bbd3b6441fbcebe72b"
+      "patched_sha256": "749ce75126a27ed8fd14829ff38661dc5449f8227abbf8f6d63ce840539212f6"
     },
     {
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "4bb518b10ca43cce143e4ffac8620410f9e2983bcea88e91c1056202c2217833"
+      "patched_sha256": "b2ad41787a298cccda2d0b21c7ac1af14deffed23d79d2a60189962ef12b6ff3"
     }
   ]
 }

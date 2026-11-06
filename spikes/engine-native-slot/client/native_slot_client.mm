@@ -34,6 +34,14 @@ extern "C" void BatoSwiftWorkspaceConfigureSplits(
 // Peek hooks are optional Swift exports, resolved with dlsym at registration.
 using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
 using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
+// Peek interaction hooks are optional Swift exports, resolved with dlsym.
+// ScrimClicked(token, generation, parent, preview): deferred notification.
+// LinkEligible(token, parent, url): synchronous and side-effect free; nonzero
+// when Swift will open the link in Peek. LinkRequested(token, parent, url):
+// deferred open after a nonzero eligibility answer.
+using SwiftPeekScrimClicked = void (*)(uint64_t, uint64_t, int, int);
+using SwiftPeekLinkEligible = int (*)(uint64_t, int, const char*);
+using SwiftPeekLinkRequested = void (*)(uint64_t, int, const char*);
 extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
@@ -58,6 +66,9 @@ using PeekEnd = decltype(&bato_native_slot_peek_end_v1);
 PeekPresent g_peek_present = nullptr;
 PeekEnd g_peek_end = nullptr;
 SwiftPeekEnded g_swift_peek_ended = nullptr;
+SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
+SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
+SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
@@ -597,6 +608,39 @@ void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int previ
       }, token, generation, parent, preview, reason));
 }
 
+void PeekScrimClicked(void*, uint64_t token, uint64_t generation, int parent, int preview) {
+  auto slot = WorkspaceSlots().find(token);
+  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
+  // Runs inside Views input handling; Swift may end the Peek and select tabs.
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, uint64_t generation, int parent, int preview) {
+        auto slot = WorkspaceSlots().find(token);
+        if (!g_swift_peek_scrim_clicked || slot == WorkspaceSlots().end() ||
+            slot->second.peek_generation != generation) return;
+        g_swift_peek_scrim_clicked(token, generation, parent, preview);
+      }, token, generation, parent, preview));
+}
+
+// Runs synchronously inside the engine's navigation request: answer only from
+// bound state and the pure Swift predicate, then defer the real work.
+int PeekLinkRequested(void*, uint64_t token, int parent, const char* utf8_url) {
+  auto slot = WorkspaceSlots().find(token);
+  if (slot == WorkspaceSlots().end() || !g_swift_peek_link_eligible ||
+      !g_swift_peek_link_requested || slot->second.peek_generation ||
+      !ValidDestination(utf8_url)) return 0;
+  auto page = slot->second.pages.find(parent);
+  if (page == slot->second.pages.end() || !page->second.browser->IsValid() ||
+      slot->second.pending_close.contains(parent) ||
+      parent == slot->second.split_left || parent == slot->second.split_right) return 0;
+  if (!g_swift_peek_link_eligible(token, parent, utf8_url)) return 0;
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, int parent, std::string url) {
+        if (g_swift_peek_link_requested && WorkspaceSlots().contains(token))
+          g_swift_peek_link_requested(token, parent, url.c_str());
+      }, token, parent, std::string(utf8_url)));
+  return 1;
+}
+
 // Synchronous diagnostic action only. No URL, credentials or field text logged.
 int NavigateCurrentPage(uint64_t token, const char* utf8_url) {
   if (!NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
@@ -846,6 +890,15 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePeek"));
   auto swift_peek_ended = reinterpret_cast<SwiftPeekEnded>(
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekEnded"));
+  auto register_peek_interactions =
+      reinterpret_cast<decltype(&bato_native_slot_register_peek_interaction_callbacks_v1)>(
+          dlsym(loaded, "bato_native_slot_register_peek_interaction_callbacks_v1"));
+  auto swift_scrim_clicked = reinterpret_cast<SwiftPeekScrimClicked>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekScrimClicked"));
+  auto swift_link_eligible = reinterpret_cast<SwiftPeekLinkEligible>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkEligible"));
+  auto swift_link_requested = reinterpret_cast<SwiftPeekLinkRequested>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -886,6 +939,20 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
         g_peek_end = peek_end;
         g_swift_peek_ended = swift_peek_ended;
         swift_configure_peek(BatoWorkspacePeekPresent, BatoWorkspacePeekEnd);
+        // Scrim dismissal and Shift-click links are further additive layers.
+        if (register_peek_interactions && swift_scrim_clicked && swift_link_eligible &&
+            swift_link_requested) {
+          BatoPeekInteractionCallbacksV1 interactions = {};
+          interactions.size = sizeof(interactions);
+          interactions.version = 1;
+          interactions.scrim_clicked = PeekScrimClicked;
+          interactions.link_requested = PeekLinkRequested;
+          if (register_peek_interactions(&interactions) == 1) {
+            g_swift_peek_scrim_clicked = swift_scrim_clicked;
+            g_swift_peek_link_eligible = swift_link_eligible;
+            g_swift_peek_link_requested = swift_link_requested;
+          }
+        }
       }
     }
     g_new_tab = new_tab;

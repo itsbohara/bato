@@ -60,7 +60,8 @@ class NativeSlotPatchTest(unittest.TestCase):
         self.assertIn(header.rstrip('\n'), installed)
         exports = re.findall(r'CEF_EXPORT\s+\w+\s+(bato_native_slot_\w+)\(', header)
         self.assertIn('bato_native_slot_peek_present_v1', exports)
-        self.assertEqual(len(exports), 15)
+        self.assertIn('bato_native_slot_register_peek_interaction_callbacks_v1', exports)
+        self.assertEqual(len(exports), 16)
         for name in exports:
             self.assertRegex(installed, r'extern "C" CEF_EXPORT \w+ ' + name + r'\(')
 

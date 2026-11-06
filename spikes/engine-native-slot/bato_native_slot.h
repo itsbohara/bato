@@ -89,8 +89,8 @@ typedef struct BatoPeekCallbacksV1 {
 } BatoPeekCallbacksV1;
 // Register once before CefInitialize, like the other callback tables.
 CEF_EXPORT int bato_native_slot_register_peek_callbacks_v1(const BatoPeekCallbacksV1* callbacks);
-// Presents preview above a backdrop; the preview becomes the active tab and the
-// parent stays an unmounted live tab. Returns a nonzero process-local generation,
+// Presents preview as an inset above a dimmed, live parent; the preview becomes
+// the active tab and the parent is mounted (not selected) beneath a scrim. Returns a nonzero process-local generation,
 // or 0 when refused: guarded/blocked/fullscreen/closing slot, unknown or equal
 // identities, different request context, either tab in a split, an existing
 // split layout or presentation, or no peek callbacks registered.
@@ -100,6 +100,31 @@ CEF_EXPORT uint64_t bato_native_slot_peek_present_v1(uint64_t token, int parent_
 // unknown/stale generation, 1 when ended (parent restored if requested), 2 when
 // ended but the requested parent restoration was not possible.
 CEF_EXPORT int bato_native_slot_peek_end_v1(uint64_t token, uint64_t generation, int restore_parent);
+// Peek interactions are separate from BatoPeekCallbacksV1 so that table keeps its
+// exact v1 size. Register once before CefInitialize; both callbacks are required.
+// While a Peek is presented the parent tab is mounted live beneath a scrim that
+// swallows pointer input; the engine never dismisses on its own.
+typedef struct BatoPeekInteractionCallbacksV1 {
+  size_t size;
+  uint32_t version;
+  void* context;
+  // A left click on the scrim outside the preview. May run inside Views input
+  // handling: clients must defer work and revalidate. Dismiss through the normal
+  // beforeunload-respecting path; the engine keeps the presentation until then.
+  void (*scrim_clicked)(void* context, uint64_t token, uint64_t generation,
+                        int parent_id, int preview_id);
+  // A Shift-click on an eligible HTTP(S) link in the active, unsplit page of a
+  // live normal window with no Peek presented. Called synchronously inside the
+  // navigation request: return nonzero to take ownership (the engine suppresses
+  // Chromium's new-window navigation) or 0 to leave default behavior. Do only
+  // pure checks and copy url_utf8 (valid during the call); defer all real work.
+  // Plain click, Command-click, popups, script clicks and context-menu commands
+  // never reach this callback.
+  int (*link_requested)(void* context, uint64_t token, int parent_id,
+                        const char* url_utf8);
+} BatoPeekInteractionCallbacksV1;
+CEF_EXPORT int bato_native_slot_register_peek_interaction_callbacks_v1(
+    const BatoPeekInteractionCallbacksV1* callbacks);
 #ifdef __cplusplus
 }
 #endif
