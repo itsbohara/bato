@@ -33,3 +33,21 @@ NativeWorkspaceController.swift and CommandBarController.swift are localized con
 - Borderless workspace picker still reads as clickable.
 - New Profile sheet height (creating and rename); command bar border and selection inset.
 - Tab titles at 14pt truncation in the narrowest sidebar.
+
+## Round 2 (2026-11-07)
+
+Source: `ESSENTIALS-POLISH-RESULTS.md` gaps G1-G7, F2, F3, F4, F6, against Dia captures 10, 11, 16, 17, 33.
+Swift UI layer only; nothing built into the engine, no screenshot check yet. `swift test` green (log `logs/polish2-swift-tests.log` on the SSD).
+
+| # | Change | Reference | Needs screenshot check |
+| --- | --- | --- | --- |
+| 1 | Sidebar tint: `SidebarStyle.tint` blends the workspace colour at 55-80% over the window background (colour darkened in dark mode); high contrast keeps a faint wash | 33, 17 | Green/blue/rose on dark and light; text contrast; selected pill on each |
+| 2 | Selected outline: the ring was the NSButton focus ring, restored on the selected row by `render()` after every state change (not the contrast stroke). Row and close buttons now use `focusRingType = .none`; contrast-mode stroke is neutral, not accent. Selected fill 16% label colour with a soft shadow and hairline | 33 | No outline after selecting, after relaunch and when keyboard-focused. Keyboard focus is now invisible on rows; revisit if full-keyboard access needs a cue |
+| 3 | Settings: 960x700, 270pt rail with 44pt rows and 17pt text, 26pt heading, 72pt+ rows, 17/14pt row text, larger icon tiles. Trailing controls get required hugging so actions, switches and chords right-align (F4). Rail rows are AX elements (button role, label, press action) and accept the first click while another window is key (F2) | 10, 11, 16 | Right alignment after reload; clicks on the rail with the browser window key; AX tree lists the five rail rows. Back/forward title bar and trailing chevrons not done |
+| 4 | Sidebar: section headings, "Saved pairs" heading and the two top buttons removed. One "+ New Tab" row (id `bato-focus-new-tab`) opens the tab list, right after a hairline that separates it from pinned/folders, above the temporary tabs as in Dia. Find Page remains in the command bar. `bato-edit-workspace` is gone: "Edit Workspace..." is the first item of the workspace actions menu | 33, 17 | Row left inset of the "+" vs tab icons |
+| 5 | Favorites: 58pt tiles, 26pt icons, shadow + hairline for depth, close button fades in only on hover (still in the AX tree and clickable), initial-letter fallback tile with a per-host hue instead of a star | 17, 33 | Depth on tinted sidebar; hover reveal; favicon case |
+| 6 | Command bar: 680x470, radius 22, borderless 22pt field, 48pt one-line rows (title then subtitle), "Go" pill replaces Cancel/Open (id `bato-command-bar-open` kept, Return and Esc unchanged, `bato-command-bar-cancel` removed), provider picker moved to the footer. F6: an exact command name ranks above web search (`CommandBarResults`, tested) | 17 | Pill contrast in light and dark; footer provider picker; row truncation |
+| 7 | F3 not fixed here: the grey sidebar behind the command bar and sheets is not drawn by the Swift layer (the root view always paints its gradient), so the host hiding or detaching the slot view during a sheet is the likely cause (WorkspaceSlot / engine, out of scope) | 17, 33 | Confirm whether the window background shows through |
+| 8 | Workspace picker: dot pager (id `bato-workspace-picker` on the group, one labelled button per workspace, active dot larger) replaces the popup. Header lost the palette button, which frees about 30pt, so the name should no longer collapse to "..." at about 215pt | 33 | Name at 215pt; dots with 7+ workspaces |
+
+Not done: Profile-switcher popover (still NSMenu), translucency, Settings back/forward bar, animations.
