@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Bato network blocking fixture</title><link rel="stylesheet" href="style.css">
+<main><a href="/">Fixtures</a><h1>Network blocking</h1>
+<p>Serve a second host first: <code>python3 spikes/fixtures/server.py --port 18766</code>. Open this page at <code>http://127.0.0.1:18765/blocking-network.html</code>; third-party requests go to <code>http://localhost:18766</code>. List: <code>blocking/bato-fixture-list.txt</code>.</p>
+<p>Each row is a harmless request. Expected with the list active: rows marked <b>blocked</b> fail, rows marked <b>allowed</b> succeed.</p>
+<table id="results"><thead><tr><th>Check</th><th>Expected</th><th>Result</th></tr></thead><tbody></tbody></table>
+<div id="bato-css-probe">css probe</div><div class="bato-fixture-ad">Cosmetic target (hidden only when cosmetic filtering exists).</div>
+<div id="frames"></div></main>
+<script>
+const THIRD = "http://localhost:18766", SAME = location.origin;
+const rows = {}, expected = {};
+function row(id, want) {
+  expected[id] = want;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${id}</td><td>${want}</td><td data-id="${id}">pending</td>`;
+  document.querySelector("tbody").append(tr);
+  rows[id] = tr.lastElementChild;
+}
+window.__batoMark = (id, state) => { if (rows[id]) rows[id].textContent = state; };
+const settle = (id, ok) => { rows[id].textContent = ok ? "executed" : "failed"; };
+function script(id, src, want) {
+  row(id, want); const s = document.createElement("script");
+  s.src = src; s.onload = () => settle(id, true); s.onerror = () => settle(id, false);
+  document.body.append(s);
+}
+function image(id, src, want) {
+  row(id, want); const i = new Image();
+  i.onload = () => settle(id, true); i.onerror = () => settle(id, false); i.src = src;
+}
+function xhr(id, url, want) {
+  row(id, want); const r = new XMLHttpRequest();
+  r.onload = () => settle(id, r.status === 200); r.onerror = () => settle(id, false);
+  r.open("GET", url); r.send();
+}
+function fetchUrl(id, url, want) {
+  row(id, want); fetch(url, { mode: "no-cors" }).then(() => settle(id, true), () => settle(id, false));
+}
+function worker(id, url, want) {
+  row(id, want);
+  try {
+    const w = new Worker(url); w.onmessage = () => settle(id, true); w.onerror = () => settle(id, false);
+  } catch (e) { settle(id, false); }
+}
+function workerFetch(id, workerUrl, want) {
+  row(id, want);
+  const w = new Worker(workerUrl); w.onmessage = (e) => settle(id, e.data === "ok"); w.onerror = () => settle(id, false);
+}
+function css(id, href, want) {
+  row(id, want); const l = document.createElement("link");
+  l.rel = "stylesheet"; l.href = href; l.onload = () => settle(id, true); l.onerror = () => settle(id, false);
+  document.head.append(l);
+}
+function frame(id, src, want) {
+  row(id, want); const f = document.createElement("iframe"); f.src = src; f.hidden = true;
+  document.getElementById("frames").append(f);
+  f.onerror = () => settle(id, false);
+  setTimeout(() => { if (rows[id].textContent === "pending") settle(id, false); }, 1500);
+}
+addEventListener("message", (e) => { if (e.data && e.data.mark) rows[e.data.mark] && (rows[e.data.mark].textContent = "executed"); });
+script("script-control", THIRD + "/control/ok.js", "allowed");
+script("script-tracker", THIRD + "/ads/tracker.js", "blocked");
+script("script-same-origin", SAME + "/ads/tracker.js", "allowed");
+script("script-allowed-tracker", THIRD + "/ads/allowed-tracker.js", "allowed");
+script("script-important", THIRD + "/ads/important-allowed-tracker.js", "blocked");
+script("script-domain-only", THIRD + "/ads/domain-only.js", "blocked");
+image("image-control", THIRD + "/control/pixel.png", "allowed");
+image("image-pixel", THIRD + "/ads/pixel.png", "blocked");
+xhr("xhr-control", THIRD + "/control/ok.json", "allowed");
+xhr("xhr-beacon", THIRD + "/ads/beacon.json", "blocked");
+fetchUrl("fetch-control", THIRD + "/control/ok.json", "allowed");
+fetchUrl("fetch-beacon", THIRD + "/ads/beacon.json", "blocked");
+worker("worker-script-control", SAME + "/control/worker.js", "allowed");
+worker("worker-script-blocked", SAME + "/ads/worker-blocked.js", "blocked");
+workerFetch("worker-fetch-control", SAME + "/control/worker-fetch.js?u=" + encodeURIComponent(THIRD + "/control/ok.json"), "allowed");
+workerFetch("worker-fetch-beacon", SAME + "/control/worker-fetch.js?u=" + encodeURIComponent(THIRD + "/ads/beacon.json"), "blocked");
+css("css-control", THIRD + "/control/style.css", "allowed");
+css("css-ads", THIRD + "/ads/style.css", "blocked");
+frame("frame-control", THIRD + "/control/frame.html", "allowed");
+frame("frame-ads", THIRD + "/ads/frame.html", "blocked");
+setTimeout(() => { window.__batoDone = true; document.title += " (done)"; }, 2000);
+</script></html>

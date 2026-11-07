@@ -37,7 +37,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,36 @@
+@@ -2313,6 +2317,35 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -55,7 +55,6 @@
 +      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
-+      "tests/cefsimple/bato/BatoBrowserUI/NavigationHeader.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -74,7 +73,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2370,19 @@
+@@ -2336,12 +2369,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -97,7 +96,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1145 @@
+@@ -0,0 +1,1015 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -147,14 +146,9 @@
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 +    int kind, const char* url, const char* title);
 +
-+// Navigation hooks are optional Swift exports, resolved with dlsym.
-+// ConfigureNavigation(navigate): navigate(token, browser, command, url) with
-+// command 0 back, 1 forward, 2 reload, 3 stop, 4 load (url required).
-+// NavigationState(token, browser, can_back, can_forward, loading, error, attempted_url):
-+// deferred; error is the main-frame load failure code, 0 when none, and attempted_url
-+// the destination of a loading or failed navigation, empty otherwise.
-+using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, int, const char*));
-+using SwiftNavigationState = void (*)(uint64_t, int, int, int, int, int, const char*);
++// Navigation is an optional Swift export, resolved with dlsym.
++// ConfigureNavigation(navigate): navigate(token, browser, url) loads url in that page.
++using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, const char*));
 +
 +extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
 +    const unsigned char* png, size_t size);
@@ -178,25 +172,14 @@
 +SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 +SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
 +SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
-+SwiftNavigationState g_swift_navigation_state = nullptr;
 +bool g_workspace_enabled = false;
 +int g_initial_browser_id = 0;
 +
-+struct NavigationState {
-+  bool can_go_back = false;
-+  bool can_go_forward = false;
-+  bool loading = false;
-+  int error = 0;
-+  std::string attempted_url;
-+  // The current attempt reported OnLoadError; a loading end without one is a success.
-+  bool attempt_failed = false;
-+};
 +struct BoundPage {
 +  CefRefPtr<CefBrowser> browser;
 +  std::string url;
 +  std::string title;
 +  uint64_t icon_revision = 0;
-+  NavigationState navigation;
 +};
 +struct WorkspaceSlot {
 +  CefRefPtr<CefBrowser> anchor;
@@ -458,21 +441,6 @@
 +            !found->second.browser->IsSame(browser)) return;
 +        BatoSwiftWorkspacePageEvent(token, identifier, 1, url.c_str(), title.c_str());
 +      }, token, identifier, browser, url, title));
-+}
-+
-+void PostNavigationState(uint64_t token, int identifier, const BoundPage& page) {
-+  if (!g_swift_navigation_state) return;
-+  const auto state = page.navigation;
-+  CefRefPtr<CefBrowser> browser = page.browser;
-+  CefPostTask(TID_UI, base::BindOnce(
-+      [](uint64_t token, int identifier, CefRefPtr<CefBrowser> browser, const NavigationState& state) {
-+        auto slot = WorkspaceSlots().find(token);
-+        if (slot == WorkspaceSlots().end() || !g_swift_navigation_state) return;
-+        auto found = slot->second.pages.find(identifier);
-+        if (found == slot->second.pages.end() || !found->second.browser->IsSame(browser)) return;
-+        g_swift_navigation_state(token, identifier, state.can_go_back, state.can_go_forward,
-+                                 state.loading, state.error, state.attempted_url.c_str());
-+      }, token, identifier, browser, state));
 +}
 +
 +// Page-owned favicon delivery uses CEF's image decoder and request context.
@@ -776,51 +744,18 @@
 +  return 1;
 +}
 +
-+// Header commands act only on the visible, focused page: its identifier must
-+// equal the engine's active browser, which also refuses blocked/modal/fullscreen
-+// slots and a presented Peek (whose active page is the transient preview).
-+int NavigateWorkspacePage(uint64_t token, int identifier, int command, const char* utf8_url) {
++// Acts only on the visible, focused page: its identifier must equal the engine's
++// active browser, which also refuses blocked/modal/fullscreen slots and a presented
++// Peek (whose active page is the transient preview).
++int NavigateWorkspacePage(uint64_t token, int identifier, const char* utf8_url) {
 +  auto* slot = AvailableSlot(token);
 +  if (!slot || g_active_browser_id(token) != identifier || slot->peek_generation ||
 +      slot->pending_close.contains(identifier)) return 0;
 +  auto found = slot->pages.find(identifier);
 +  if (found == slot->pages.end() || !found->second.browser->IsValid()) return 0;
-+  auto browser = found->second.browser;
-+  const std::string destination = command == 4 && utf8_url ? utf8_url : "";
-+  switch (command) {
-+    case 0:
-+      if (!browser->CanGoBack()) return 0;
-+      browser->GoBack();
-+      break;
-+    case 1:
-+      if (!browser->CanGoForward()) return 0;
-+      browser->GoForward();
-+      break;
-+    case 2:
-+      browser->Reload();
-+      break;
-+    case 3:
-+      browser->StopLoad();
-+      return 1;
-+    case 4: {
-+      auto frame = browser->GetMainFrame();
-+      if (!ValidDestination(utf8_url) || !frame || !frame->IsValid()) return 0;
-+      frame->LoadURL(CefString(utf8_url));
-+      break;
-+    }
-+    default:
-+      return 0;
-+  }
-+  // Every command above starts a navigation, which supersedes an earlier failure
-+  // even if the engine reports its start only later.
-+  auto current = WorkspaceSlots().find(token);
-+  if (current == WorkspaceSlots().end()) return 1;
-+  auto page = current->second.pages.find(identifier);
-+  if (page == current->second.pages.end() || !page->second.browser->IsSame(browser)) return 1;
-+  page->second.navigation.error = 0;
-+  page->second.navigation.attempted_url = destination;
-+  page->second.navigation.attempt_failed = false;
-+  PostNavigationState(token, identifier, page->second);
++  auto frame = found->second.browser->GetMainFrame();
++  if (!ValidDestination(utf8_url) || !frame || !frame->IsValid()) return 0;
++  frame->LoadURL(CefString(utf8_url));
 +  return 1;
 +}
 +
@@ -935,66 +870,6 @@
 +    ++found->second.icon_revision;
 +    PostPageIcon(token, identifier, browser, found->second.icon_revision, {});
 +    PostPageState(token, identifier, found->second);
-+    return;
-+  }
-+}
-+
-+void BatoWorkspaceBrowserLoadingStateChanged(CefRefPtr<CefBrowser> browser, bool loading,
-+                                             bool can_go_back, bool can_go_forward) {
-+  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-+  const int identifier = browser->GetIdentifier();
-+  for (auto& [token, slot] : WorkspaceSlots()) {
-+    auto found = slot.pages.find(identifier);
-+    if (found == slot.pages.end()) continue;
-+    auto& state = found->second.navigation;
-+    // The error page's own loading cycle must not clear a failure. Only a load that
-+    // ends without any failure in its attempt succeeded, including a Chromium retry.
-+    if (!loading && !state.attempt_failed) {
-+      state.error = 0;
-+      state.attempted_url.clear();
-+    }
-+    state.loading = loading;
-+    state.can_go_back = can_go_back;
-+    state.can_go_forward = can_go_forward;
-+    PostNavigationState(token, identifier, found->second);
-+    return;
-+  }
-+}
-+
-+void BatoWorkspaceBrowserNavigationStarted(CefRefPtr<CefBrowser> browser, const CefString& url) {
-+  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-+  const auto destination = url.ToString();
-+  // The error page is committed by the failed navigation, not a new attempt.
-+  if (destination.rfind("chrome-error:", 0) == 0) return;
-+  const int identifier = browser->GetIdentifier();
-+  for (auto& [token, slot] : WorkspaceSlots()) {
-+    auto found = slot.pages.find(identifier);
-+    if (found == slot.pages.end()) continue;
-+    auto& state = found->second.navigation;
-+    // Chromium retries a failed load by itself, without user input. Re-requesting the
-+    // exact failed destination keeps the failure until an attempt succeeds.
-+    const bool retry = state.error != 0 && destination == state.attempted_url;
-+    if (!retry) {
-+      state.error = 0;
-+      state.attempted_url = destination;
-+    }
-+    state.attempt_failed = false;
-+    PostNavigationState(token, identifier, found->second);
-+    return;
-+  }
-+}
-+
-+void BatoWorkspaceBrowserLoadFailed(CefRefPtr<CefBrowser> browser, int error_code,
-+                                    const CefString& failed_url) {
-+  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-+  const int identifier = browser->GetIdentifier();
-+  for (auto& [token, slot] : WorkspaceSlots()) {
-+    auto found = slot.pages.find(identifier);
-+    if (found == slot.pages.end()) continue;
-+    found->second.navigation.error = error_code;
-+    found->second.navigation.attempted_url = failed_url.ToString();
-+    found->second.navigation.attempt_failed = true;
-+    PostNavigationState(token, identifier, found->second);
 +    return;
 +  }
 +}
@@ -1160,8 +1035,6 @@
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
 +  auto swift_configure_navigation = reinterpret_cast<SwiftConfigureNavigation>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureNavigation"));
-+  auto swift_navigation_state = reinterpret_cast<SwiftNavigationState>(
-+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceNavigationState"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -1218,11 +1091,7 @@
 +        }
 +      }
 +    }
-+    // Header navigation uses CEF's existing load/display handlers: no engine export.
-+    if (swift_configure_navigation && swift_navigation_state) {
-+      g_swift_navigation_state = swift_navigation_state;
-+      swift_configure_navigation(NavigateWorkspacePage);
-+    }
++    if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);
 +    g_new_tab = new_tab;
 +    g_request_close = request_close;
 +    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
@@ -1245,7 +1114,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,26 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#include <vector>
@@ -1264,13 +1133,6 @@
 +void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
 +                                        const std::vector<CefString>& urls);
 +void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
-+void BatoWorkspaceBrowserLoadingStateChanged(CefRefPtr<CefBrowser> browser, bool loading,
-+                                             bool can_go_back, bool can_go_forward);
-+// Main-frame navigation start. Clears a previous failure and records the destination.
-+void BatoWorkspaceBrowserNavigationStarted(CefRefPtr<CefBrowser> browser, const CefString& url);
-+// Main-frame failures only; the caller filters ERR_ABORTED.
-+void BatoWorkspaceBrowserLoadFailed(CefRefPtr<CefBrowser> browser, int error_code,
-+                                    const CefString& failed_url);
 +// Peek client entry points for the Swift workspace. Main/CEF UI thread only.
 +// Present returns a nonzero engine generation, or 0 when refused. End takes
 +// that generation; restore_parent != 0 reactivates the parent. Parent and
@@ -1307,7 +1169,7 @@
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
-+                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift', 'NavigationHeader.swift'])]:
++                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -1485,7 +1347,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,711 @@
+@@ -0,0 +1,691 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1500,7 +1362,7 @@
 +private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 +private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 +private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
-+private typealias NavigatePage = @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32
++private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 +@MainActor private var workspaceDirectory: URL?
 +@MainActor private var createPage: CreatePage?
 +@MainActor private var selectPage: PageAction?
@@ -1583,15 +1445,11 @@
 +        }
 +    }
 +    var supportsNavigation: Bool { navigatePage != nil }
-+    /// Organization pages only: a transient preview is never a header target.
++    /// Organization pages only: a transient preview is never a navigation target.
 +    func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool {
 +        guard let id = pages.first(where: { $0.value == page })?.key, let navigatePage else { return false }
 +        switch command {
-+        case .back: return navigatePage(token, id, 0, nil) == 1
-+        case .forward: return navigatePage(token, id, 1, nil) == 1
-+        case .reload: return navigatePage(token, id, 2, nil) == 1
-+        case .stop: return navigatePage(token, id, 3, nil) == 1
-+        case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, 4, $0) } == 1
++        case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, $0) } == 1
 +        }
 +    }
 +    func adoptPeekPreview(_ preview: LivePage) {
@@ -2177,37 +2035,157 @@
 +
 +@_cdecl("BatoSwiftWorkspaceConfigureNavigation")
 +@MainActor public func configureWorkspaceNavigation(
-+    _ navigate: @escaping @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32) {
++    _ navigate: @escaping @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32) {
 +    precondition(Thread.isMainThread)
 +    navigatePage = navigate
 +}
-+
-+/// Delivered after the CEF handler stack unwinds. The exact page generation is
-+/// resolved here, so state for a closed or replaced page is dropped by the runtime.
-+@_cdecl("BatoSwiftWorkspaceNavigationState")
-+@MainActor public func workspaceNavigationState(_ token: UInt64, _ browserID: Int32, _ canGoBack: Int32,
-+                                               _ canGoForward: Int32, _ isLoading: Int32, _ errorCode: Int32,
-+                                               _ attemptedURL: UnsafePointer<CChar>?) {
-+    precondition(Thread.isMainThread)
-+    guard let slot = workspaceSlots[token], let engine = slot.engine,
-+          let page = engine.pages[browserID] ?? engine.transient[browserID] else { return }
-+    slot.controller?.receive(.navigationState(page, PageNavigationState(
-+        canGoBack: canGoBack != 0, canGoForward: canGoForward != 0, isLoading: isLoading != 0,
-+        failureCode: errorCode == 0 ? nil : errorCode,
-+        attemptedURL: attemptedURL.flatMap { URL(string: String(cString: $0)) }
-+            .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil })))
-+}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
-@@ -3,6 +3,7 @@
+@@ -3,8 +3,12 @@
  // can be found in the LICENSE file.
 
  #include "tests/cefsimple/simple_handler.h"
 +#include "tests/cefsimple/native_slot_client.h"
++
++#include <dlfcn.h>
 
  #include <cstdio>
++#include <fstream>
  #include <sstream>
-@@ -59,6 +60,7 @@
+ #include <string>
+
+@@ -33,12 +37,130 @@
+              .ToString();
+ }
+
++// Opt-in blocking spike (--bato-blocking=<list> --bato-blocking-lib=<dylib>).
++// The Rust engine is loaded with dlopen so the GN build needs no Rust inputs.
++// It is immutable after creation: concurrent checks on the IO thread are safe
++// and the pointer is never freed while the process runs.
++typedef void* (*BlockingCreate)(const char*);
++typedef int (*BlockingCheck)(const void*, const char*, const char*, const char*);
++
++struct BlockingEngine {
++  void* engine = nullptr;
++  BlockingCheck check = nullptr;
++};
++
++BlockingEngine g_blocking;
++
++std::string JsonEscape(const std::string& text) {
++  std::string out;
++  for (unsigned char c : text) {
++    if (c == '"' || c == '\\') {
++      out += '\\';
++      out += static_cast<char>(c);
++    } else if (c < 0x20) {
++      char buffer[8];
++      snprintf(buffer, sizeof(buffer), "\\u%04x", c);
++      out += buffer;
++    } else {
++      out += static_cast<char>(c);
++    }
++  }
++  return out;
++}
++
++void LogBlockingEvent(const char* event, const std::string& url,
++                      const char* type) {
++  fprintf(stderr, "{\"bato\":\"blocking\",\"event\":\"%s\",\"url\":\"%s\","
++                  "\"type\":\"%s\"}\n",
++          event, JsonEscape(url).c_str(), type);
++}
++
++void InitializeBlocking() {
++  auto command_line = CefCommandLine::GetGlobalCommandLine();
++  if (!command_line->HasSwitch("bato-blocking")) {
++    return;
++  }
++  const std::string list_path = command_line->GetSwitchValue("bato-blocking");
++  const std::string library_path =
++      command_line->GetSwitchValue("bato-blocking-lib");
++  std::ifstream list_file(list_path);
++  std::stringstream list_text;
++  list_text << list_file.rdbuf();
++  void* library = dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
++  auto create = library ? reinterpret_cast<BlockingCreate>(
++                              dlsym(library, "bato_adblock_create"))
++                        : nullptr;
++  auto check = library ? reinterpret_cast<BlockingCheck>(
++                             dlsym(library, "bato_adblock_check"))
++                       : nullptr;
++  void* engine = (create && list_file) ? create(list_text.str().c_str()) : nullptr;
++  if (!engine || !check) {
++    LogBlockingEvent("init-failed", "", "");
++    return;
++  }
++  g_blocking = {engine, check};
++  LogBlockingEvent("ready", "", "");
++}
++
++const char* BlockingRequestType(cef_resource_type_t type) {
++  switch (type) {
++    case RT_SUB_FRAME:
++      return "subdocument";
++    case RT_STYLESHEET:
++      return "stylesheet";
++    case RT_SCRIPT:
++    case RT_WORKER:
++    case RT_SHARED_WORKER:
++    case RT_SERVICE_WORKER:
++      return "script";
++    case RT_IMAGE:
++    case RT_FAVICON:
++      return "image";
++    case RT_FONT_RESOURCE:
++      return "font";
++    case RT_MEDIA:
++      return "media";
++    case RT_XHR:
++      return "xmlhttprequest";
++    case RT_PING:
++      return "ping";
++    default:
++      return "other";
++  }
++}
++
++class BlockingResourceHandler : public CefResourceRequestHandler {
++ public:
++  explicit BlockingResourceHandler(std::string source_url)
++      : source_url_(std::move(source_url)) {}
++
++  // IO thread. Fails open: an invalid URL or engine error never blocks.
++  ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser> browser,
++                                   CefRefPtr<CefFrame> frame,
++                                   CefRefPtr<CefRequest> request,
++                                   CefRefPtr<CefCallback> callback) override {
++    const std::string url = request->GetURL();
++    const char* type = BlockingRequestType(request->GetResourceType());
++    if (g_blocking.check(g_blocking.engine, url.c_str(), source_url_.c_str(),
++                         type) <= 0) {
++      return RV_CONTINUE;
++    }
++    LogBlockingEvent("blocked", url, type);
++    return RV_CANCEL;
++  }
++
++ private:
++  const std::string source_url_;
++  IMPLEMENT_REFCOUNTING(BlockingResourceHandler);
++};
++
+ }  // namespace
+
+ SimpleHandler::SimpleHandler(bool is_alloy_style)
+     : is_alloy_style_(is_alloy_style) {
+   DCHECK(!g_instance);
+   g_instance = this;
++  InitializeBlocking();
+ }
+
+ SimpleHandler::~SimpleHandler() {
+@@ -59,6 +181,7 @@
      int command_id,
      cef_window_open_disposition_t disposition) {
    CEF_REQUIRE_UI_THREAD();
@@ -2215,7 +2193,7 @@
    if (!NativeQuitExperimentEnabled() ||
        command_id != cef_id_for_command_id_name("IDC_EXIT")) {
      return false;
-@@ -103,9 +105,17 @@
+@@ -103,9 +226,17 @@
    fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
  }
 
@@ -2233,7 +2211,7 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -117,6 +127,12 @@
+@@ -117,6 +248,12 @@
      // Set the title of the window using platform APIs.
      PlatformTitleChange(browser, title);
    }
@@ -2246,7 +2224,7 @@
  }
 
  void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-@@ -133,6 +149,7 @@
+@@ -133,6 +270,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -2254,7 +2232,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +170,7 @@
+@@ -153,6 +291,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -2262,7 +2240,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -177,12 +195,35 @@
+@@ -177,6 +316,38 @@
    }
  }
 
@@ -2272,32 +2250,35 @@
 +                                   bool user_gesture,
 +                                   bool is_redirect) {
 +  CEF_REQUIRE_UI_THREAD();
-+  if (frame && frame->IsMain() && request) BatoWorkspaceBrowserNavigationStarted(browser, request->GetURL());
 +  // The organization's unloaded placeholder must never become an untracked
 +  // website or acquire a beforeunload handler through Chrome's omnibox.
 +  return frame && frame->IsMain() && request && BatoWorkspaceIsAnchor(browser) &&
 +      request->GetURL().ToString() != "about:blank";
 +}
 +
-+void SimpleHandler::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
-+                                         bool isLoading,
-+                                         bool canGoBack,
-+                                         bool canGoForward) {
-+  CEF_REQUIRE_UI_THREAD();
-+  BatoWorkspaceBrowserLoadingStateChanged(browser, isLoading, canGoBack, canGoForward);
++CefRefPtr<CefResourceRequestHandler> SimpleHandler::GetResourceRequestHandler(
++    CefRefPtr<CefBrowser> browser,
++    CefRefPtr<CefFrame> frame,
++    CefRefPtr<CefRequest> request,
++    bool is_navigation,
++    bool is_download,
++    const CefString& request_initiator,
++    bool& disable_default_handling) {
++  // Top-level navigations are never filtered: only subresources, subframes
++  // and worker loads are blocked.
++  if (!g_blocking.engine || request->GetResourceType() == RT_MAIN_FRAME) {
++    return nullptr;
++  }
++  std::string source = request_initiator;
++  if (source.empty() && frame) {
++    source = frame->GetURL();
++  }
++  return new BlockingResourceHandler(std::move(source));
 +}
 +
  void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
                                  CefRefPtr<CefFrame> frame,
                                  ErrorCode errorCode,
-                                 const CefString& errorText,
-                                 const CefString& failedUrl) {
-   CEF_REQUIRE_UI_THREAD();
-+  if (frame && frame->IsMain() && errorCode != ERR_ABORTED)
-+    BatoWorkspaceBrowserLoadFailed(browser, errorCode, failedUrl);
-
-   // Allow Chrome to show the error page.
-   if (!is_alloy_style_) {
 --- a/cef/tests/cefsimple/simple_handler.h
 +++ b/cef/tests/cefsimple/simple_handler.h
 @@ -13,7 +13,8 @@
@@ -2318,7 +2299,7 @@
 
    // CefCommandHandler methods (opt-in diagnostic only).
    bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
-@@ -33,15 +35,32 @@
+@@ -33,13 +35,35 @@
                         cef_window_open_disposition_t disposition) override;
 
    // CefDisplayHandler methods:
@@ -2335,7 +2316,7 @@
    void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
    bool DoClose(CefRefPtr<CefBrowser> browser) override;
    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
-
++
 +  // CefRequestHandler methods:
 +  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 +                      CefRefPtr<CefFrame> frame,
@@ -2343,17 +2324,20 @@
 +                      bool user_gesture,
 +                      bool is_redirect) override;
 +
++  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(
++      CefRefPtr<CefBrowser> browser,
++      CefRefPtr<CefFrame> frame,
++      CefRefPtr<CefRequest> request,
++      bool is_navigation,
++      bool is_download,
++      const CefString& request_initiator,
++      bool& disable_default_handling) override;
+
    // CefLoadHandler methods:
-+  void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
-+                            bool isLoading,
-+                            bool canGoBack,
-+                            bool canGoForward) override;
    void OnLoadError(CefRefPtr<CefBrowser> browser,
-                    CefRefPtr<CefFrame> frame,
-                    ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,883 @@
+@@ -0,0 +1,1009 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -2417,17 +2401,21 @@
 +}
 +
 +/// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
++/// Workspace.folders is flat: a folder's subfolders are the entries naming it as `parentID`,
++/// ordered by their position in that array. A folder lists its pins before its subfolders.
 +public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
 +    public var id: UUID
 +    public var name: String
 +    public var isCollapsed: Bool
 +    public var pinIDs: [UUID]
++    public var parentID: UUID?
 +
-+    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = []) {
++    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = [], parentID: UUID? = nil) {
 +        self.id = id
 +        self.name = name
 +        self.isCollapsed = isCollapsed
 +        self.pinIDs = pinIDs
++        self.parentID = parentID
 +    }
 +}
 +
@@ -2478,6 +2466,51 @@
 +
 +    public func folder(containingPin id: UUID) -> PageFolder? {
 +        folders.first { $0.pinIDs.contains(id) }
++    }
++
++    public func folder(_ id: UUID) -> PageFolder? {
++        folders.first { $0.id == id }
++    }
++
++    /// Direct subfolders in display order; `nil` lists the workspace's top-level folders.
++    public func subfolders(of parentID: UUID?) -> [PageFolder] {
++        folders.filter { $0.parentID == parentID }
++    }
++
++    /// One for a top-level folder. Nil for an unknown folder or a broken parent chain.
++    public func depth(ofFolder id: UUID) -> Int? {
++        var depth = 0
++        var current: UUID? = id
++        while let folderID = current {
++            guard depth < folders.count, let folder = folder(folderID) else { return nil }
++            depth += 1
++            current = folder.parentID
++        }
++        return depth
++    }
++
++    public func descendantFolderIDs(of id: UUID) -> Set<UUID> {
++        var found = Set<UUID>()
++        var pending = [id]
++        while let next = pending.popLast() {
++            for child in subfolders(of: next) where found.insert(child.id).inserted { pending.append(child.id) }
++        }
++        return found
++    }
++
++    /// Every folder in sidebar order, each after its parent, with its depth (one for top level).
++    public func folderOutline(under parentID: UUID? = nil, depth: Int = 1) -> [(folder: PageFolder, depth: Int)] {
++        subfolders(of: parentID).flatMap { [($0, depth)] + folderOutline(under: $0.id, depth: depth + 1) }
++    }
++
++    /// Levels in the folder's own subtree, counting the folder itself.
++    public func subtreeHeight(ofFolder id: UUID) -> Int {
++        1 + (subfolders(of: id).map { subtreeHeight(ofFolder: $0.id) }.max() ?? 0)
++    }
++
++    /// Pins in the folder and all of its descendants.
++    public func pinCount(inFolder id: UUID) -> Int {
++        (folder(id)?.pinIDs.count ?? 0) + subfolders(of: id).reduce(0) { $0 + pinCount(inFolder: $1.id) }
 +    }
 +
 +    private enum CodingKeys: String, CodingKey {
@@ -2557,6 +2590,9 @@
 +    public var workspaces: [Workspace]
 +    public var activeWorkspaceID: UUID
 +
++    /// Folders are at most this many levels deep, so indentation fits the 220-point minimum sidebar.
++    public static let maxFolderDepth = 4
++
 +    public init(version: Int = 1, profiles: [BrowserProfile], workspaces: [Workspace], activeWorkspaceID: UUID) {
 +        self.version = version
 +        self.profiles = profiles
@@ -2622,7 +2658,7 @@
 +    }
 +
 +    public func validate() throws {
-+        guard version == 1 else { throw BrowserStateError.unsupportedVersion(version) }
++        guard version == 1 || version == 2 else { throw BrowserStateError.unsupportedVersion(version) }
 +        var identities = Set<UUID>()
 +        func claim(_ id: UUID) throws {
 +            guard identities.insert(id).inserted else { throw BrowserStateError.duplicateIdentity }
@@ -2655,13 +2691,23 @@
 +            for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
 +            let pinIDs = Set(workspace.pins.map(\.id))
 +            var filedPins = Set<UUID>()
++            let folderIDs = Set(workspace.folders.map(\.id))
 +            for folder in workspace.folders {
 +                try claim(folder.id)
 +                try Self.validateFolderName(folder.name)
++                if let parentID = folder.parentID {
++                    guard version >= 2 else { throw BrowserStateError.unsupportedVersion(version) }
++                    guard parentID != folder.id, folderIDs.contains(parentID) else { throw BrowserStateError.invalidFolder }
++                }
 +                for id in folder.pinIDs {
 +                    guard pinIDs.contains(id), filedPins.insert(id).inserted else {
 +                        throw BrowserStateError.invalidFolder
 +                    }
++                }
++            }
++            for folder in workspace.folders {
++                guard let depth = workspace.depth(ofFolder: folder.id), depth <= Self.maxFolderDepth else {
++                    throw BrowserStateError.invalidFolder
 +                }
 +            }
 +            let localEntries = workspace.pins + workspace.tabs
@@ -2783,13 +2829,20 @@
 +        }
 +    }
 +
++    /// Nesting upgrades the document to version 2; flat documents keep version 1 and their bytes.
 +    @discardableResult
-+    public mutating func createFolder(name: String) throws -> UUID {
++    public mutating func createFolder(name: String, parentID: UUID? = nil) throws -> UUID {
 +        try transact { draft in
 +            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
 +            try Self.validateFolderName(name)
-+            let folder = PageFolder(name: name)
-+            draft.workspaces[draft.currentWorkspaceIndex].folders.append(folder)
++            let workspace = draft.currentWorkspaceIndex
++            let folder = PageFolder(name: name, parentID: parentID)
++            if let parentID {
++                let parent = try draft.currentFolderIndex(parentID)
++                draft.workspaces[workspace].folders[parent].isCollapsed = false
++                draft.version = max(draft.version, 2)
++            }
++            draft.workspaces[workspace].folders.append(folder)
 +            return folder.id
 +        }
 +    }
@@ -2810,11 +2863,15 @@
 +        }
 +    }
 +
++    /// Folders reorder among their siblings only.
 +    public func canMoveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
-+        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else { return false }
++        let workspace = currentWorkspace
++        guard let folder = workspace.folder(id) else { return false }
++        let siblings = workspace.subfolders(of: folder.parentID)
++        guard let position = siblings.firstIndex(where: { $0.id == id }) else { return false }
 +        switch direction {
-+        case .up: return index > 0
-+        case .down: return index + 1 < currentWorkspace.folders.count
++        case .up: return position > 0
++        case .down: return position + 1 < siblings.count
 +        }
 +    }
 +
@@ -2822,16 +2879,69 @@
 +        try transact { draft in
 +            let index = try draft.currentFolderIndex(id)
 +            guard draft.canMoveFolder(id, direction: direction) else { throw BrowserStateError.invalidSelection }
-+            let next = direction == .up ? index - 1 : index + 1
-+            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, next)
++            let folders = draft.currentWorkspace.folders
++            let siblings = folders.indices.filter { folders[$0].parentID == folders[index].parentID }
++            let position = siblings.firstIndex(of: index)!
++            let neighbor = siblings[direction == .up ? position - 1 : position + 1]
++            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, neighbor)
 +        }
 +    }
 +
-+    /// Removes only the container. Pins retain their full value, selection and canonical order.
++    /// A folder cannot move into itself or a descendant, and its whole subtree must fit the depth limit.
++    public func canMoveFolder(_ id: UUID, toParent parentID: UUID?) -> Bool {
++        let workspace = currentWorkspace
++        guard let folder = workspace.folder(id), folder.parentID != parentID, parentID != id else { return false }
++        var parentDepth = 0
++        if let parentID {
++            guard !workspace.descendantFolderIDs(of: id).contains(parentID),
++                  let depth = workspace.depth(ofFolder: parentID) else { return false }
++            parentDepth = depth
++        }
++        return parentDepth + workspace.subtreeHeight(ofFolder: id) <= Self.maxFolderDepth
++    }
++
++    /// The folder becomes the last child of the destination, or the last top-level folder for `nil`.
++    public mutating func moveFolder(_ id: UUID, toParent parentID: UUID?) throws {
++        try transact { draft in
++            let index = try draft.currentFolderIndex(id)
++            let workspace = draft.currentWorkspaceIndex
++            if let parentID { _ = try draft.currentFolderIndex(parentID) }
++            guard draft.canMoveFolder(id, toParent: parentID) else { throw BrowserStateError.invalidFolder }
++            var folder = draft.workspaces[workspace].folders.remove(at: index)
++            folder.parentID = parentID
++            draft.workspaces[workspace].folders.append(folder)
++            if let parentID, let parent = draft.workspaces[workspace].folders.firstIndex(where: { $0.id == parentID }) {
++                draft.workspaces[workspace].folders[parent].isCollapsed = false
++                draft.version = max(draft.version, 2)
++            }
++        }
++    }
++
++    /// Removes only the container. Pins and subfolders move up one level in their existing order;
++    /// at the top level pins return to the unfiled group in their canonical order.
 +    public mutating func dissolveFolder(_ id: UUID) throws {
 +        try transact { draft in
 +            let index = try draft.currentFolderIndex(id)
-+            draft.workspaces[draft.currentWorkspaceIndex].folders.remove(at: index)
++            let workspace = draft.currentWorkspaceIndex
++            let folders = draft.workspaces[workspace].folders
++            let dissolved = folders[index]
++            var rebuilt: [PageFolder] = []
++            for folder in folders {
++                if folder.id == id {
++                    rebuilt += folders.filter { $0.parentID == id }.map { child in
++                        var child = child
++                        child.parentID = dissolved.parentID
++                        return child
++                    }
++                } else if folder.parentID != id {
++                    rebuilt.append(folder)
++                }
++            }
++            if let parentID = dissolved.parentID,
++               let parent = rebuilt.firstIndex(where: { $0.id == parentID }) {
++                rebuilt[parent].pinIDs += dissolved.pinIDs
++            }
++            draft.workspaces[workspace].folders = rebuilt
 +        }
 +    }
 +
@@ -3438,7 +3548,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,712 @@
 +import Foundation
 +import BatoCore
 +
@@ -3455,35 +3565,12 @@
 +    }
 +}
 +
-+/// Engine-reported navigation state of one live page.
-+public struct PageNavigationState: Equatable, Sendable {
-+    public var canGoBack: Bool
-+    public var canGoForward: Bool
-+    public var isLoading: Bool
-+    /// Engine error code of the latest main-frame load failure. It outlives the error page's own
-+    /// loading cycle and ends only when the next navigation starts.
-+    public var failureCode: Int32?
-+    /// The destination of a navigation that is loading or failed, before it commits.
-+    public var attemptedURL: URL?
-+
-+    public init(canGoBack: Bool = false, canGoForward: Bool = false, isLoading: Bool = false,
-+                failureCode: Int32? = nil, attemptedURL: URL? = nil) {
-+        self.canGoBack = canGoBack
-+        self.canGoForward = canGoForward
-+        self.isLoading = isLoading
-+        self.failureCode = failureCode
-+        self.attemptedURL = attemptedURL
-+    }
-+}
-+
 +public enum PageNavigationCommand: Equatable, Sendable {
-+    case back, forward, reload, stop
 +    case load(URL)
 +}
 +
 +public enum PageEvent: Sendable {
 +    case navigation(LivePage, url: URL, title: String)
-+    case navigationState(LivePage, PageNavigationState)
 +    case closed(LivePage)
 +    case closeCancelled(LivePage)
 +    case creationFailed(LivePage)
@@ -3562,7 +3649,6 @@
 +    public private(set) var pendingClose: Set<LivePage> = []
 +    public private(set) var lastError: PageRuntimeError?
 +    public private(set) var peekSession = PeekSession()
-+    public private(set) var navigationStates: [LivePage: PageNavigationState] = [:]
 +    public var onStateChange: ((BrowserState) -> Void)?
 +    public var supportsSplits: Bool { engine.supportsSplits }
 +    public var canOpenPeek: Bool {
@@ -3577,24 +3663,9 @@
 +              !pendingClose.contains(page) else { return nil }
 +        return page
 +    }
-+    /// State of the selected live page, which stays the Peek parent while a Peek is presented.
-+    /// nil for an unloaded entry.
-+    public var navigationState: PageNavigationState? {
-+        selectedLivePage.map { navigationStates[$0] ?? PageNavigationState() }
-+    }
-+    /// What the header shows as the address: the attempted destination while it loads or after it
-+    /// failed, otherwise the selected entry's latest committed URL.
-+    public var displayedURL: URL? {
-+        guard let id = state.currentWorkspace.activeEntryID else { return nil }
-+        return navigationState?.attemptedURL ?? state.visibleEntries.first { $0.id == id }?.lastURL
-+    }
 +    public func canPerform(_ command: PageNavigationCommand) -> Bool {
-+        guard navigationTarget != nil, let state = navigationState else { return false }
++        guard navigationTarget != nil else { return false }
 +        switch command {
-+        case .back: return state.canGoBack
-+        case .forward: return state.canGoForward
-+        case .reload: return !state.isLoading
-+        case .stop: return state.isLoading
 +        case .load(let url):
 +            return ["http", "https"].contains(url.scheme?.lowercased() ?? "") &&
 +                url.host?.isEmpty == false && url.user == nil && url.password == nil
@@ -3685,8 +3756,8 @@
 +    }
 +
 +    @discardableResult
-+    public func createFolder(name: String) -> Bool {
-+        change(reconcileSelection: false) { _ = try $0.createFolder(name: name) }
++    public func createFolder(name: String, parentID: UUID? = nil) -> Bool {
++        change(reconcileSelection: false) { _ = try $0.createFolder(name: name, parentID: parentID) }
 +    }
 +
 +    @discardableResult
@@ -3702,6 +3773,11 @@
 +    @discardableResult
 +    public func moveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
 +        change(reconcileSelection: false) { try $0.moveFolder(id, direction: direction) }
++    }
++
++    @discardableResult
++    public func moveFolder(_ id: UUID, toParent parentID: UUID?) -> Bool {
++        change(reconcileSelection: false) { try $0.moveFolder(id, toParent: parentID) }
 +    }
 +
 +    @discardableResult
@@ -3966,11 +4042,6 @@
 +        if case let .peekEnded(preview, reason) = event { return handlePeekEnded(preview, reason) }
 +        if case let .closed(page) = event { abandonedPreviews.remove(page) }
 +        if case let .unloaded(page) = event { abandonedPreviews.remove(page) }
-+        switch event {
-+        case let .closed(page), let .unloaded(page), let .creationFailed(page):
-+            navigationStates.removeValue(forKey: page)
-+        default: break
-+        }
 +        if peekSession.handle(event) { return }
 +        switch event {
 +        case let .splitRatioChanged(left, right, ratio):
@@ -4002,10 +4073,6 @@
 +            if !accepted { engine.select(selectedLivePage) }
 +        case .peekEnded:
 +            return
-+        case let .navigationState(page, value):
-+            // A Peek preview is not live until promoted; its state is kept for that moment.
-+            guard livePages[page.entryID] == page || peekSession.preview?.page == page else { return }
-+            navigationStates[page] = value
 +        case .selectionCleared:
 +            guard state.currentWorkspace.activeEntryID != nil else { return }
 +            let accepted = change { candidate in
@@ -4316,7 +4383,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1733 @@
+@@ -0,0 +1,1767 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -4335,7 +4402,8 @@
 +    }
 +    /// The Chromium host schedules committed page work on its CEF UI task runner.
 +    public var requestPagePresentation: (() -> Void)?
-+    public var focusTarget: NSView { navigationHeader.pill }
++    /// The first control a hidden-sidebar keyboard path lands on; it is always present, unlike the toggle.
++    public var focusTarget: NSView { newTabButton }
 +    public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 +
 +    private let entries = SidebarEntries()
@@ -4343,7 +4411,7 @@
 +    private let workspaceActions = NSButton(frame: .zero)
 +    private let sidebarToggle = NSButton(frame: .zero)
 +    private let profileLabel = NSTextField(labelWithString: "")
-+    private let navigationHeader = NavigationHeader()
++    private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
 +    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
 +    private var pageIcons: [UUID: NSImage] = [:]
@@ -4622,21 +4690,15 @@
 +        sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
 +        sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
 +        sidebarToggle.isHidden = requestSidebarToggle == nil
-+        navigationHeader.onCommand = { [weak self] command in
-+            guard let self else { return }
-+            self.perform { self.runtime.perform(command) }
-+        }
-+        navigationHeader.onEditAddress = { [weak self] in self?.editAddress() }
 +        let headingSpacer = NSView()
 +        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-+        let heading = NSStackView(views: [sidebarToggle, navigationHeader.controls, headingSpacer, workspaceEdit, workspaceActions])
++        let heading = NSStackView(views: [sidebarToggle, headingSpacer, workspaceEdit, workspaceActions])
 +        heading.orientation = .horizontal
 +        heading.distribution = .fill
 +        heading.spacing = 2
 +
-+        let new = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
-+        configureTextAction(new, symbol: "plus")
-+        new.setAccessibilityIdentifier("bato-focus-new-tab")
++        configureTextAction(newTabButton, symbol: "plus")
++        newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
 +        let find = ActionButton(title: "Find page") { [weak self] in self?.findPage() }
 +        configureTextAction(find, symbol: "magnifyingglass")
 +        find.setAccessibilityLabel("Find Page")
@@ -4664,7 +4726,7 @@
 +        peekRow.isHidden = true
 +        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
-+        let pageActions = NSStackView(views: [new, find])
++        let pageActions = NSStackView(views: [newTabButton, find])
 +        pageActions.orientation = .horizontal
 +        pageActions.distribution = .fillEqually
 +        pageActions.spacing = 6
@@ -4722,7 +4784,7 @@
 +        statusLabel.textColor = .secondaryLabelColor
 +        statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 +
-+        let stack = NSStackView(views: [heading, navigationHeader.pill, pageActions, peekRow, scroll, separator, footer, statusLabel])
++        let stack = NSStackView(views: [heading, pageActions, peekRow, scroll, separator, footer, statusLabel])
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
 +        stack.spacing = 11
@@ -4734,7 +4796,6 @@
 +            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
 +            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
 +            heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            navigationHeader.pill.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -4778,7 +4839,6 @@
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
 +        (root as? WorkspaceRoot)?.accent = accent
-+        navigationHeader.update(navigationModel(), accent: accent)
 +        let focusedControl = pageControls.first { _, controls in
 +            root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
 +        }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -4806,7 +4866,7 @@
 +        let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
 +        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
 +                   totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
-+        for folder in workspace.folders { addFolder(folder, workspaceID: workspace.id, pins: workspace.pins) }
++        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
 +        addSection("Tabs", pages: workspace.tabs)
 +        if let focusedControl, let controls = pageControls[focusedControl.id] {
 +            root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
@@ -4840,16 +4900,6 @@
 +            statusLabel.stringValue = "This action couldn’t be completed."
 +        }
 +        statusLabel.isHidden = statusLabel.stringValue.isEmpty
-+    }
-+
-+    private func navigationModel() -> NavigationHeaderModel {
-+        let state = runtime.navigationState
-+        let toggle: PageNavigationCommand = state?.isLoading == true ? .stop : .reload
-+        return NavigationHeaderModel(
-+            url: runtime.displayedURL,
-+            canGoBack: runtime.canPerform(.back), canGoForward: runtime.canPerform(.forward),
-+            isLoading: state?.isLoading == true, canToggleLoading: runtime.canPerform(toggle),
-+            canEditAddress: runtime.navigationTarget != nil, failureCode: state?.failureCode)
 +    }
 +
 +    /// Split controls address organization identities, never Chromium tab indices.
@@ -5183,12 +5233,13 @@
 +                let move = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
 +                let folders = NSMenu()
 +                folders.autoenablesItems = false
-+                for folder in workspace.folders {
++                for (folder, depth) in workspace.folderOutline() {
 +                    let folderID = folder.id
 +                    let item = ActionMenuItem(title: folder.name) { [weak self] in
 +                        guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
 +                        self.perform { self.runtime.movePin(page.id, toFolder: folderID) }
 +                    }
++                    item.indentationLevel = depth - 1
 +                    item.state = currentFolderID == folderID ? .on : .off
 +                    item.isEnabled = !isClosing && currentFolderID != folderID
 +                    folders.addItem(item)
@@ -5262,18 +5313,38 @@
 +        return true
 +    }
 +
-+    private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {
++    private static let folderIndent: CGFloat = 12
++
++    private func addIndented(_ view: NSView, leading: CGFloat) {
++        let inset = NSView()
++        view.translatesAutoresizingMaskIntoConstraints = false
++        inset.addSubview(view)
++        NSLayoutConstraint.activate([
++            view.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: leading),
++            view.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
++            view.topAnchor.constraint(equalTo: inset.topAnchor),
++            view.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
++        ])
++        entries.addArrangedSubview(inset)
++        inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++    }
++
++    private func addFolder(_ folder: PageFolder, depth: Int, workspace: Workspace) {
++        let workspaceID = workspace.id
 +        let folderID = folder.id
++        let indent = CGFloat(depth - 1) * Self.folderIndent
++        let accessibleName = depth > 1 ? "\(folder.name), level \(depth)" : folder.name
++        let pinCount = workspace.pinCount(inFolder: folderID)
 +        let toggle: () -> Void = { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == workspaceID,
-+                  let current = self.runtime.state.currentWorkspace.folders.first(where: { $0.id == folderID }) else { return }
++                  let current = self.runtime.state.currentWorkspace.folder(folderID) else { return }
 +            self.perform { self.runtime.setFolderCollapsed(folderID, collapsed: !current.isCollapsed) }
 +        }
 +        let disclosure = ActionButton(title: "", invoke: toggle)
 +        disclosure.bezelStyle = .disclosure
 +        disclosure.setButtonType(.onOff)
 +        disclosure.state = folder.isCollapsed ? .off : .on
-+        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(folder.name)")
++        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(accessibleName)")
 +        disclosure.setAccessibilityIdentifier("bato-folder-disclosure-\(folderID.uuidString)")
 +        disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
 +        disclosure.heightAnchor.constraint(equalToConstant: 24).isActive = true
@@ -5288,90 +5359,120 @@
 +        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
 +        (title.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
-+        title.setAccessibilityLabel(folder.name)
++        title.setAccessibilityLabel(accessibleName)
 +        title.setAccessibilityIdentifier("bato-folder-\(folderID.uuidString)")
-+        title.toolTip = "\(folder.name) · \(folder.pinIDs.count) pinned pages"
-+        let count = NSTextField(labelWithString: String(folder.pinIDs.count))
++        title.toolTip = "\(folder.name) · \(pinCount) pinned pages"
++        let count = NSTextField(labelWithString: String(pinCount))
 +        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 +        count.textColor = .secondaryLabelColor
 +        let actions = ActionButton(title: "") { [weak self, weak title] in
 +            guard let title else { return }
 +            self?.showFolderActions(folderID, workspaceID: workspaceID, anchor: title)
 +        }
-+        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(folder.name)")
++        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(accessibleName)")
 +        actions.setAccessibilityIdentifier("bato-folder-actions-\(folderID.uuidString)")
 +        let heading = NSStackView(views: [disclosure, title, count, actions])
 +        heading.spacing = 3
 +        heading.orientation = .horizontal
-+        entries.addArrangedSubview(heading)
-+        heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++        if depth == 1 {
++            entries.addArrangedSubview(heading)
++            heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++        } else {
++            addIndented(heading, leading: indent)
++        }
 +        folderControls[folderID] = (disclosure, title, actions)
 +        title.menu = folderMenu(folderID, workspaceID: workspaceID)
 +        if !folder.isCollapsed {
 +            for pinID in folder.pinIDs {
-+                guard let pin = pins.first(where: { $0.id == pinID }) else { continue }
-+                let row = makePageView(pin, tile: false)
-+                let inset = NSView()
-+                row.translatesAutoresizingMaskIntoConstraints = false
-+                inset.addSubview(row)
-+                NSLayoutConstraint.activate([
-+                    row.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: 14),
-+                    row.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
-+                    row.topAnchor.constraint(equalTo: inset.topAnchor),
-+                    row.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
-+                ])
-+                entries.addArrangedSubview(inset)
-+                inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++                guard let pin = workspace.pins.first(where: { $0.id == pinID }) else { continue }
++                addIndented(makePageView(pin, tile: false), leading: 14 + indent)
++            }
++            for child in workspace.subfolders(of: folderID) {
++                addFolder(child, depth: depth + 1, workspace: workspace)
 +            }
 +        }
-+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
++        if depth == 1, let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
 +    }
 +
 +    private func folderMenu(_ folderID: UUID, workspaceID: UUID) -> NSMenu {
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
++        let state = runtime.state
++        let workspace = state.currentWorkspace
++        let isActive = state.activeWorkspaceID == workspaceID
++        let depth = workspace.depth(ofFolder: folderID) ?? 1
++        let newSubfolder = ActionMenuItem(title: "New Subfolder…") { [weak self] in
++            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++            self.editFolder(parentID: folderID)
++        }
++        newSubfolder.isEnabled = isActive && depth < BrowserState.maxFolderDepth
++        menu.addItem(newSubfolder)
 +        menu.addItem(ActionMenuItem(title: "Rename Folder…") { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
 +            self.editFolder(folderID)
 +        })
++        menu.addItem(.separator())
 +        for (label, direction) in [("Move Folder Up", FolderMoveDirection.up), ("Move Folder Down", .down)] {
 +            let move = ActionMenuItem(title: label) { [weak self] in
 +                guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
 +                self.perform { self.runtime.moveFolder(folderID, direction: direction) }
 +            }
-+            move.isEnabled = runtime.state.activeWorkspaceID == workspaceID && runtime.state.canMoveFolder(folderID, direction: direction)
++            move.isEnabled = isActive && state.canMoveFolder(folderID, direction: direction)
 +            menu.addItem(move)
 +        }
++        let moveInto = NSMenuItem(title: "Move into Folder", action: nil, keyEquivalent: "")
++        let destinations = NSMenu()
++        destinations.autoenablesItems = false
++        let destinationItem = { [weak self] (title: String, parentID: UUID?, level: Int) -> ActionMenuItem in
++            let item = ActionMenuItem(title: title) {
++                guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
++                self.perform { self.runtime.moveFolder(folderID, toParent: parentID) }
++            }
++            item.indentationLevel = level
++            item.isEnabled = isActive && state.canMoveFolder(folderID, toParent: parentID)
++            return item
++        }
++        if workspace.folder(folderID)?.parentID != nil {
++            destinations.addItem(destinationItem("Top Level", nil, 0))
++        }
++        for (candidate, level) in workspace.folderOutline() where candidate.id != folderID {
++            destinations.addItem(destinationItem(candidate.name, candidate.id, level - 1))
++        }
++        moveInto.submenu = destinations
++        moveInto.isEnabled = destinations.items.contains(where: \.isEnabled)
++        menu.addItem(moveInto)
 +        menu.addItem(.separator())
 +        let dissolve = ActionMenuItem(title: "Dissolve Folder") { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
 +            self.perform { self.runtime.dissolveFolder(folderID) }
 +        }
-+        dissolve.toolTip = "Keep every pinned page outside this folder."
++        dissolve.toolTip = "Move its pages and subfolders up one level."
 +        menu.addItem(dissolve)
 +        return menu
 +    }
 +
 +    private func showFolderActions(_ folderID: UUID, workspaceID: UUID, anchor: NSView) {
 +        guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
-+              runtime.state.currentWorkspace.folders.contains(where: { $0.id == folderID }),
++              runtime.state.currentWorkspace.folder(folderID) != nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
 +        folderMenu(folderID, workspaceID: workspaceID).popUp(positioning: nil,
 +            at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
 +    }
 +
-+    private func editFolder(_ folderID: UUID? = nil) {
++    private func editFolder(_ folderID: UUID? = nil, parentID: UUID? = nil) {
 +        guard hasStarted, folderEditor == nil, workspaceEditor == nil, pageFinder == nil,
 +              commandBar == nil, pendingCommandBarAction == nil, let window = root.window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        let workspaceID = runtime.state.activeWorkspaceID
-+        let folder = folderID.flatMap { id in runtime.state.currentWorkspace.folders.first(where: { $0.id == id }) }
++        let folder = folderID.flatMap { runtime.state.currentWorkspace.folder($0) }
 +        if folderID != nil && folder == nil { return }
++        if let parentID, runtime.state.currentWorkspace.folder(parentID) == nil { return }
 +        requestNativeFocus?()
-+        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil) { [weak self] name in
++        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil, subfolder: parentID != nil) { [weak self] name in
 +            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return "The workspace is no longer active." }
-+            let saved = folderID.map { self.runtime.renameFolder($0, name: name) } ?? self.runtime.createFolder(name: name)
++            let saved = folderID.map { self.runtime.renameFolder($0, name: name) }
++                ?? self.runtime.createFolder(name: name, parentID: parentID)
 +            guard saved else {
 +                return self.runtime.lastError == .saveFailed
 +                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
@@ -5779,11 +5880,11 @@
 +    private let field = NSTextField(string: "")
 +    private let errorLabel = NSTextField(wrappingLabelWithString: "")
 +    private let save: (String) -> String?
-+    init(name: String, creating: Bool, save: @escaping (String) -> String?) {
++    init(name: String, creating: Bool, subfolder: Bool = false, save: @escaping (String) -> String?) {
 +        self.save = save
 +        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 180),
 +                            styleMask: [.titled], backing: .buffered, defer: false)
-+        panel.title = creating ? "New Folder" : "Rename Folder"
++        panel.title = creating ? (subfolder ? "New Subfolder" : "New Folder") : "Rename Folder"
 +        panel.isReleasedWhenClosed = false
 +        super.init(window: panel)
 +        field.stringValue = name
@@ -6473,264 +6574,5 @@
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
-+    }
-+}
---- /dev/null
-+++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NavigationHeader.swift
-@@ -0,0 +1,256 @@
-+import AppKit
-+import BatoRuntime
-+
-+struct NavigationHeaderModel: Equatable {
-+    var url: URL?
-+    var canGoBack = false
-+    var canGoForward = false
-+    var isLoading = false
-+    var canToggleLoading = false
-+    var canEditAddress = false
-+    var failureCode: Int32?
-+
-+    /// The host is a label, never a security indicator: Chromium's own origin UI stays authoritative.
-+    var host: String {
-+        guard let host = url?.host, !host.isEmpty else { return url?.absoluteString ?? "No page" }
-+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-+    }
-+}
-+
-+/// Back, Forward and Reload/Stop for the sidebar's top row, and the address pill below it.
-+@MainActor
-+final class NavigationHeader {
-+    var onCommand: ((PageNavigationCommand) -> Void)?
-+    var onEditAddress: (() -> Void)?
-+    let controls: NSStackView
-+    let pill = NavigationPill()
-+    private let back = NavigationButton(symbol: "chevron.left", label: "Go back", identifier: "bato-nav-back")
-+    private let forward = NavigationButton(symbol: "chevron.right", label: "Go forward", identifier: "bato-nav-forward")
-+    private let reload = NavigationButton(symbol: "arrow.clockwise", label: "Reload page", identifier: "bato-nav-reload")
-+    private var isLoading = false
-+
-+    init() {
-+        controls = NSStackView(views: [back, forward, reload])
-+        controls.orientation = .horizontal
-+        controls.spacing = 4
-+        back.onPress = { [weak self] in self?.onCommand?(.back) }
-+        forward.onPress = { [weak self] in self?.onCommand?(.forward) }
-+        reload.onPress = { [weak self] in self?.onCommand?(self?.isLoading == true ? .stop : .reload) }
-+        pill.onPress = { [weak self] in self?.onEditAddress?() }
-+    }
-+
-+    func update(_ model: NavigationHeaderModel, accent: NSColor) {
-+        isLoading = model.isLoading
-+        back.isEnabled = model.canGoBack
-+        forward.isEnabled = model.canGoForward
-+        reload.isEnabled = model.canToggleLoading
-+        reload.setSymbol(model.isLoading ? "xmark" : "arrow.clockwise",
-+                         label: model.isLoading ? "Stop loading" : "Reload page")
-+        pill.update(model, accent: accent)
-+    }
-+}
-+
-+@MainActor
-+private final class NavigationButton: NSButton {
-+    var onPress: (() -> Void)?
-+    private var hovered = false
-+    private var tracking: NSTrackingArea?
-+
-+    init(symbol: String, label: String, identifier: String) {
-+        super.init(frame: .zero)
-+        isBordered = false
-+        imagePosition = .imageOnly
-+        target = self
-+        action = #selector(press)
-+        setAccessibilityIdentifier(identifier)
-+        // About a 36pt pitch at the default width; the soft width lets a narrow sidebar squeeze the row.
-+        let width = widthAnchor.constraint(equalToConstant: 32)
-+        width.priority = .init(749)
-+        width.isActive = true
-+        widthAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
-+        heightAnchor.constraint(equalToConstant: 28).isActive = true
-+        setSymbol(symbol, label: label)
-+        refreshTint()
-+    }
-+
-+    required init?(coder: NSCoder) { fatalError("Not supported") }
-+
-+    override var isEnabled: Bool {
-+        didSet { refreshTint(); needsDisplay = true }
-+    }
-+
-+    func setSymbol(_ name: String, label: String) {
-+        image = sidebarSymbol(name, size: 17, weight: .light)
-+        setAccessibilityLabel(label)
-+        toolTip = label
-+    }
-+
-+    private func refreshTint() {
-+        contentTintColor = isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
-+    }
-+
-+    @objc private func press() { onPress?() }
-+
-+    override func updateTrackingAreas() {
-+        super.updateTrackingAreas()
-+        if let tracking { removeTrackingArea(tracking) }
-+        let area = NSTrackingArea(rect: .zero,
-+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
-+        addTrackingArea(area)
-+        tracking = area
-+    }
-+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
-+
-+    override func draw(_ dirtyRect: NSRect) {
-+        if isEnabled, hovered || isHighlighted {
-+            NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.14 : 0.07).setFill()
-+            NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
-+        }
-+        super.draw(dirtyRect)
-+    }
-+}
-+
-+@MainActor
-+final class NavigationPill: AdaptiveSidebarView {
-+    var onPress: (() -> Void)?
-+    private let icon = NSImageView()
-+    private let label = NSTextField(labelWithString: "")
-+    private let progress = CALayer()
-+    private var model = NavigationHeaderModel()
-+    private var accent = NSColor.controlAccentColor
-+    private var hovered = false
-+    private var pressed = false
-+    private var tracking: NSTrackingArea?
-+
-+    override init(frame frameRect: NSRect) {
-+        super.init(frame: frameRect)
-+        wantsLayer = true
-+        layer?.cornerRadius = SidebarMetrics.cornerRadius
-+        layer?.masksToBounds = true
-+        layer?.addSublayer(progress)
-+        progress.isHidden = true
-+        icon.imageScaling = .scaleProportionallyDown
-+        icon.setAccessibilityElement(false)
-+        label.font = .systemFont(ofSize: 13)
-+        label.lineBreakMode = .byTruncatingTail
-+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        label.setAccessibilityElement(false)
-+        let content = NSStackView(views: [icon, label])
-+        content.orientation = .horizontal
-+        content.spacing = 6
-+        content.translatesAutoresizingMaskIntoConstraints = false
-+        addSubview(content)
-+        NSLayoutConstraint.activate([
-+            heightAnchor.constraint(equalToConstant: 32),
-+            content.centerXAnchor.constraint(equalTo: centerXAnchor),
-+            content.centerYAnchor.constraint(equalTo: centerYAnchor),
-+            content.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
-+            content.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-+            icon.widthAnchor.constraint(equalToConstant: 14)
-+        ])
-+        focusRingType = .exterior
-+        setAccessibilityElement(true)
-+        setAccessibilityRole(.button)
-+        setAccessibilityIdentifier("bato-nav-address")
-+    }
-+
-+    required init?(coder: NSCoder) { fatalError("Not supported") }
-+
-+    // Also the host's native focus target, so it must accept focus even when disabled.
-+    override var acceptsFirstResponder: Bool { true }
-+    func update(_ next: NavigationHeaderModel, accent: NSColor) {
-+        model = next
-+        self.accent = accent
-+        label.stringValue = next.host
-+        label.textColor = .secondaryLabelColor
-+        let failed = next.failureCode != nil
-+        icon.image = sidebarSymbol(failed ? "exclamationmark.triangle.fill" : "link", size: 12)
-+        icon.contentTintColor = failed ? .systemRed : .secondaryLabelColor
-+        toolTip = [next.url?.absoluteString, next.failureCode.map { "This page failed to load (error \($0))." }]
-+            .compactMap { $0 }.joined(separator: "\n")
-+        needsDisplay = true
-+        needsLayout = true
-+        noteFocusRingMaskChanged()
-+    }
-+
-+    override func accessibilityLabel() -> String? {
-+        model.failureCode == nil ? "Address" : "Address, this page failed to load"
-+    }
-+    override func accessibilityValue() -> Any? { model.url?.absoluteString }
-+    override func accessibilityHelp() -> String? { "Edit the address of this page" }
-+    override func isAccessibilityEnabled() -> Bool { model.canEditAddress }
-+    override func accessibilityPerformPress() -> Bool {
-+        guard model.canEditAddress else { return false }
-+        onPress?()
-+        return true
-+    }
-+
-+    override func updateTrackingAreas() {
-+        super.updateTrackingAreas()
-+        if let tracking { removeTrackingArea(tracking) }
-+        let area = NSTrackingArea(rect: .zero,
-+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
-+        addTrackingArea(area)
-+        tracking = area
-+    }
-+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
-+    override func mouseDown(with event: NSEvent) {
-+        guard model.canEditAddress else { return }
-+        pressed = true
-+        needsDisplay = true
-+    }
-+    override func mouseUp(with event: NSEvent) {
-+        let activate = pressed && bounds.contains(convert(event.locationInWindow, from: nil))
-+        pressed = false
-+        needsDisplay = true
-+        if activate { onPress?() }
-+    }
-+    override func keyDown(with event: NSEvent) {
-+        guard model.canEditAddress, [36, 49, 76].contains(event.keyCode) else { return super.keyDown(with: event) }
-+        onPress?()
-+    }
-+
-+    override func drawFocusRingMask() {
-+        NSBezierPath(roundedRect: bounds, xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius).fill()
-+    }
-+    override var focusRingMaskBounds: NSRect { bounds }
-+
-+    override func draw(_ dirtyRect: NSRect) {
-+        let radius = SidebarMetrics.cornerRadius
-+        let fill: NSColor
-+        if model.failureCode != nil {
-+            fill = NSColor.systemRed.withAlphaComponent(0.18)
-+        } else {
-+            fill = model.canEditAddress && (pressed || hovered)
-+                ? NSColor.labelColor.withAlphaComponent(pressed ? 0.13 : 0.1) : .clear
-+        }
-+        fill.setFill()
-+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
-+    }
-+
-+    override func layout() {
-+        super.layout()
-+        let width = max(24, bounds.width * 0.35)
-+        progress.frame = CGRect(x: 0, y: 0, width: width, height: 3)
-+        effectiveAppearance.performAsCurrentDrawingAppearance {
-+            progress.backgroundColor = (accent.blended(withFraction: 0.5, of: .labelColor) ?? accent).cgColor
-+        }
-+        updateLoadingIndicator()
-+    }
-+
-+    /// Progress is unknown, so loading is a sliding segment; Reduce Motion keeps it still.
-+    private func updateLoadingIndicator() {
-+        progress.removeAnimation(forKey: "slide")
-+        progress.isHidden = !model.isLoading
-+        guard model.isLoading, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-+        let slide = CABasicAnimation(keyPath: "position.x")
-+        slide.fromValue = -progress.bounds.width / 2
-+        slide.toValue = bounds.width + progress.bounds.width / 2
-+        slide.duration = 1.1
-+        slide.repeatCount = .infinity
-+        slide.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-+        progress.add(slide, forKey: "slide")
 +    }
 +}

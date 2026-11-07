@@ -1,0 +1,14 @@
+! Synthetic Bato blocking fixture list. Not derived from any public list.
+! Page host 127.0.0.1:18765; third-party host localhost:18766 (same server, second port).
+|http://localhost:18766/ads/$third-party,script
+|http://localhost:18766/ads/$third-party,image
+|http://localhost:18766/ads/$third-party,xmlhttprequest
+|http://localhost:18766/ads/$third-party,subdocument
+|http://localhost:18766/ads/$third-party,stylesheet
+|http://localhost:18766/ads/$third-party,websocket
+@@|http://localhost:18766/ads/allowed-tracker.js
+|http://localhost:18766/ads/important-allowed-tracker.js$important
+@@|http://localhost:18766/ads/important-allowed-tracker.js
+|http://localhost:18766/ads/domain-only.js$domain=127.0.0.1
+127.0.0.1##.bato-fixture-ad
+|http://127.0.0.1:18765/ads/worker-blocked.js
