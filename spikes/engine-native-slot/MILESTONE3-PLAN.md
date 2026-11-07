@@ -1,0 +1,17 @@
+# Milestone 3 plan: window polish
+
+Written 2026-11-07 before the build, from a real-host baseline on the milestone 2 binary (`logs/m3-v1.log`, `logs/m3-shots/b*.png` on the SSD, state `runtime/m3-state-v1`). Reference: Dia captures in `dia/2026-11-01/` (no popup or fullscreen capture exists; Dia is stock Chromium there, so a stock popup is the target). No Ardia code.
+
+| # | Item | Baseline finding | Fix |
+| --- | --- | --- | --- |
+| 1 | F3 sidebar slab behind sheets | `NativeSlotUpdate` sets the host visibility to `!SlotBlocked(view)`, and `SlotBlocked` is true while `NSWindow.attachedSheet` is set, so the host is hidden for every sheet, app-modal window and tab-modal dialog | Engine: keep the host visible. Input stays blocked by `BatoSlotRoot.hitTest` and the focus guards; page callbacks keep refusing via `FindSlot`. |
+| 2 | Popups | `window.open(..., 'popup,width=420,height=320')` gives a 1100x800 TYPE_NORMAL window with stock tab strip and an empty 260 pt reservation. CEF's `ChromeBrowserDelegate::AddWebContents` calls `AddNewContents(contents, std::nullopt)`, which always creates a normal window | Engine: pass `chrome::AddWebContents`' disposition and window features to the delegate; NEW_POPUP creates a TYPE_POPUP browser with the requested bounds. Also: a window that attempted and was refused a slot (any other extra Chrome window) now drops the reservation (`NativeSlotRefused`) |
+| 3 | Tab menu items | New Tab to the Right, Duplicate Tab, Pin Tab, Close Other/To the Right, Move Tab to New Window, Group Tab end in `chrome::` functions that skip the CEF hook; History > Recently Closed restores into Chrome's strip | Engine: offer each id at its `chrome::` function. Client maps: New Tab to the Right = New Tab, Duplicate = new temporary tab on the same address, Pin = pin/unpin, Close Other/Below = close temporary tabs (saved pages stay), Move to New Window and Group are consumed. Recently Closed items are disabled while Bato runs |
+| 4 | Cold-launch links | The `application:openURLs:` hook installed when the first window mounted, after Chromium had already acted on links given at start | Client: install the hook from client registration (swizzle on class `AppController`, present before the run loop); queue valid web links until the workspace can open them (also when a sheet is up), retry for 30 s |
+| 5 | Second Cmd-W | Reproduced as "nothing selected": closing the selected tab clears the selection and Chromium shows its own neighbour (or the about:blank anchor) while the model has no selection, so Cmd-W has no target | Swift: while the selected page is closing, ignore Chromium's neighbour selection; when it closes select the next sidebar neighbour (else previous) and load it |
+| 6 | Fullscreen tab strip | `ShouldDrawTabStrip` returns the stock strip while fullscreen | Engine: an owned window never draws the strip, fullscreen included |
+| 7 | Window drag | Baseline: CGEvent drags from the empty sidebar and from the top row do not move the window (the same synthetic drag does resize the sidebar grip) | Swift: `WorkspaceRoot.mouseDown` calls `performDrag` |
+
+Out of scope: split pointer divider, `target=_blank` links with an opener (they still become a stock normal window, now without the empty reservation).
+
+Verification: `native_slot.py check`, `swift test` (`logs/m3-swift-tests.log`), engine+client build, real-host runs `tmp/launch-m3-v2.py` onward with screenshots in `logs/m3-shots/`.
