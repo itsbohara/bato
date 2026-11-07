@@ -52,12 +52,22 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var favorites: [PageEntry]
+    /// Badge color in the switcher. Absent in documents saved before Profiles could be colored.
+    public var color: String?
 
-    public init(id: UUID = UUID(), name: String, favorites: [PageEntry] = []) {
+    public init(id: UUID = UUID(), name: String, favorites: [PageEntry] = [], color: String? = nil) {
         self.id = id
         self.name = name
         self.favorites = favorites
+        self.color = color
     }
+}
+
+/// One switcher section: a Profile and its workspaces in global workspace order.
+public struct ProfileGroup: Equatable, Sendable {
+    public var profile: BrowserProfile
+    public var isLaunch: Bool
+    public var workspaces: [Workspace]
 }
 
 /// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
@@ -214,6 +224,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
     case invalidColor
     case duplicateIdentity
     case missingProfile
+    case duplicateProfileName
     case missingWorkspace
     case invalidEntryOwnership
     case invalidSavedURL
@@ -231,6 +242,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
         case .invalidColor: "The workspace color must be a six-digit hex color."
         case .duplicateIdentity: "The organization contains duplicate identifiers."
         case .missingProfile: "The workspace's Profile could not be found."
+        case .duplicateProfileName: "Another Profile already has that name."
         case .missingWorkspace: "The selected workspace could not be found."
         case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
         case .invalidSavedURL: "The saved page destination is invalid."
@@ -341,6 +353,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
         for profile in profiles {
             try claim(profile.id)
             try Self.validateName(profile.name)
+            if let color = profile.color { try Self.validateColor(color) }
             for entry in profile.favorites { try validateEntry(entry, kind: .favorite) }
         }
         let profileIDs = Set(profiles.map(\.id))
@@ -348,9 +361,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
             try claim(workspace.id)
             try Self.validateName(workspace.name)
             guard profileIDs.contains(workspace.profileID) else { throw BrowserStateError.missingProfile }
-            guard workspace.color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
-                throw BrowserStateError.invalidColor
-            }
+            try Self.validateColor(workspace.color)
             for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
             for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
             let pinIDs = Set(workspace.pins.map(\.id))
@@ -415,6 +426,71 @@ public struct BrowserState: Codable, Equatable, Sendable {
             draft.profiles.append(profile)
             return profile.id
         }
+    }
+
+    /// Adds a Profile and its first workspace together; an invalid name or color leaves both absent.
+    /// Selection is unchanged so callers choose whether to enter the new Profile.
+    @discardableResult
+    public mutating func createProfile(name: String, color: String, workspaceName: String) throws
+        -> (profileID: UUID, workspaceID: UUID) {
+        try transact { draft in
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateName(name)
+            try Self.validateName(workspaceName)
+            try Self.validateColor(color)
+            guard draft.isProfileNameAvailable(name) else { throw BrowserStateError.duplicateProfileName }
+            let profile = BrowserProfile(name: name, color: color.uppercased())
+            let workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
+            draft.profiles.append(profile)
+            draft.workspaces.append(workspace)
+            return (profile.id, workspace.id)
+        }
+    }
+
+    /// Renaming never changes the Profile's identity, so its engine storage stays attached.
+    public mutating func updateProfile(_ id: UUID, name: String, color: String) throws {
+        try transact { draft in
+            guard let index = draft.profiles.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingProfile
+            }
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateName(name)
+            try Self.validateColor(color)
+            guard draft.isProfileNameAvailable(name, excluding: id) else { throw BrowserStateError.duplicateProfileName }
+            draft.profiles[index].name = name
+            draft.profiles[index].color = color.uppercased()
+        }
+    }
+
+    /// Names are compared after trimming, ignoring case, so two Profiles cannot look identical in the switcher.
+    public func isProfileNameAvailable(_ name: String, excluding id: UUID? = nil) -> Bool {
+        let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !profiles.contains { $0.id != id && $0.name.caseInsensitiveCompare(wanted) == .orderedSame }
+    }
+
+    public var hasMultipleProfiles: Bool { profiles.count > 1 }
+
+    /// Workspaces grouped under their Profile, Profiles in creation order.
+    public var profileGroups: [ProfileGroup] {
+        profiles.map { profile in
+            ProfileGroup(profile: profile, isLaunch: profile.id == launchProfileID,
+                         workspaces: workspaces.filter { $0.profileID == profile.id })
+        }
+    }
+
+    /// Switcher order, which numbered shortcuts follow: grouped by Profile, so it can differ from `workspaces`.
+    public var switcherWorkspaceIDs: [UUID] { profileGroups.flatMap { $0.workspaces.map(\.id) } }
+
+    /// `number` is 1-based, like the shortcut digit.
+    public func switcherWorkspaceID(forShortcut number: Int) -> UUID? {
+        let ids = switcherWorkspaceIDs
+        return ids.indices.contains(number - 1) ? ids[number - 1] : nil
+    }
+
+    /// The Profile's own color, else its first workspace's, so imported Profiles still get a badge.
+    public func displayColor(of profile: BrowserProfile) -> String {
+        profile.color ?? workspaces.first { $0.profileID == profile.id }?.color ?? "#B47879"
     }
 
     @discardableResult
@@ -1004,6 +1080,12 @@ public struct BrowserState: Codable, Equatable, Sendable {
 
     private static func validateName(_ name: String) throws {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BrowserStateError.emptyName }
+    }
+
+    private static func validateColor(_ color: String) throws {
+        guard color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
+            throw BrowserStateError.invalidColor
+        }
     }
 
     private static func validateURL(_ url: URL) throws {

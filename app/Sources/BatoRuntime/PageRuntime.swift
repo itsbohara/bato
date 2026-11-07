@@ -222,6 +222,23 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
     }
 
+    /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine
+    /// cannot open is never saved.
+    @discardableResult
+    public func createProfile(name: String, color: String, workspaceName: String,
+                              deferPageSelection: Bool = false) -> Bool {
+        change(reconcileSelection: !deferPageSelection) { candidate in
+            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
+            try candidate.activateWorkspace(created.workspaceID)
+        }
+    }
+
+    /// Metadata only: the visible page and the Profile's engine context are untouched.
+    @discardableResult
+    public func updateProfile(_ id: UUID, name: String, color: String) -> Bool {
+        change(reconcileSelection: false) { try $0.updateProfile(id, name: name, color: color) }
+    }
+
     /// Workspace ordering must not change active pages or pending close operations.
     @discardableResult
     public func moveWorkspace(_ id: UUID, direction: WorkspaceMoveDirection) -> Bool {
