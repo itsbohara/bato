@@ -1089,6 +1089,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     private static func validateURL(_ url: URL) throws {
+        if BrowserEssential.accepts(url) { return }
         guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
               let host = url.host, !host.isEmpty,
               url.user == nil, url.password == nil else { throw BrowserStateError.invalidURL }

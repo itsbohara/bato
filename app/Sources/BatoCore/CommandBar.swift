@@ -68,12 +68,15 @@ public enum CommandBarInput {
 }
 
 public enum CommandBarCommand: String, CaseIterable, Sendable {
-    case findPage, toggleSidebar, closePage
+    case findPage, toggleSidebar, closePage, openHistory, openDownloads, openSettings
     public var title: String {
         switch self {
         case .findPage: "Find Page"
         case .toggleSidebar: "Toggle Sidebar"
         case .closePage: "Close Current Page"
+        case .openHistory: "History"
+        case .openDownloads: "Downloads"
+        case .openSettings: "Settings"
         }
     }
 }
