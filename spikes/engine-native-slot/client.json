@@ -2,13 +2,13 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "ba73c9e90bbcd75a8413f5dc41ff6f3b54cb71a54ec3a62c0f0f2caae3d84a25",
+  "patch_sha256": "8fe6f87ce8c5cebf8be44ebca21a39eedde25c13f53bf69f40e6c51e9b0821c3",
   "files": [
     {
       "root": "cef",
       "path": "tests/cefsimple/cefsimple_mac.mm",
       "original_sha256": "bae6c935e237922a603172bb397241a92eb8e09dd184932c235369c2566b22a8",
-      "patched_sha256": "001574ed64698b5fc3dbdbbecd1feba81ac612ff9cf38160ff56b4ffbc286fcb"
+      "patched_sha256": "825324737af4590ece419c60c3d466e4d28089b32868d1740b5b8bf62ff5d5ed"
     },
     {
       "root": "cef",

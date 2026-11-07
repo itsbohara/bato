@@ -14,8 +14,12 @@ CLIENT = (HERE / 'client' / 'native_slot_client.mm').read_text()
 
 class LaunchProfileTests(unittest.TestCase):
     def test_startup_pins_default_and_refuses_other_profile_directories(self):
-        self.assertIn('+    static char profile_directory[] = "--profile-directory=Default";', PATCH)
+        self.assertIn('+      pinned_strings.push_back("--profile-directory=Default");', PATCH)
         self.assertIn('--profile-directory is refused', PATCH)
+
+    def test_startup_disables_omnibox_everywhere_whose_keep_alive_blocks_quit(self):
+        self.assertIn('+      disabled_features += (disabled_features.empty() ? "" : ",") + std::string("OmniboxEverywhere");', PATCH)
+        self.assertIn('keep-alive', PATCH)
 
     def test_launch_window_must_live_in_default_under_cache_root(self):
         self.assertIn('return launch ? root + "/Default" : root + "/" + key;', CLIENT)

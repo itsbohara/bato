@@ -17,18 +17,26 @@
  #include "tests/cefsimple/simple_handler.h"
 
  // Receives notifications from the application.
-@@ -169,6 +173,29 @@
+@@ -169,6 +173,48 @@
      return 1;
    }
 
-+  // Chrome opens the Profile named by Local State's last_used unless told otherwise, and CEF's
-+  // global request context follows that Profile. The Bato launch Profile must always be the
-+  // Default directory, so workspace mode pins it explicitly and refuses any other choice.
-+  std::vector<char*> pinned_args(argv, argv + argc);
++  // Workspace mode pins what Chrome would otherwise choose or enable for itself:
++  // - Chrome opens the Profile named by Local State's last_used and CEF's global request
++  //   context follows it, but the Bato launch Profile must always be the Default directory.
++  // - Non-official builds apply fieldtrial_testing_config.json, which enables OmniboxEverywhere
++  //   on Mac. Its background-mode manager holds a browser keep-alive (OMNIBOX_EVERYWHERE) that
++  //   outlives the last window, so Quit never finishes once extra Profile windows have opened.
++  // Both are explicit switches: a command-line feature overrides the testing config.
++  std::vector<std::string> pinned_strings;
++  std::vector<char*> pinned_args;
 +  {
 +    bool workspace_mode = false;
-+    for (int index = 1; index < argc; ++index) {
-+      const std::string argument = argv[index];
++    bool has_disabled_features = false;
++    std::string disabled_features;
++    static const std::string kDisableSwitch = "--disable-features=";
++    for (int index = 0; index < argc; ++index) {
++      std::string argument = argv[index];
 +      if (argument == "--bato-workspace-state" || argument.rfind("--bato-workspace-state=", 0) == 0) {
 +        workspace_mode = true;
 +      }
@@ -36,9 +44,20 @@
 +        fprintf(stderr, "Bato workspace mode pins its launch Profile; --profile-directory is refused\n");
 +        return 1;
 +      }
++      if (argument.rfind(kDisableSwitch, 0) == 0) {
++        has_disabled_features = true;
++        disabled_features = argument.substr(kDisableSwitch.size());
++        continue;  // Re-added below: a second --disable-features switch would replace this one.
++      }
++      pinned_strings.push_back(std::move(argument));
 +    }
-+    static char profile_directory[] = "--profile-directory=Default";
-+    if (workspace_mode) pinned_args.push_back(profile_directory);
++    if (workspace_mode) {
++      pinned_strings.push_back("--profile-directory=Default");
++      disabled_features += (disabled_features.empty() ? "" : ",") + std::string("OmniboxEverywhere");
++      has_disabled_features = true;
++    }
++    if (has_disabled_features) pinned_strings.push_back(kDisableSwitch + disabled_features);
++    for (auto& argument : pinned_strings) pinned_args.push_back(argument.data());
 +    pinned_args.push_back(nullptr);
 +    argc = static_cast<int>(pinned_args.size()) - 1;
 +    argv = pinned_args.data();
@@ -47,7 +66,7 @@
    // Provide CEF with command-line arguments.
    CefMainArgs main_args(argc, argv);
 
-@@ -220,6 +247,15 @@
+@@ -220,6 +266,15 @@
      // CEF has initialized.
      CefRefPtr<SimpleApp> app(new SimpleApp);
 
