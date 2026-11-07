@@ -815,13 +815,14 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     /// Engine callbacks may update an entry in an inactive workspace without changing selection.
+    /// Only temporary tabs follow the page title; a Favorite or pin keeps the title it was saved with.
     public mutating func recordNavigation(entryID: UUID, url: URL, title: String) throws {
         try transact { draft in
             try Self.validateURL(url)
             guard draft.allEntries.contains(where: { $0.id == entryID }) else { throw BrowserStateError.missingEntry }
             draft.updateEntry(entryID) { entry in
                 entry.lastURL = url
-                entry.title = title
+                if entry.kind == .temporary { entry.title = title }
             }
         }
     }

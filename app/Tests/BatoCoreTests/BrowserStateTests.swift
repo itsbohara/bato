@@ -508,7 +508,7 @@ final class BrowserStateTests: XCTestCase {
                 XCTAssertTrue(state.currentWorkspace.pins.isEmpty)
                 XCTAssertEqual(state.currentWorkspace.tabs.map(\.id), [sibling, id])
                 let converted = try XCTUnwrap(state.currentWorkspace.tabs.last)
-                XCTAssertEqual(converted, PageEntry(id: id, title: "Current title", lastURL: navigated, kind: .temporary))
+                XCTAssertEqual(converted, PageEntry(id: id, title: "Saved", lastURL: navigated, kind: .temporary))
                 XCTAssertEqual(state.activeWorkspaceID, before.activeWorkspaceID)
                 XCTAssertEqual(state.currentWorkspace.activeEntryID, before.currentWorkspace.activeEntryID)
                 XCTAssertEqual(state.currentWorkspace.profileID, before.currentWorkspace.profileID)
@@ -1101,5 +1101,32 @@ extension BrowserStateTests {
         let outline = state.currentWorkspace.folderOutline()
         XCTAssertEqual(outline.map(\.folder.id), [a, a1, a1x, a2, b])
         XCTAssertEqual(outline.map(\.depth), [1, 2, 3, 2, 1])
+    }
+
+    func testNavigationRetitlesTemporaryTabsButSavedEntriesKeepTheirTitle() throws {
+        var state = BrowserState.initial()
+        let favorite = try state.addTab(url: saved, title: "Saved favorite")
+        try state.favoriteEntry(favorite)
+        let pin = try state.addTab(url: saved, title: "Saved pin")
+        try state.pinEntry(pin)
+        let tab = try state.addTab(url: saved, title: "Opening title")
+        for id in [favorite, pin, tab] {
+            try state.recordNavigation(entryID: id, url: navigated, title: "Page title")
+        }
+        let titles = Dictionary(uniqueKeysWithValues: state.visibleEntries.map { ($0.id, $0.title) })
+        XCTAssertEqual(titles[favorite], "Saved favorite")
+        XCTAssertEqual(titles[pin], "Saved pin")
+        XCTAssertEqual(titles[tab], "Page title")
+        XCTAssertEqual(state.visibleEntries.first { $0.id == pin }?.lastURL, navigated)
+        XCTAssertEqual(state.visibleEntries.first { $0.id == pin }?.savedURL, saved)
+    }
+
+    func testPinnedTemporaryTabKeepsTheTitleItHadWhenPinned() throws {
+        var state = BrowserState.initial()
+        let tab = try state.addTab(url: saved, title: "Title at pinning")
+        try state.recordNavigation(entryID: tab, url: navigated, title: "Title at pinning")
+        try state.pinEntry(tab)
+        try state.recordNavigation(entryID: tab, url: saved, title: "Later page title")
+        XCTAssertEqual(state.visibleEntries.first { $0.id == tab }?.title, "Title at pinning")
     }
 }
