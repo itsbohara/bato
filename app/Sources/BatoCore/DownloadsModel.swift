@@ -6,6 +6,17 @@ public enum DownloadState: String, Codable, Equatable, Sendable {
     public var isActive: Bool { self == .inProgress || self == .paused }
 }
 
+/// Why Chromium holds a download until the user decides. The sidebar offers Keep and Discard.
+public enum DownloadWarning: Int, Codable, Equatable, Sendable {
+    case none = 0
+    /// Chromium flagged the file or its source as dangerous or uncommon.
+    case dangerous = 1
+    /// Fetched over an insecure connection from a secure page.
+    case insecure = 2
+    /// Chromium could not scan it, for example a password-protected archive.
+    case unscanned = 3
+}
+
 /// One engine download as last reported. `id` is stable for the item's life within its Profile.
 public struct DownloadItem: Identifiable, Equatable, Sendable {
     public var id: String
@@ -21,10 +32,11 @@ public struct DownloadItem: Identifiable, Equatable, Sendable {
     public var state: DownloadState
     public var canResume: Bool
     public var fileExists: Bool
+    public var warning: DownloadWarning
 
     public init(id: String, profileKey: String, filename: String, path: String = "", receivedBytes: Int64 = 0,
                 totalBytes: Int64 = -1, bytesPerSecond: Int64 = 0, state: DownloadState = .inProgress,
-                canResume: Bool = false, fileExists: Bool = true) {
+                canResume: Bool = false, fileExists: Bool = true, warning: DownloadWarning = .none) {
         self.id = id
         self.profileKey = profileKey
         self.filename = filename
@@ -35,6 +47,7 @@ public struct DownloadItem: Identifiable, Equatable, Sendable {
         self.state = state
         self.canResume = canResume
         self.fileExists = fileExists
+        self.warning = warning
     }
 
     /// nil when the total is unknown, so the UI shows an indeterminate state.
@@ -56,6 +69,42 @@ public enum DownloadEvent: Equatable, Sendable {
 
 public enum DownloadAction: Equatable, Sendable {
     case pause, resume, cancel, open, showInFinder, remove
+    /// Keep a warned download; discard removes it and its partial file.
+    case keep, discard
+}
+
+extension DownloadAction {
+    /// The action number of `bato_native_slot_download_action_v1`.
+    public var engineCode: Int32 {
+        switch self {
+        case .pause: 0
+        case .resume: 1
+        case .cancel: 2
+        case .open: 3
+        case .showInFinder: 4
+        case .remove: 5
+        case .keep: 6
+        case .discard: 7
+        }
+    }
+}
+
+extension DownloadItem {
+    /// Converts the fields of `BatoDownloadInfoV1`; unknown state or warning codes degrade to failed and none.
+    public init(engineProfileKey: String, id: String, filename: String, path: String, receivedBytes: Int64,
+                totalBytes: Int64, bytesPerSecond: Int64, state: Int32, canResume: Bool, fileExists: Bool, warning: Int32) {
+        let mapped: DownloadState
+        switch state {
+        case 0: mapped = .inProgress
+        case 1: mapped = .paused
+        case 2: mapped = .completed
+        case 4: mapped = .cancelled
+        default: mapped = .failed
+        }
+        self.init(id: id, profileKey: engineProfileKey, filename: filename, path: path, receivedBytes: receivedBytes,
+                  totalBytes: totalBytes, bytesPerSecond: bytesPerSecond, state: mapped, canResume: canResume,
+                  fileExists: fileExists, warning: DownloadWarning(rawValue: Int(warning)) ?? .none)
+    }
 }
 
 /// What the sidebar needs from the engine. Events arrive on the main actor; actions return whether
@@ -72,7 +121,7 @@ public protocol DownloadsEngine: AnyObject {
 /// Per-Profile download lists, newest first. Pure state; the controller owns engine wiring.
 public struct DownloadsModel: Equatable, Sendable {
     private var itemsByProfile: [String: [DownloadItem]] = [:]
-    /// Profiles with a download that finished since the list was last viewed.
+    /// Profiles with a download that finished, or needs a decision, since the list was last viewed.
     private var unseen: Set<String> = []
 
     public init() {}
@@ -109,11 +158,13 @@ public struct DownloadsModel: Equatable, Sendable {
     private mutating func upsert(_ item: DownloadItem) {
         var list = itemsByProfile[item.profileKey] ?? []
         if let index = list.firstIndex(where: { $0.id == item.id }) {
-            if list[index].state.isActive, !item.state.isActive { unseen.insert(item.profileKey) }
+            let previous = list[index]
+            if previous.state.isActive, !item.state.isActive { unseen.insert(item.profileKey) }
+            if previous.warning == .none, item.warning != .none { unseen.insert(item.profileKey) }
             list[index] = item
         } else {
             list.insert(item, at: 0)
-            if !item.state.isActive { unseen.insert(item.profileKey) }
+            if !item.state.isActive || item.warning != .none { unseen.insert(item.profileKey) }
         }
         itemsByProfile[item.profileKey] = list
     }
@@ -128,8 +179,14 @@ public struct DownloadsModel: Equatable, Sendable {
 }
 
 public enum DownloadFormat {
-    /// "4.2 MB of 48 MB · 1.1 MB/s", "Done · 48 MB", "Paused", "Failed", "Cancelled".
+    /// "4.2 MB of 48 MB · 1.1 MB/s", "Done · 48 MB", "Paused", "Failed", "Cancelled"; a warning wins.
     public static func status(_ item: DownloadItem) -> String {
+        switch item.warning {
+        case .dangerous: return "May harm your computer"
+        case .insecure: return "Not downloaded securely"
+        case .unscanned: return "Couldn't be scanned for threats"
+        case .none: break
+        }
         switch item.state {
         case .completed:
             if !item.fileExists { return "File moved or deleted" }

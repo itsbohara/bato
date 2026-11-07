@@ -91,6 +91,44 @@ private func item(_ id: String, profile: String = "a", received: Int64 = 0, tota
     }
 }
 
+@Suite struct DownloadsWarningTests {
+    private func warned(_ id: String, _ warning: DownloadWarning, state: DownloadState = .inProgress) -> DownloadItem {
+        DownloadItem(id: id, profileKey: "a", filename: "\(id).dmg", receivedBytes: 10, totalBytes: 10, state: state, warning: warning)
+    }
+
+    @Test func warningNeedsAttentionUntilSeen() {
+        var model = DownloadsModel()
+        model.apply(.upsert(warned("1", .dangerous)))
+        #expect(model.hasUnseenFinish(for: "a"))
+        model.markSeen("a")
+        model.apply(.upsert(warned("1", .dangerous)))
+        #expect(!model.hasUnseenFinish(for: "a"))
+        model.apply(.upsert(warned("1", .none)))
+        #expect(!model.hasUnseenFinish(for: "a"))
+    }
+
+    @Test func warningTextWinsOverProgress() {
+        #expect(DownloadFormat.status(warned("1", .dangerous)) == "May harm your computer")
+        #expect(DownloadFormat.status(warned("1", .insecure)) == "Not downloaded securely")
+        #expect(DownloadFormat.status(warned("1", .unscanned)) == "Couldn't be scanned for threats")
+    }
+
+    @Test func engineFieldsConvert() {
+        func convert(_ state: Int32, _ warning: Int32) -> DownloadItem {
+            DownloadItem(engineProfileKey: "", id: "g", filename: "f", path: "", receivedBytes: 1, totalBytes: -1,
+                         bytesPerSecond: 0, state: state, canResume: true, fileExists: true, warning: warning)
+        }
+        #expect([0, 1, 2, 3, 4, 9].map { convert($0, 0).state } == [.inProgress, .paused, .completed, .failed, .cancelled, .failed])
+        #expect(convert(0, 3).warning == .unscanned)
+        #expect(convert(0, 42).warning == DownloadWarning.none)
+    }
+
+    @Test func actionCodesFollowTheEngineContract() {
+        let all: [DownloadAction] = [.pause, .resume, .cancel, .open, .showInFinder, .remove, .keep, .discard]
+        #expect(all.map(\.engineCode) == [0, 1, 2, 3, 4, 5, 6, 7])
+    }
+}
+
 @MainActor
 @Suite struct DownloadsControllerTests {
     @Test func attachesAndRequestsSnapshot() {
