@@ -39,6 +39,8 @@ public final class NativeWorkspaceController: NSObject {
     private var workspaceEditor: WorkspaceEditor?
     private var folderEditor: FolderEditor?
     private var pageFinder: PageFinder?
+    private let organizationStore: OrganizationStore<BrowserState>
+    private var arcImport: ArcImportController?
     private var commandBar: CommandBarController?
     private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
@@ -61,6 +63,7 @@ public final class NativeWorkspaceController: NSObject {
             try store.save(state)
         }
         let engine = try makeEngine(state.currentWorkspace.profileID)
+        organizationStore = store
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
         sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
@@ -1118,6 +1121,7 @@ public final class NativeWorkspaceController: NSObject {
             guard let self, self.runtime.state.activeWorkspaceID == id else { return }
             self.editFolder()
         })
+        menu.addItem(ActionMenuItem(title: "Import from Arc…") { [weak self] in self?.importFromArc() })
         menu.addItem(.separator())
         // Capture the workspace, not its position or a later active selection.
         // The runtime revalidates its position when the action is invoked.
@@ -1134,6 +1138,18 @@ public final class NativeWorkspaceController: NSObject {
         moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
         menu.addItem(moveDown)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
+    }
+
+    private func importFromArc() {
+        guard hasStarted, arcImport == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        let flow = ArcImportController(window: window, store: organizationStore, runtime: runtime) { [weak self] in
+            self?.arcImport = nil
+            self?.render()
+        }
+        arcImport = flow
+        flow.begin()
     }
 
     private func findPage() {

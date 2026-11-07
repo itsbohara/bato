@@ -60,6 +60,16 @@ public struct ImportSummary: Equatable, Sendable {
     public var splits: Int { spaces.reduce(0) { $0 + $1.splits } }
 }
 
+public extension ImportPlan {
+    /// Arc space ids whose workspace from this file (and salt) is already in `existing`.
+    static func alreadyImportedSpaceIDs(_ staging: ArcStaging, in existing: BrowserState,
+                                        idSalt: String = "") -> Set<String> {
+        let ids = IdentityFactory(digest: staging.sourceDigest, salt: idSalt)
+        let known = Set(existing.workspaces.map(\.id))
+        return Set(staging.spaces.filter { known.contains(ids.id("workspace", $0.id)) }.map(\.id))
+    }
+}
+
 /// A validated draft of the organization after import. Nothing is persisted or applied here.
 public struct ImportPlan: Equatable, Sendable {
     public var state: BrowserState
@@ -74,12 +84,14 @@ public struct ImportPlan: Equatable, Sendable {
         let ids = IdentityFactory(digest: staging.sourceDigest, salt: options.idSalt)
 
         let usedKeys = Set(spaces.map(\.profileKey))
-        let profiles = staging.profiles.filter { usedKeys.contains($0.key) }.map { profile in
-            BrowserProfile(id: ids.id("profile", profile.key), name: profile.name,
+        let usedProfiles = staging.profiles.filter { usedKeys.contains($0.key) }
+        let profileIDs = Dictionary(uniqueKeysWithValues: usedProfiles.map { ($0.key, ids.id("profile", $0.key)) })
+        // A profile imported earlier from this file is reused, so importing another space of the same file works.
+        let knownProfileIDs = Set(existing.profiles.map(\.id))
+        let profiles = usedProfiles.filter { !knownProfileIDs.contains(profileIDs[$0.key]!) }.map { profile in
+            BrowserProfile(id: profileIDs[profile.key]!, name: profile.name,
                            favorites: profile.favorites.map { ids.entry($0, kind: .favorite) })
         }
-        let profileIDs = Dictionary(uniqueKeysWithValues: staging.profiles.filter { usedKeys.contains($0.key) }
-            .map { ($0.key, ids.id("profile", $0.key)) })
 
         var workspaces: [Workspace] = []
         for space in spaces {
@@ -92,8 +104,8 @@ public struct ImportPlan: Equatable, Sendable {
                 pins: builder.pins, folders: builder.folders, tabs: builder.tabs, splits: builder.splits))
         }
 
-        let existingIDs = Set(existing.profiles.map(\.id) + existing.workspaces.map(\.id))
-        guard existingIDs.isDisjoint(with: profiles.map(\.id) + workspaces.map(\.id)) else {
+        let existingIDs = Set(existing.workspaces.map(\.id))
+        guard existingIDs.isDisjoint(with: workspaces.map(\.id)) else {
             throw ImportPlanError.alreadyImported
         }
         var draft = existing
