@@ -16,7 +16,8 @@ public final class NativeWorkspaceController: NSObject {
     }
     /// The Chromium host schedules committed page work on its CEF UI task runner.
     public var requestPagePresentation: (() -> Void)?
-    public var focusTarget: NSView { navigationHeader.pill }
+    /// The first control a hidden-sidebar keyboard path lands on; it is always present, unlike the toggle.
+    public var focusTarget: NSView { newTabButton }
     public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 
     private let entries = SidebarEntries()
@@ -24,7 +25,7 @@ public final class NativeWorkspaceController: NSObject {
     private let workspaceActions = NSButton(frame: .zero)
     private let sidebarToggle = NSButton(frame: .zero)
     private let profileLabel = NSTextField(labelWithString: "")
-    private let navigationHeader = NavigationHeader()
+    private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
     private var pageIcons: [UUID: NSImage] = [:]
@@ -303,21 +304,15 @@ public final class NativeWorkspaceController: NSObject {
         sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
         sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
         sidebarToggle.isHidden = requestSidebarToggle == nil
-        navigationHeader.onCommand = { [weak self] command in
-            guard let self else { return }
-            self.perform { self.runtime.perform(command) }
-        }
-        navigationHeader.onEditAddress = { [weak self] in self?.editAddress() }
         let headingSpacer = NSView()
         headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let heading = NSStackView(views: [sidebarToggle, navigationHeader.controls, headingSpacer, workspaceEdit, workspaceActions])
+        let heading = NSStackView(views: [sidebarToggle, headingSpacer, workspaceEdit, workspaceActions])
         heading.orientation = .horizontal
         heading.distribution = .fill
         heading.spacing = 2
 
-        let new = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
-        configureTextAction(new, symbol: "plus")
-        new.setAccessibilityIdentifier("bato-focus-new-tab")
+        configureTextAction(newTabButton, symbol: "plus")
+        newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
         let find = ActionButton(title: "Find page") { [weak self] in self?.findPage() }
         configureTextAction(find, symbol: "magnifyingglass")
         find.setAccessibilityLabel("Find Page")
@@ -345,7 +340,7 @@ public final class NativeWorkspaceController: NSObject {
         peekRow.isHidden = true
         peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
-        let pageActions = NSStackView(views: [new, find])
+        let pageActions = NSStackView(views: [newTabButton, find])
         pageActions.orientation = .horizontal
         pageActions.distribution = .fillEqually
         pageActions.spacing = 6
@@ -403,7 +398,7 @@ public final class NativeWorkspaceController: NSObject {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 
-        let stack = NSStackView(views: [heading, navigationHeader.pill, pageActions, peekRow, scroll, separator, footer, statusLabel])
+        let stack = NSStackView(views: [heading, pageActions, peekRow, scroll, separator, footer, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 11
@@ -415,7 +410,6 @@ public final class NativeWorkspaceController: NSObject {
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            navigationHeader.pill.widthAnchor.constraint(equalTo: stack.widthAnchor),
             pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
             peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -459,7 +453,6 @@ public final class NativeWorkspaceController: NSObject {
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
-        navigationHeader.update(navigationModel(), accent: accent)
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -487,7 +480,7 @@ public final class NativeWorkspaceController: NSObject {
         let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
         addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
                    totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
-        for folder in workspace.folders { addFolder(folder, workspaceID: workspace.id, pins: workspace.pins) }
+        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
         addSection("Tabs", pages: workspace.tabs)
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
@@ -521,16 +514,6 @@ public final class NativeWorkspaceController: NSObject {
             statusLabel.stringValue = "This action couldn’t be completed."
         }
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
-    }
-
-    private func navigationModel() -> NavigationHeaderModel {
-        let state = runtime.navigationState
-        let toggle: PageNavigationCommand = state?.isLoading == true ? .stop : .reload
-        return NavigationHeaderModel(
-            url: runtime.displayedURL,
-            canGoBack: runtime.canPerform(.back), canGoForward: runtime.canPerform(.forward),
-            isLoading: state?.isLoading == true, canToggleLoading: runtime.canPerform(toggle),
-            canEditAddress: runtime.navigationTarget != nil, failureCode: state?.failureCode)
     }
 
     /// Split controls address organization identities, never Chromium tab indices.
@@ -864,12 +847,13 @@ public final class NativeWorkspaceController: NSObject {
                 let move = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
                 let folders = NSMenu()
                 folders.autoenablesItems = false
-                for folder in workspace.folders {
+                for (folder, depth) in workspace.folderOutline() {
                     let folderID = folder.id
                     let item = ActionMenuItem(title: folder.name) { [weak self] in
                         guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
                         self.perform { self.runtime.movePin(page.id, toFolder: folderID) }
                     }
+                    item.indentationLevel = depth - 1
                     item.state = currentFolderID == folderID ? .on : .off
                     item.isEnabled = !isClosing && currentFolderID != folderID
                     folders.addItem(item)
@@ -943,18 +927,38 @@ public final class NativeWorkspaceController: NSObject {
         return true
     }
 
-    private func addFolder(_ folder: PageFolder, workspaceID: UUID, pins: [PageEntry]) {
+    private static let folderIndent: CGFloat = 12
+
+    private func addIndented(_ view: NSView, leading: CGFloat) {
+        let inset = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        inset.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: leading),
+            view.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
+            view.topAnchor.constraint(equalTo: inset.topAnchor),
+            view.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
+        ])
+        entries.addArrangedSubview(inset)
+        inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+    }
+
+    private func addFolder(_ folder: PageFolder, depth: Int, workspace: Workspace) {
+        let workspaceID = workspace.id
         let folderID = folder.id
+        let indent = CGFloat(depth - 1) * Self.folderIndent
+        let accessibleName = depth > 1 ? "\(folder.name), level \(depth)" : folder.name
+        let pinCount = workspace.pinCount(inFolder: folderID)
         let toggle: () -> Void = { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == workspaceID,
-                  let current = self.runtime.state.currentWorkspace.folders.first(where: { $0.id == folderID }) else { return }
+                  let current = self.runtime.state.currentWorkspace.folder(folderID) else { return }
             self.perform { self.runtime.setFolderCollapsed(folderID, collapsed: !current.isCollapsed) }
         }
         let disclosure = ActionButton(title: "", invoke: toggle)
         disclosure.bezelStyle = .disclosure
         disclosure.setButtonType(.onOff)
         disclosure.state = folder.isCollapsed ? .off : .on
-        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(folder.name)")
+        disclosure.setAccessibilityLabel("\(folder.isCollapsed ? "Expand" : "Collapse") \(accessibleName)")
         disclosure.setAccessibilityIdentifier("bato-folder-disclosure-\(folderID.uuidString)")
         disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
         disclosure.heightAnchor.constraint(equalToConstant: 24).isActive = true
@@ -969,90 +973,120 @@ public final class NativeWorkspaceController: NSObject {
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.setContentHuggingPriority(.defaultLow, for: .horizontal)
         (title.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
-        title.setAccessibilityLabel(folder.name)
+        title.setAccessibilityLabel(accessibleName)
         title.setAccessibilityIdentifier("bato-folder-\(folderID.uuidString)")
-        title.toolTip = "\(folder.name) · \(folder.pinIDs.count) pinned pages"
-        let count = NSTextField(labelWithString: String(folder.pinIDs.count))
+        title.toolTip = "\(folder.name) · \(pinCount) pinned pages"
+        let count = NSTextField(labelWithString: String(pinCount))
         count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         count.textColor = .secondaryLabelColor
         let actions = ActionButton(title: "") { [weak self, weak title] in
             guard let title else { return }
             self?.showFolderActions(folderID, workspaceID: workspaceID, anchor: title)
         }
-        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(folder.name)")
+        configureIcon(actions, symbol: "ellipsis", label: "Folder actions for \(accessibleName)")
         actions.setAccessibilityIdentifier("bato-folder-actions-\(folderID.uuidString)")
         let heading = NSStackView(views: [disclosure, title, count, actions])
         heading.spacing = 3
         heading.orientation = .horizontal
-        entries.addArrangedSubview(heading)
-        heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        if depth == 1 {
+            entries.addArrangedSubview(heading)
+            heading.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        } else {
+            addIndented(heading, leading: indent)
+        }
         folderControls[folderID] = (disclosure, title, actions)
         title.menu = folderMenu(folderID, workspaceID: workspaceID)
         if !folder.isCollapsed {
             for pinID in folder.pinIDs {
-                guard let pin = pins.first(where: { $0.id == pinID }) else { continue }
-                let row = makePageView(pin, tile: false)
-                let inset = NSView()
-                row.translatesAutoresizingMaskIntoConstraints = false
-                inset.addSubview(row)
-                NSLayoutConstraint.activate([
-                    row.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: 14),
-                    row.trailingAnchor.constraint(equalTo: inset.trailingAnchor),
-                    row.topAnchor.constraint(equalTo: inset.topAnchor),
-                    row.bottomAnchor.constraint(equalTo: inset.bottomAnchor)
-                ])
-                entries.addArrangedSubview(inset)
-                inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+                guard let pin = workspace.pins.first(where: { $0.id == pinID }) else { continue }
+                addIndented(makePageView(pin, tile: false), leading: 14 + indent)
+            }
+            for child in workspace.subfolders(of: folderID) {
+                addFolder(child, depth: depth + 1, workspace: workspace)
             }
         }
-        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
+        if depth == 1, let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
     }
 
     private func folderMenu(_ folderID: UUID, workspaceID: UUID) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        let state = runtime.state
+        let workspace = state.currentWorkspace
+        let isActive = state.activeWorkspaceID == workspaceID
+        let depth = workspace.depth(ofFolder: folderID) ?? 1
+        let newSubfolder = ActionMenuItem(title: "New Subfolder…") { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+            self.editFolder(parentID: folderID)
+        }
+        newSubfolder.isEnabled = isActive && depth < BrowserState.maxFolderDepth
+        menu.addItem(newSubfolder)
         menu.addItem(ActionMenuItem(title: "Rename Folder…") { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
             self.editFolder(folderID)
         })
+        menu.addItem(.separator())
         for (label, direction) in [("Move Folder Up", FolderMoveDirection.up), ("Move Folder Down", .down)] {
             let move = ActionMenuItem(title: label) { [weak self] in
                 guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
                 self.perform { self.runtime.moveFolder(folderID, direction: direction) }
             }
-            move.isEnabled = runtime.state.activeWorkspaceID == workspaceID && runtime.state.canMoveFolder(folderID, direction: direction)
+            move.isEnabled = isActive && state.canMoveFolder(folderID, direction: direction)
             menu.addItem(move)
         }
+        let moveInto = NSMenuItem(title: "Move into Folder", action: nil, keyEquivalent: "")
+        let destinations = NSMenu()
+        destinations.autoenablesItems = false
+        let destinationItem = { [weak self] (title: String, parentID: UUID?, level: Int) -> ActionMenuItem in
+            let item = ActionMenuItem(title: title) {
+                guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
+                self.perform { self.runtime.moveFolder(folderID, toParent: parentID) }
+            }
+            item.indentationLevel = level
+            item.isEnabled = isActive && state.canMoveFolder(folderID, toParent: parentID)
+            return item
+        }
+        if workspace.folder(folderID)?.parentID != nil {
+            destinations.addItem(destinationItem("Top Level", nil, 0))
+        }
+        for (candidate, level) in workspace.folderOutline() where candidate.id != folderID {
+            destinations.addItem(destinationItem(candidate.name, candidate.id, level - 1))
+        }
+        moveInto.submenu = destinations
+        moveInto.isEnabled = destinations.items.contains(where: \.isEnabled)
+        menu.addItem(moveInto)
         menu.addItem(.separator())
         let dissolve = ActionMenuItem(title: "Dissolve Folder") { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return }
             self.perform { self.runtime.dissolveFolder(folderID) }
         }
-        dissolve.toolTip = "Keep every pinned page outside this folder."
+        dissolve.toolTip = "Move its pages and subfolders up one level."
         menu.addItem(dissolve)
         return menu
     }
 
     private func showFolderActions(_ folderID: UUID, workspaceID: UUID, anchor: NSView) {
         guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
-              runtime.state.currentWorkspace.folders.contains(where: { $0.id == folderID }),
+              runtime.state.currentWorkspace.folder(folderID) != nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
         folderMenu(folderID, workspaceID: workspaceID).popUp(positioning: nil,
             at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
     }
 
-    private func editFolder(_ folderID: UUID? = nil) {
+    private func editFolder(_ folderID: UUID? = nil, parentID: UUID? = nil) {
         guard hasStarted, folderEditor == nil, workspaceEditor == nil, pageFinder == nil,
               commandBar == nil, pendingCommandBarAction == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         let workspaceID = runtime.state.activeWorkspaceID
-        let folder = folderID.flatMap { id in runtime.state.currentWorkspace.folders.first(where: { $0.id == id }) }
+        let folder = folderID.flatMap { runtime.state.currentWorkspace.folder($0) }
         if folderID != nil && folder == nil { return }
+        if let parentID, runtime.state.currentWorkspace.folder(parentID) == nil { return }
         requestNativeFocus?()
-        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil) { [weak self] name in
+        let editor = FolderEditor(name: folder?.name ?? "", creating: folderID == nil, subfolder: parentID != nil) { [weak self] name in
             guard let self, self.runtime.state.activeWorkspaceID == workspaceID else { return "The workspace is no longer active." }
-            let saved = folderID.map { self.runtime.renameFolder($0, name: name) } ?? self.runtime.createFolder(name: name)
+            let saved = folderID.map { self.runtime.renameFolder($0, name: name) }
+                ?? self.runtime.createFolder(name: name, parentID: parentID)
             guard saved else {
                 return self.runtime.lastError == .saveFailed
                     ? "Changes couldn’t be saved. Reopen Bato to reload organization."
@@ -1460,11 +1494,11 @@ private final class FolderEditor: NSWindowController {
     private let field = NSTextField(string: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let save: (String) -> String?
-    init(name: String, creating: Bool, save: @escaping (String) -> String?) {
+    init(name: String, creating: Bool, subfolder: Bool = false, save: @escaping (String) -> String?) {
         self.save = save
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 180),
                             styleMask: [.titled], backing: .buffered, defer: false)
-        panel.title = creating ? "New Folder" : "Rename Folder"
+        panel.title = creating ? (subfolder ? "New Subfolder" : "New Folder") : "Rename Folder"
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
         field.stringValue = name

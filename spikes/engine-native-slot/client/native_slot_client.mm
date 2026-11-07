@@ -47,14 +47,9 @@ extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int brows
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
 
-// Navigation hooks are optional Swift exports, resolved with dlsym.
-// ConfigureNavigation(navigate): navigate(token, browser, command, url) with
-// command 0 back, 1 forward, 2 reload, 3 stop, 4 load (url required).
-// NavigationState(token, browser, can_back, can_forward, loading, error, attempted_url):
-// deferred; error is the main-frame load failure code, 0 when none, and attempted_url
-// the destination of a loading or failed navigation, empty otherwise.
-using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, int, const char*));
-using SwiftNavigationState = void (*)(uint64_t, int, int, int, int, int, const char*);
+// Navigation is an optional Swift export, resolved with dlsym.
+// ConfigureNavigation(navigate): navigate(token, browser, url) loads url in that page.
+using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, const char*));
 
 extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
     const unsigned char* png, size_t size);
@@ -78,25 +73,14 @@ SwiftPeekEnded g_swift_peek_ended = nullptr;
 SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
 SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
-SwiftNavigationState g_swift_navigation_state = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
-struct NavigationState {
-  bool can_go_back = false;
-  bool can_go_forward = false;
-  bool loading = false;
-  int error = 0;
-  std::string attempted_url;
-  // The current attempt reported OnLoadError; a loading end without one is a success.
-  bool attempt_failed = false;
-};
 struct BoundPage {
   CefRefPtr<CefBrowser> browser;
   std::string url;
   std::string title;
   uint64_t icon_revision = 0;
-  NavigationState navigation;
 };
 struct WorkspaceSlot {
   CefRefPtr<CefBrowser> anchor;
@@ -358,21 +342,6 @@ void PostPageState(uint64_t token, int identifier, BoundPage& page) {
             !found->second.browser->IsSame(browser)) return;
         BatoSwiftWorkspacePageEvent(token, identifier, 1, url.c_str(), title.c_str());
       }, token, identifier, browser, url, title));
-}
-
-void PostNavigationState(uint64_t token, int identifier, const BoundPage& page) {
-  if (!g_swift_navigation_state) return;
-  const auto state = page.navigation;
-  CefRefPtr<CefBrowser> browser = page.browser;
-  CefPostTask(TID_UI, base::BindOnce(
-      [](uint64_t token, int identifier, CefRefPtr<CefBrowser> browser, const NavigationState& state) {
-        auto slot = WorkspaceSlots().find(token);
-        if (slot == WorkspaceSlots().end() || !g_swift_navigation_state) return;
-        auto found = slot->second.pages.find(identifier);
-        if (found == slot->second.pages.end() || !found->second.browser->IsSame(browser)) return;
-        g_swift_navigation_state(token, identifier, state.can_go_back, state.can_go_forward,
-                                 state.loading, state.error, state.attempted_url.c_str());
-      }, token, identifier, browser, state));
 }
 
 // Page-owned favicon delivery uses CEF's image decoder and request context.
@@ -676,51 +645,18 @@ int PeekLinkRequested(void*, uint64_t token, int parent, const char* utf8_url) {
   return 1;
 }
 
-// Header commands act only on the visible, focused page: its identifier must
-// equal the engine's active browser, which also refuses blocked/modal/fullscreen
-// slots and a presented Peek (whose active page is the transient preview).
-int NavigateWorkspacePage(uint64_t token, int identifier, int command, const char* utf8_url) {
+// Acts only on the visible, focused page: its identifier must equal the engine's
+// active browser, which also refuses blocked/modal/fullscreen slots and a presented
+// Peek (whose active page is the transient preview).
+int NavigateWorkspacePage(uint64_t token, int identifier, const char* utf8_url) {
   auto* slot = AvailableSlot(token);
   if (!slot || g_active_browser_id(token) != identifier || slot->peek_generation ||
       slot->pending_close.contains(identifier)) return 0;
   auto found = slot->pages.find(identifier);
   if (found == slot->pages.end() || !found->second.browser->IsValid()) return 0;
-  auto browser = found->second.browser;
-  const std::string destination = command == 4 && utf8_url ? utf8_url : "";
-  switch (command) {
-    case 0:
-      if (!browser->CanGoBack()) return 0;
-      browser->GoBack();
-      break;
-    case 1:
-      if (!browser->CanGoForward()) return 0;
-      browser->GoForward();
-      break;
-    case 2:
-      browser->Reload();
-      break;
-    case 3:
-      browser->StopLoad();
-      return 1;
-    case 4: {
-      auto frame = browser->GetMainFrame();
-      if (!ValidDestination(utf8_url) || !frame || !frame->IsValid()) return 0;
-      frame->LoadURL(CefString(utf8_url));
-      break;
-    }
-    default:
-      return 0;
-  }
-  // Every command above starts a navigation, which supersedes an earlier failure
-  // even if the engine reports its start only later.
-  auto current = WorkspaceSlots().find(token);
-  if (current == WorkspaceSlots().end()) return 1;
-  auto page = current->second.pages.find(identifier);
-  if (page == current->second.pages.end() || !page->second.browser->IsSame(browser)) return 1;
-  page->second.navigation.error = 0;
-  page->second.navigation.attempted_url = destination;
-  page->second.navigation.attempt_failed = false;
-  PostNavigationState(token, identifier, page->second);
+  auto frame = found->second.browser->GetMainFrame();
+  if (!ValidDestination(utf8_url) || !frame || !frame->IsValid()) return 0;
+  frame->LoadURL(CefString(utf8_url));
   return 1;
 }
 
@@ -835,66 +771,6 @@ void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
     ++found->second.icon_revision;
     PostPageIcon(token, identifier, browser, found->second.icon_revision, {});
     PostPageState(token, identifier, found->second);
-    return;
-  }
-}
-
-void BatoWorkspaceBrowserLoadingStateChanged(CefRefPtr<CefBrowser> browser, bool loading,
-                                             bool can_go_back, bool can_go_forward) {
-  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-  const int identifier = browser->GetIdentifier();
-  for (auto& [token, slot] : WorkspaceSlots()) {
-    auto found = slot.pages.find(identifier);
-    if (found == slot.pages.end()) continue;
-    auto& state = found->second.navigation;
-    // The error page's own loading cycle must not clear a failure. Only a load that
-    // ends without any failure in its attempt succeeded, including a Chromium retry.
-    if (!loading && !state.attempt_failed) {
-      state.error = 0;
-      state.attempted_url.clear();
-    }
-    state.loading = loading;
-    state.can_go_back = can_go_back;
-    state.can_go_forward = can_go_forward;
-    PostNavigationState(token, identifier, found->second);
-    return;
-  }
-}
-
-void BatoWorkspaceBrowserNavigationStarted(CefRefPtr<CefBrowser> browser, const CefString& url) {
-  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-  const auto destination = url.ToString();
-  // The error page is committed by the failed navigation, not a new attempt.
-  if (destination.rfind("chrome-error:", 0) == 0) return;
-  const int identifier = browser->GetIdentifier();
-  for (auto& [token, slot] : WorkspaceSlots()) {
-    auto found = slot.pages.find(identifier);
-    if (found == slot.pages.end()) continue;
-    auto& state = found->second.navigation;
-    // Chromium retries a failed load by itself, without user input. Re-requesting the
-    // exact failed destination keeps the failure until an attempt succeeds.
-    const bool retry = state.error != 0 && destination == state.attempted_url;
-    if (!retry) {
-      state.error = 0;
-      state.attempted_url = destination;
-    }
-    state.attempt_failed = false;
-    PostNavigationState(token, identifier, found->second);
-    return;
-  }
-}
-
-void BatoWorkspaceBrowserLoadFailed(CefRefPtr<CefBrowser> browser, int error_code,
-                                    const CefString& failed_url) {
-  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
-  const int identifier = browser->GetIdentifier();
-  for (auto& [token, slot] : WorkspaceSlots()) {
-    auto found = slot.pages.find(identifier);
-    if (found == slot.pages.end()) continue;
-    found->second.navigation.error = error_code;
-    found->second.navigation.attempted_url = failed_url.ToString();
-    found->second.navigation.attempt_failed = true;
-    PostNavigationState(token, identifier, found->second);
     return;
   }
 }
@@ -1060,8 +936,6 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
   auto swift_configure_navigation = reinterpret_cast<SwiftConfigureNavigation>(
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureNavigation"));
-  auto swift_navigation_state = reinterpret_cast<SwiftNavigationState>(
-      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceNavigationState"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -1118,11 +992,7 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
         }
       }
     }
-    // Header navigation uses CEF's existing load/display handlers: no engine export.
-    if (swift_configure_navigation && swift_navigation_state) {
-      g_swift_navigation_state = swift_navigation_state;
-      swift_configure_navigation(NavigateWorkspacePage);
-    }
+    if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);
     g_new_tab = new_tab;
     g_request_close = request_close;
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,

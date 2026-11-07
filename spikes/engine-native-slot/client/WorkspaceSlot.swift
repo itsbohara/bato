@@ -12,7 +12,7 @@ private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
-private typealias NavigatePage = @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32
+private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 @MainActor private var workspaceDirectory: URL?
 @MainActor private var createPage: CreatePage?
 @MainActor private var selectPage: PageAction?
@@ -95,15 +95,11 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, Int32, UnsafePoi
         }
     }
     var supportsNavigation: Bool { navigatePage != nil }
-    /// Organization pages only: a transient preview is never a header target.
+    /// Organization pages only: a transient preview is never a navigation target.
     func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool {
         guard let id = pages.first(where: { $0.value == page })?.key, let navigatePage else { return false }
         switch command {
-        case .back: return navigatePage(token, id, 0, nil) == 1
-        case .forward: return navigatePage(token, id, 1, nil) == 1
-        case .reload: return navigatePage(token, id, 2, nil) == 1
-        case .stop: return navigatePage(token, id, 3, nil) == 1
-        case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, 4, $0) } == 1
+        case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, $0) } == 1
         }
     }
     func adoptPeekPreview(_ preview: LivePage) {
@@ -689,23 +685,7 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, Int32, UnsafePoi
 
 @_cdecl("BatoSwiftWorkspaceConfigureNavigation")
 @MainActor public func configureWorkspaceNavigation(
-    _ navigate: @escaping @convention(c) (UInt64, Int32, Int32, UnsafePointer<CChar>?) -> Int32) {
+    _ navigate: @escaping @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32) {
     precondition(Thread.isMainThread)
     navigatePage = navigate
-}
-
-/// Delivered after the CEF handler stack unwinds. The exact page generation is
-/// resolved here, so state for a closed or replaced page is dropped by the runtime.
-@_cdecl("BatoSwiftWorkspaceNavigationState")
-@MainActor public func workspaceNavigationState(_ token: UInt64, _ browserID: Int32, _ canGoBack: Int32,
-                                               _ canGoForward: Int32, _ isLoading: Int32, _ errorCode: Int32,
-                                               _ attemptedURL: UnsafePointer<CChar>?) {
-    precondition(Thread.isMainThread)
-    guard let slot = workspaceSlots[token], let engine = slot.engine,
-          let page = engine.pages[browserID] ?? engine.transient[browserID] else { return }
-    slot.controller?.receive(.navigationState(page, PageNavigationState(
-        canGoBack: canGoBack != 0, canGoForward: canGoForward != 0, isLoading: isLoading != 0,
-        failureCode: errorCode == 0 ? nil : errorCode,
-        attemptedURL: attemptedURL.flatMap { URL(string: String(cString: $0)) }
-            .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil })))
 }
