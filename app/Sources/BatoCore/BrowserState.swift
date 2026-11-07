@@ -33,6 +33,42 @@ public struct PageEntry: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// A transient organization search result; engine-loaded state stays in the runtime.
+/// A temporary tab that was closed, with where it sat so reopening can put it back.
+public struct ClosedTab: Equatable, Sendable {
+    public var profileID: UUID
+    public var workspaceID: UUID
+    public var title: String
+    public var url: URL
+    public var index: Int
+
+    public init(profileID: UUID, workspaceID: UUID, title: String, url: URL, index: Int) {
+        self.profileID = profileID
+        self.workspaceID = workspaceID
+        self.title = title
+        self.url = url
+        self.index = index
+    }
+}
+
+/// The last closed tab comes out first. Past the capacity the oldest is dropped.
+public struct ClosedTabStack: Equatable, Sendable {
+    public static let capacity = 25
+    public private(set) var tabs: [ClosedTab] = []
+
+    public init() {}
+
+    public var last: ClosedTab? { tabs.last }
+    public var isEmpty: Bool { tabs.isEmpty }
+
+    public mutating func push(_ tab: ClosedTab) {
+        tabs.append(tab)
+        if tabs.count > Self.capacity { tabs.removeFirst(tabs.count - Self.capacity) }
+    }
+
+    @discardableResult
+    public mutating func pop() -> ClosedTab? { tabs.popLast() }
+}
+
 public struct PageSearchResult: Identifiable, Equatable, Sendable {
     public var id: UUID { entryID }
     public let entryID: UUID
@@ -716,6 +752,58 @@ public struct BrowserState: Codable, Equatable, Sendable {
             draft.selectEntryInPlace(entry.id)
             return entry.id
         }
+    }
+
+    /// The closed-tab record for a temporary tab of any workspace; nil for saved entries, which stay in the sidebar.
+    public func closedTab(for id: UUID) -> ClosedTab? {
+        for workspace in workspaces {
+            if let index = workspace.tabs.firstIndex(where: { $0.id == id }) {
+                let entry = workspace.tabs[index]
+                return ClosedTab(profileID: workspace.profileID, workspaceID: workspace.id,
+                                 title: entry.title, url: entry.lastURL, index: index)
+            }
+        }
+        return nil
+    }
+
+    /// Puts a closed tab back at its old position in its workspace, or in the first workspace of its
+    /// Profile when that workspace is gone, and selects it.
+    @discardableResult
+    public mutating func reopenTab(_ closed: ClosedTab) throws -> UUID {
+        try transact { draft in
+            try Self.validateURL(closed.url)
+            guard let workspace = draft.workspaces.firstIndex(where: { $0.id == closed.workspaceID && $0.profileID == closed.profileID })
+                    ?? draft.workspaces.firstIndex(where: { $0.profileID == closed.profileID }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            let entry = PageEntry(title: closed.title, lastURL: closed.url, kind: .temporary)
+            let position = min(max(closed.index, 0), draft.workspaces[workspace].tabs.count)
+            draft.workspaces[workspace].tabs.insert(entry, at: position)
+            draft.activeWorkspaceID = draft.workspaces[workspace].id
+            draft.selectEntryInPlace(entry.id)
+            return entry.id
+        }
+    }
+
+    /// The page one step from the selection in sidebar order, wrapping at the ends.
+    /// With nothing selected, forward starts at the first page and backward at the last.
+    public func adjacentEntryID(step: Int) -> UUID? {
+        let entries = visibleEntries
+        guard !entries.isEmpty, step != 0 else { return nil }
+        guard let active = currentWorkspace.activeEntryID,
+              let index = entries.firstIndex(where: { $0.id == active }) else {
+            return step > 0 ? entries.first?.id : entries.last?.id
+        }
+        let count = entries.count
+        return entries[((index + step) % count + count) % count].id
+    }
+
+    /// Cmd-1 to Cmd-8 pick that page in sidebar order; Cmd-9 always picks the last one.
+    public func entryID(forShortcut number: Int) -> UUID? {
+        let entries = visibleEntries
+        guard (1...9).contains(number), !entries.isEmpty else { return nil }
+        if number == 9 { return entries.last?.id }
+        return number <= entries.count ? entries[number - 1].id : nil
     }
 
     public mutating func selectEntry(_ id: UUID) throws {
