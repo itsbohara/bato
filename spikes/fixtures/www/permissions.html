@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permissions fixture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1>Permissions fixture</h1>
+<p>Origin: <code id="origin"></code></p>
+<section>
+<button id="geo" type="button">Request location</button>
+<output id="geo-result">geolocation: not requested</output>
+</section>
+<section>
+<button id="notify" type="button">Request notifications</button>
+<output id="notify-result">notifications: not requested</output>
+</section>
+<section>
+<button id="camera" type="button">Request camera</button>
+<output id="camera-result">camera: not requested</output>
+</section>
+<section>
+<button id="clipboard" type="button">Read clipboard</button>
+<output id="clipboard-result">clipboard: not requested</output>
+</section>
+<output id="states">states: pending</output>
+<script src="permissions.js"></script>
+</main>
+</body>
+</html>

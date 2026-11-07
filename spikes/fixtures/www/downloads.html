@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Downloads fixture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1>Downloads fixture</h1>
+<p>Served by downloads_server.py on port 18768.</p>
+<ul>
+<li><a id="small" href="http://127.0.0.1:18768/small.txt">Small download (28 bytes)</a></li>
+<li><a id="slow" href="http://127.0.0.1:18768/slow.bin">Slow download (8 MB, about 15 s)</a></li>
+<li><a id="large" href="http://127.0.0.1:18768/large.bin">Large download (48 MB)</a></li>
+<li><a id="fail" href="http://127.0.0.1:18768/fail.bin">Failing download (cut after 1 MB)</a></li>
+</ul>
+</main>
+</body>
+</html>
