@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,69 @@
+@@ -2313,6 +2317,71 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -147,6 +147,8 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/UBlockOffer.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -165,7 +167,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2403,19 @@
+@@ -2336,12 +2405,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -188,7 +190,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1484 @@
+@@ -0,0 +1,1517 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -259,6 +261,8 @@
 +using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
 +                                       int64_t, int64_t, int64_t, int, int, int, int);
 +using SwiftDownloadRemoved = void (*)(const char*, const char*);
++// ConfigureProfileDelete(destroy): destroy(profile_key) closes the Profile's windows and wipes its data.
++using SwiftConfigureProfileDelete = void (*)(int (*)(const char*));
 +
 +extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
 +    const unsigned char* png, size_t size);
@@ -280,6 +284,7 @@
 +PeekEnd g_peek_end = nullptr;
 +decltype(&bato_native_slot_download_snapshot_v1) g_download_snapshot = nullptr;
 +decltype(&bato_native_slot_download_action_v1) g_download_action = nullptr;
++decltype(&bato_native_slot_delete_profile_v1) g_delete_profile = nullptr;
 +SwiftDownloadUpserted g_swift_download_upserted = nullptr;
 +SwiftDownloadRemoved g_swift_download_removed = nullptr;
 +SwiftPeekEnded g_swift_peek_ended = nullptr;
@@ -1179,6 +1184,25 @@
 +  return true;
 +}
 +
++// Destroys a non-launch Profile: the engine closes its windows and removes its storage; the cached
++// context is dropped so a later Profile with the same key (never reused in practice) starts clean.
++int DeleteProfileData(const char* utf8_key) {
++  if (!g_workspace_enabled || !NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
++      !g_delete_profile || !utf8_key) return 0;
++  const std::string key = utf8_key;
++  if (!ValidProfileKey(key) || !PendingWindow().key.empty()) return 0;
++  if (g_delete_profile(key.c_str()) != 1) return 0;
++  ProfileContexts().erase(key);
++  {
++    std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++    for (auto it = ProfileKeys().by_browser.begin(); it != ProfileKeys().by_browser.end();) {
++      it = it->second == key ? ProfileKeys().by_browser.erase(it) : std::next(it);
++    }
++  }
++  fprintf(stderr, "{\"event\":\"profile-delete-scheduled\",\"key\":\"%s\"}\n", key.c_str());
++  return 1;
++}
++
 +// Requests a Chrome window whose Browser uses the Profile's own request context. The
 +// Chrome runtime pairs a Browser with exactly one Profile, so pages of different Profiles
 +// can never share a window. Returns 1 when the request was accepted; completion arrives
@@ -1452,6 +1476,8 @@
 +  // New Window opens the command bar because each Profile has exactly one window.
 +  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
 +  if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
++  // History > Recently Closed rows: the engine offers 1000100 + position (history_menu_cocoa_controller.mm).
++  if (command_id >= 1000100 && command_id < 1000120) command = 40 + (command_id - 1000100);
 +  if (command_id == cef_id_for_command_id_name("IDC_SELECT_NEXT_TAB") ||
 +      command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_NEXT_TAB")) command = 9;
 +  if (command_id == cef_id_for_command_id_name("IDC_SELECT_PREVIOUS_TAB") ||
@@ -1560,6 +1586,10 @@
 +      dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
 +  auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
 +      dlsym(loaded, "bato_native_slot_download_action_v1"));
++  auto delete_profile = reinterpret_cast<decltype(&bato_native_slot_delete_profile_v1)>(
++      dlsym(loaded, "bato_native_slot_delete_profile_v1"));
++  auto swift_configure_profile_delete = reinterpret_cast<SwiftConfigureProfileDelete>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureProfileDelete"));
 +  auto swift_configure_downloads = reinterpret_cast<SwiftDownloadsConfigure>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadsConfigure"));
 +  auto swift_download_upserted = reinterpret_cast<SwiftDownloadUpserted>(
@@ -1649,6 +1679,11 @@
 +    if (swift_configure_profiles && swift_profile_ready) {
 +      g_swift_profile_ready = swift_profile_ready;
 +      swift_configure_profiles(OpenProfileWindow);
++      // Profile delete is additive: without the engine export the Delete button stays refused.
++      if (delete_profile && swift_configure_profile_delete) {
++        g_delete_profile = delete_profile;
++        swift_configure_profile_delete(DeleteProfileData);
++      }
 +    }
 +    BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
 +                                 SelectWorkspacePage, CloseWorkspacePage,
@@ -1714,7 +1749,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,52 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -1748,7 +1783,8 @@
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
 +                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
 +                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
-+                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift'])]:
++                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
++                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -1926,7 +1962,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1040 @@
+@@ -0,0 +1,1104 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1944,6 +1980,7 @@
 +private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 +private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 +private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32
++private typealias DeleteProfileData = @convention(c) (UnsafePointer<CChar>?) -> Int32
 +private typealias DownloadSnapshot = @convention(c) () -> Int32
 +private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 +@MainActor private var workspaceDirectory: URL?
@@ -1962,6 +1999,7 @@
 +@MainActor private var endPeekPages: EndPeek?
 +@MainActor private var navigatePage: NavigatePage?
 +@MainActor private var openProfileWindow: OpenProfileWindow?
++@MainActor private var deleteProfileData: DeleteProfileData?
 +@MainActor private var downloadSnapshot: DownloadSnapshot?
 +@MainActor private var downloadAct: DownloadAct?
 +@MainActor private var nativeDownloads: NativeDownloadsEngine?
@@ -2066,6 +2104,18 @@
 +        }
 +        // Pages are live now, so the committed selection can be presented in the new window.
 +        if token != nil { onWindowReady?() }
++    }
++    /// Asks the engine to close this Profile's windows and destroy its storage. The window's later
++    /// detach finds no Profile and is ignored; the pages are gone from the engine's tables at once.
++    func destroyProfile(_ id: UUID) -> Bool {
++        guard id != launchProfileID, let destroy = deleteProfileData,
++              id.uuidString.withCString({ destroy($0) }) == 1 else { return false }
++        windows.removeValue(forKey: id)
++        pending.removeValue(forKey: id)
++        windowQueue.removeAll { $0 == id }
++        for (key, page) in pages where page.profileID == id { pages.removeValue(forKey: key) }
++        for (key, page) in transient where page.profileID == id { transient.removeValue(forKey: key) }
++        return true
 +    }
 +    /// A closed window takes its pages with it; their saved entries stay in organization.
 +    func windowDetached(_ token: UInt64) {
@@ -2313,6 +2363,10 @@
 +    private var keyObserver: NSObjectProtocol?
 +    private var menuTracking = false
 +    private var changingGeometry = false
++    /// Fullscreen only: the sidebar floats over the page. `mode` is untouched so leaving fullscreen
++    /// restores the docked or hidden sidebar the user had.
++    private var fullscreenRevealed = false
++    private var fullscreenObservers: [NSObjectProtocol] = []
 +    let token: UInt64
 +    /// The first slot owns organization; later slots are windows of other Profiles that borrow its sidebar.
 +    init(token: UInt64, directory: URL?) {
@@ -2376,6 +2430,19 @@
 +    }
 +    private func attached() {
 +        installPointerMonitor()
++        if fullscreenObservers.isEmpty, let window = root.window {
++            for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
++                fullscreenObservers.append(NotificationCenter.default.addObserver(
++                    forName: name, object: window, queue: .main) { [weak self] _ in
++                    MainActor.assumeIsolated {
++                        guard let self else { return }
++                        self.fullscreenRevealed = false
++                        self.root.mode = entering ? 0 : self.mode
++                        self.root.layoutSubtreeIfNeeded()
++                    }
++                })
++            }
++        }
 +        if keyObserver == nil, let window = root.window {
 +            keyObserver = NotificationCenter.default.addObserver(
 +                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
@@ -2438,16 +2505,39 @@
 +        root.layoutSubtreeIfNeeded()
 +        return true
 +    }
++    private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
++    @discardableResult private func setFullscreenReveal(_ revealed: Bool) -> Bool {
++        guard canInteract, !changingGeometry else { return false }
++        changingGeometry = true
++        defer { changingGeometry = false }
++        guard sidebarGeometry?(token, width, revealed ? 2 : 0) == 1 else { return false }
++        fullscreenRevealed = revealed
++        root.mode = revealed ? 2 : 0
++        root.layoutSubtreeIfNeeded()
++        return true
++    }
 +    @discardableResult func toggle() -> Bool {
++        if isFullscreen { return setFullscreenReveal(!fullscreenRevealed) }
 +        guard setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
 +        if mode == 0 { _ = pageFocus?(token) }
 +        return true
 +    }
 +    private func reveal() {
++        if isFullscreen {
++            if !fullscreenRevealed, canInteract, !menuTracking { setFullscreenReveal(true) }
++            return
++        }
 +        guard mode == 0, canInteract, !menuTracking else { return }
 +        _ = setGeometry(mode: 2) // Hover never steals focus from the page.
 +    }
 +    private func dismissPeek(force: Bool = false) {
++        if isFullscreen {
++            guard fullscreenRevealed, canInteract, !menuTracking else { return }
++            if !force, let focused = root.window?.firstResponder as? NSView,
++               focused === root || focused.isDescendant(of: root) { return }
++            if setFullscreenReveal(false), force { _ = pageFocus?(token) }
++            return
++        }
 +        guard mode == 2, canInteract, !menuTracking else { return }
 +        if !force, let focused = root.window?.firstResponder as? NSView,
 +           focused === root || focused.isDescendant(of: root) { return }
@@ -2475,8 +2565,9 @@
 +        pointerMonitor = nil
 +        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
 +        keyObserver = nil
-+        for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
++        for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
 +        menuObservers.removeAll()
++        fullscreenObservers.removeAll()
 +        root.onEnter = nil
 +        root.onExit = nil
 +        root.onResize = nil
@@ -2631,6 +2722,7 @@
 +    if command == 6 { controller.openEssential(.downloads) }
 +    if command == 7 { controller.showSettings() }
 +    if command == 8 { controller.reopenClosedTab() }
++    if (40..<60).contains(command) { controller.reopenClosedTab(at: Int(command) - 40) }
 +    if command == 31 { controller.duplicateSelection() }
 +    if command == 32 { controller.togglePinSelection() }
 +    if command == 33 { controller.closeOtherTemporaryTabs() }
@@ -2807,9 +2899,10 @@
 +        // The bridge also rejects blocked pages, slot transitions and closing
 +        // windows. Negative means an untracked Chrome tab or unavailable slot.
 +        if key == "s" {
-+            // Fullscreen detaches the native slot. Retain the owned window's
-+            // shortcut without forwarding it to Chromium's Save Page command.
++            // In fullscreen the shortcut shows or hides the floating sidebar and is never forwarded to
++            // Chromium's Save Page command, even when no sidebar is reachable.
 +            if window.styleMask.contains(.fullScreen) {
++                _ = toggle()
 +                acceptedKeys.insert(event.keyCode)
 +                return nil
 +            }
@@ -2940,6 +3033,13 @@
 +    workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
 +}
 +
++@_cdecl("BatoSwiftWorkspaceConfigureProfileDelete")
++@MainActor public func configureWorkspaceProfileDelete(
++    _ destroy: @escaping @convention(c) (UnsafePointer<CChar>?) -> Int32) {
++    precondition(Thread.isMainThread)
++    deleteProfileData = destroy
++}
++
 +@_cdecl("BatoSwiftDownloadsConfigure")
 +@MainActor public func configureDownloads(
 +    _ snapshot: @escaping @convention(c) () -> Int32,
@@ -3002,7 +3102,7 @@
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  #include "include/wrapper/cef_closure_task.h"
-@@ -33,12 +48,507 @@
+@@ -33,12 +48,540 @@
               .ToString();
  }
 
@@ -3022,6 +3122,10 @@
 +typedef void (*BlockingFree)(void*);
 +typedef int (*BlockingStart)(const char*);
 +typedef void (*BlockingBrowserHook)(int);
++// Cosmetic rules: both return a heap string (null when nothing applies) released with the free function.
++typedef char* (*CosmeticScript)(const void*, const char*);
++typedef char* (*CosmeticGeneric)(const void*, const char*, const char*);
++typedef void (*CosmeticStringFree)(char*);
 +
 +struct BlockingEngine {
 +  BlockingEngine(void* engine, BlockingCheck check, BlockingFree release)
@@ -3070,6 +3174,9 @@
 +  BlockingFree release = nullptr;
 +  BlockingBrowserHook page_started = nullptr;
 +  BlockingBrowserHook blocked = nullptr;
++  CosmeticScript cosmetic_script = nullptr;
++  CosmeticGeneric cosmetic_generic = nullptr;
++  CosmeticStringFree cosmetic_free = nullptr;
 +  std::mutex mutex;
 +  std::map<std::string, std::shared_ptr<ListSet>> list_sets;
 +  std::map<std::string, std::shared_ptr<ProfileBlocking>> profiles;
@@ -3405,6 +3512,10 @@
 +  state->create = create;
 +  state->check = check;
 +  state->release = release;
++  // Cosmetic filtering is additive: a library without the exports only blocks requests.
++  state->cosmetic_script = reinterpret_cast<CosmeticScript>(dlsym(library, "bato_adblock_cosmetic_script"));
++  state->cosmetic_generic = reinterpret_cast<CosmeticGeneric>(dlsym(library, "bato_adblock_cosmetic_generic"));
++  state->cosmetic_free = reinterpret_cast<CosmeticStringFree>(dlsym(library, "bato_adblock_string_free"));
 +  // Optional Swift hooks: list updates and per-page blocked counts.
 +  state->page_started = reinterpret_cast<BlockingBrowserHook>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftBlockingPageStarted"));
@@ -3449,6 +3560,28 @@
 +
 + private:
 +  IMPLEMENT_REFCOUNTING(ExternalProtocolHandler);
++};
++
++// The request half of the cosmetic report: cancelled before it leaves the browser, handled on the UI thread.
++const char kCosmeticReportPrefix[] = "https://bato.invalid/__cosmetic?";
++
++void HandleCosmeticReport(int browser_id, std::string query);
++
++class CosmeticReportHandler : public CefResourceRequestHandler {
++ public:
++  ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser> browser,
++                                   CefRefPtr<CefFrame> frame,
++                                   CefRefPtr<CefRequest> request,
++                                   CefRefPtr<CefCallback> callback) override {
++    if (browser) {
++      CefPostTask(TID_UI, base::BindOnce(&HandleCosmeticReport, browser->GetIdentifier(),
++                                         request->GetURL().ToString().substr(sizeof(kCosmeticReportPrefix) - 1)));
++    }
++    return RV_CANCEL;
++  }
++
++ private:
++  IMPLEMENT_REFCOUNTING(CosmeticReportHandler);
 +};
 +
 +class BlockingResourceHandler : public CefResourceRequestHandler {
@@ -3510,7 +3643,7 @@
  }
 
  SimpleHandler::~SimpleHandler() {
-@@ -59,6 +569,7 @@
+@@ -59,6 +602,7 @@
      int command_id,
      cef_window_open_disposition_t disposition) {
    CEF_REQUIRE_UI_THREAD();
@@ -3518,7 +3651,7 @@
    if (!NativeQuitExperimentEnabled() ||
        command_id != cef_id_for_command_id_name("IDC_EXIT")) {
      return false;
-@@ -90,6 +601,7 @@
+@@ -90,6 +634,7 @@
      bool& active;
      ~ScopedRequestReset() { active = false; }
    } reset{quit_request_in_progress_};
@@ -3526,7 +3659,7 @@
    const int command = cef_id_for_command_id_name("IDC_EXIT");
    for (const auto& browser : browser_list_) {
      auto host = browser->GetHost();
-@@ -103,9 +615,17 @@
+@@ -103,9 +648,17 @@
    fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
  }
 
@@ -3544,7 +3677,7 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -117,6 +637,12 @@
+@@ -117,6 +670,12 @@
      // Set the title of the window using platform APIs.
      PlatformTitleChange(browser, title);
    }
@@ -3557,7 +3690,7 @@
  }
 
  void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-@@ -133,6 +659,7 @@
+@@ -133,6 +692,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -3565,7 +3698,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +680,7 @@
+@@ -153,6 +713,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -3573,7 +3706,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -173,8 +701,65 @@
+@@ -173,8 +734,207 @@
      if (NativeQuitExperimentEnabled()) {
        fprintf(stderr, "{\"event\":\"sample-quit-message-loop-requested\"}\n");
      }
@@ -3609,6 +3742,10 @@
 +  if (!g_blocking) {
 +    return nullptr;
 +  }
++  if (g_blocking->cosmetic_generic &&
++      request->GetURL().ToString().rfind(kCosmeticReportPrefix, 0) == 0) {
++    return new CosmeticReportHandler();
++  }
 +  // Top-level navigations are never filtered: only subresources, subframes
 +  // and worker loads are blocked. A new one restarts the page's blocked count.
 +  if (request->GetResourceType() == RT_MAIN_FRAME) {
@@ -3636,6 +3773,144 @@
 +  }
 +  return new BlockingResourceHandler(BlockingProfileFor(key), std::move(source),
 +                                     page_host);
++}
++
++namespace {
++// UI thread. The engine to use for cosmetic rules on this browser's page, or null: blocking is off for
++// the Profile or for the top-level page's site (the same enabled flag and exceptions as requests), the
++// Profile is unknown, or the library has no cosmetic support.
++std::shared_ptr<const BlockingEngine> CosmeticEngineFor(CefRefPtr<CefBrowser> browser) {
++  if (!g_blocking || !g_blocking->cosmetic_script || !g_blocking->cosmetic_generic ||
++      !g_blocking->cosmetic_free || !browser) {
++    return nullptr;
++  }
++  const std::string key = BatoWorkspaceBlockingProfileKey(browser->GetIdentifier());
++  if (!ValidBlockingProfileKey(key)) {
++    return nullptr;
++  }
++  CefRefPtr<CefFrame> main_frame = browser->GetMainFrame();
++  const std::string page_host = HostOfUrl(main_frame ? main_frame->GetURL().ToString() : "");
++  auto profile = BlockingProfileFor(key);
++  std::lock_guard<std::mutex> lock(g_blocking->mutex);
++  if (!profile->lists->engine || !profile->settings || !profile->settings->enabled ||
++      HostHasException(*profile->settings, page_host)) {
++    return nullptr;
++  }
++  return profile->lists->engine;
++}
++
++bool IsWebUrl(const std::string& url) {
++  return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0;
++}
++}  // namespace
++
++void SimpleHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
++                                CefRefPtr<CefFrame> frame,
++                                TransitionType transition_type) {
++  CEF_REQUIRE_UI_THREAD();
++  const std::string url = frame ? frame->GetURL().ToString() : "";
++  if (!IsWebUrl(url)) {
++    return;
++  }
++  auto engine = CosmeticEngineFor(browser);
++  if (!engine) {
++    return;
++  }
++  char* script = g_blocking->cosmetic_script(engine->engine, url.c_str());
++  if (!script) {
++    return;
++  }
++  frame->ExecuteJavaScript(script, url, 0);
++  g_blocking->cosmetic_free(script);
++}
++
++namespace {
++// A page's class and id names arrive from the injected harvester, by console line and by a request to the
++// reserved host below. The reply is computed from engine data only, never from the report, and a report
++// already handled for this browser is ignored.
++void ApplyGenericCosmetics(CefRefPtr<CefBrowser> browser, const std::string& names) {
++  static std::map<int, std::string>* handled = new std::map<int, std::string>;
++  CefRefPtr<CefFrame> main_frame = browser ? browser->GetMainFrame() : nullptr;
++  const std::string url = main_frame ? main_frame->GetURL().ToString() : "";
++  auto engine = IsWebUrl(url) ? CosmeticEngineFor(browser) : nullptr;
++  if (!engine || names.empty() || (*handled)[browser->GetIdentifier()] == names) {
++    return;
++  }
++  (*handled)[browser->GetIdentifier()] = names;
++  char* script = g_blocking->cosmetic_generic(engine->engine, url.c_str(), names.c_str());
++  if (g_blocking->log_blocked) {
++    fprintf(stderr, "{\"bato\":\"cosmetic\",\"event\":\"generic\",\"bytes\":%zu,\"rules\":%s}\n",
++            names.size(), script ? "true" : "false");
++  }
++  if (script) {
++    main_frame->ExecuteJavaScript(script, url, 0);
++    g_blocking->cosmetic_free(script);
++  }
++}
++
++void AppendNames(CefRefPtr<CefListValue> list, const char* tag, std::string* names) {
++  for (size_t i = 0; list && i < list->GetSize(); ++i) {
++    const std::string name = list->GetType(i) == VTYPE_STRING ? list->GetString(i).ToString() : "";
++    if (!name.empty() && name.find_first_of("\n\r") == std::string::npos) {
++      *names += std::string(tag) + name + "\n";
++    }
++  }
++}
++
++void HandleCosmeticReport(int browser_id, std::string query) {
++  CEF_REQUIRE_UI_THREAD();
++  CefRefPtr<CefBrowser> browser = CefBrowserHost::GetBrowserByIdentifier(browser_id);
++  if (!browser || query.size() > 200000) {
++    return;
++  }
++  std::string names;
++  size_t start = 0;
++  while (start <= query.size()) {
++    size_t end = query.find('&', start);
++    if (end == std::string::npos) end = query.size();
++    const std::string part = query.substr(start, end - start);
++    const char* tag = part.rfind("c=", 0) == 0 ? "c:" : part.rfind("i=", 0) == 0 ? "i:" : nullptr;
++    if (tag) {
++      size_t item = 2;
++      while (item <= part.size()) {
++        size_t stop = part.find(',', item);
++        if (stop == std::string::npos) stop = part.size();
++        // CefURIDecode aborts the process on an empty string; an empty list is a normal report.
++        const std::string name =
++            stop > item ? CefURIDecode(part.substr(item, stop - item), false, UU_NORMAL).ToString() : "";
++        if (!name.empty() && name.find_first_of("\n\r") == std::string::npos) {
++          names += std::string(tag) + name + "\n";
++        }
++        item = stop + 1;
++      }
++    }
++    start = end + 1;
++  }
++  ApplyGenericCosmetics(browser, names);
++}
++
++}  // namespace
++
++bool SimpleHandler::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
++                                     cef_log_severity_t level,
++                                     const CefString& message,
++                                     const CefString& source,
++                                     int line) {
++  CEF_REQUIRE_UI_THREAD();
++  static const char kPrefix[] = "bato-cosmetic:";
++  const std::string text = message.ToString();
++  if (text.rfind(kPrefix, 0) != 0) {
++    return false;
++  }
++  CefRefPtr<CefValue> root = CefParseJSON(text.substr(sizeof(kPrefix) - 1), JSON_PARSER_RFC);
++  if (browser && root && root->GetType() == VTYPE_DICTIONARY) {
++    std::string names;
++    CefRefPtr<CefDictionaryValue> dict = root->GetDictionary();
++    AppendNames(dict->GetList("c"), "c:", &names);
++    AppendNames(dict->GetList("i"), "i:", &names);
++    ApplyGenericCosmetics(browser, names);
++  }
++  return true;
  }
 
  void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
@@ -3659,7 +3934,7 @@
 
    // CefCommandHandler methods (opt-in diagnostic only).
    bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
-@@ -33,13 +35,35 @@
+@@ -33,15 +35,46 @@
                         cef_window_open_disposition_t disposition) override;
 
    // CefDisplayHandler methods:
@@ -3669,6 +3944,12 @@
    void OnTitleChange(CefRefPtr<CefBrowser> browser,
                       const CefString& title) override;
 +
++  bool OnConsoleMessage(CefRefPtr<CefBrowser> browser,
++                        cef_log_severity_t level,
++                        const CefString& message,
++                        const CefString& source,
++                        int line) override;
++
 +  void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,
 +                          const std::vector<CefString>& icon_urls) override;
 
@@ -3676,7 +3957,7 @@
    void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
    bool DoClose(CefRefPtr<CefBrowser> browser) override;
    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
-+
+
 +  // CefRequestHandler methods:
 +  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 +                      CefRefPtr<CefFrame> frame,
@@ -3692,12 +3973,17 @@
 +      bool is_download,
 +      const CefString& request_initiator,
 +      bool& disable_default_handling) override;
-
++
    // CefLoadHandler methods:
++  void OnLoadStart(CefRefPtr<CefBrowser> browser,
++                   CefRefPtr<CefFrame> frame,
++                   TransitionType transition_type) override;
    void OnLoadError(CefRefPtr<CefBrowser> browser,
+                    CefRefPtr<CefFrame> frame,
+                    ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1243 @@
+@@ -0,0 +1,1290 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -3762,6 +4048,17 @@
 +    public init() {}
 +
 +    public var last: ClosedTab? { tabs.last }
++
++    /// The `offset`-th most recently closed tab, 0 being the newest.
++    public func closed(at offset: Int) -> ClosedTab? {
++        offset >= 0 && offset < tabs.count ? tabs[tabs.count - 1 - offset] : nil
++    }
++
++    @discardableResult
++    public mutating func remove(at offset: Int) -> ClosedTab? {
++        guard offset >= 0, offset < tabs.count else { return nil }
++        return tabs.remove(at: tabs.count - 1 - offset)
++    }
 +    public var isEmpty: Bool { tabs.isEmpty }
 +
 +    public mutating func push(_ tab: ClosedTab) {
@@ -3970,6 +4267,7 @@
 +    case duplicateIdentity
 +    case missingProfile
 +    case duplicateProfileName
++    case launchProfileProtected
 +    case missingWorkspace
 +    case invalidEntryOwnership
 +    case invalidSavedURL
@@ -3988,6 +4286,7 @@
 +        case .duplicateIdentity: "The organization contains duplicate identifiers."
 +        case .missingProfile: "The workspace's Profile could not be found."
 +        case .duplicateProfileName: "Another Profile already has that name."
++        case .launchProfileProtected: "The Profile Bato started with cannot be deleted."
 +        case .missingWorkspace: "The selected workspace could not be found."
 +        case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
 +        case .invalidSavedURL: "The saved page destination is invalid."
@@ -4242,6 +4541,40 @@
 +            guard draft.isProfileNameAvailable(name, excluding: id) else { throw BrowserStateError.duplicateProfileName }
 +            draft.profiles[index].name = name
 +            draft.profiles[index].color = color.uppercased()
++        }
++    }
++
++    /// What deleting a Profile removes from the organization; engine data (history, logins) is separate.
++    public struct ProfileLoss: Equatable, Sendable {
++        public let workspaces: Int
++        public let pages: Int
++        public let favorites: Int
++        public let archived: Int
++    }
++
++    public func lossOfDeleting(profile id: UUID) -> ProfileLoss? {
++        guard let profile = profiles.first(where: { $0.id == id }) else { return nil }
++        let owned = workspaces.filter { $0.profileID == id }
++        return ProfileLoss(workspaces: owned.count, pages: owned.reduce(0) { $0 + $1.pins.count + $1.tabs.count },
++                           favorites: profile.favorites.count, archived: archive.records(inProfile: id).count)
++    }
++
++    /// The launch Profile owns the engine's default storage and can never be deleted. Selection moves to the
++    /// launch Profile's first workspace when the current one goes away.
++    public mutating func deleteProfile(_ id: UUID) throws {
++        try transact { draft in
++            guard id != draft.launchProfileID else { throw BrowserStateError.launchProfileProtected }
++            guard draft.profiles.contains(where: { $0.id == id }) else { throw BrowserStateError.missingProfile }
++            let doomed = Set(draft.workspaces.filter { $0.profileID == id }.map(\.id))
++            draft.profiles.removeAll { $0.id == id }
++            draft.workspaces.removeAll { $0.profileID == id }
++            draft.archive.records.removeAll { $0.profileID == id }
++            if doomed.contains(draft.activeWorkspaceID) {
++                guard let next = draft.workspaces.first(where: { $0.profileID == draft.launchProfileID }) ?? draft.workspaces.first else {
++                    throw BrowserStateError.missingWorkspace
++                }
++                draft.activeWorkspaceID = next.id
++            }
 +        }
 +    }
 +
@@ -5236,7 +5569,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,923 @@
+@@ -0,0 +1,970 @@
 +import Foundation
 +import BatoCore
 +
@@ -5311,9 +5644,13 @@
 +    var supportsNavigation: Bool { get }
 +    /// Acts only on a page that is currently visible and focused; the engine refuses anything else.
 +    func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool
++    /// Closes the Profile's windows and pages without prompting and destroys its stored data.
++    /// False when the engine cannot or will not (the launch Profile, an unknown Profile).
++    func destroyProfile(_ id: UUID) -> Bool
 +}
 +
 +public extension PageEngine {
++    func destroyProfile(_ id: UUID) -> Bool { false }
 +    func supportsProfile(_ id: UUID) -> Bool { supportedProfileIDs.contains(id) }
 +    func activateProfile(_ id: UUID) {}
 +    var supportsSplits: Bool { false }
@@ -5353,6 +5690,8 @@
 +    }
 +    public private(set) var peekSession = PeekSession()
 +    public var onStateChange: ((BrowserState) -> Void)?
++    /// Saves like `commit` and keeps the previous document as a recoverable snapshot; used for Profile delete.
++    public var snapshotCommit: ((BrowserState) throws -> Void)?
 +    public var supportsSplits: Bool { engine.supportsSplits }
 +    public var canOpenPeek: Bool {
 +        engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
@@ -5492,6 +5831,47 @@
 +            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
 +            try candidate.activateWorkspace(created.workspaceID)
 +        }
++    }
++
++    /// Deletes a Profile: the organization change is saved first (keeping the previous document as a
++    /// snapshot when `snapshotCommit` is set), then the engine destroys the Profile's data. If the engine
++    /// refuses, the previous organization is saved again so nothing is lost without its data going.
++    @discardableResult
++    public func deleteProfile(_ id: UUID) -> Bool {
++        guard id != state.launchProfileID, state.profiles.contains(where: { $0.id == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        var candidate = state
++        do { try candidate.deleteProfile(id); try candidate.validate() } catch {
++            lastError = .invalidCommand
++            return false
++        }
++        let previous = state
++        let wasCurrent = state.currentWorkspace.profileID == id
++        do {
++            try (snapshotCommit ?? commit)(candidate)
++        } catch {
++            lastError = .saveFailed
++            return false
++        }
++        state = candidate
++        tearDownPeek()
++        guard engine.destroyProfile(id) else {
++            if (try? commit(previous)) != nil { state = previous }
++            lastError = .invalidCommand
++            onStateChange?(state)
++            return false
++        }
++        for (entry, page) in livePages where page.profileID == id { livePages.removeValue(forKey: entry) }
++        pendingClose = pendingClose.filter { $0.profileID != id }
++        pagesWithUncommittedNavigation = pagesWithUncommittedNavigation.filter { $0.key.profileID != id }
++        closedTabs.removeValue(forKey: id)
++        pendingArchive = pendingArchive.filter { entry, _ in state.visibleEntries.contains { $0.id == entry } }
++        lastError = nil
++        onStateChange?(state)
++        if wasCurrent { _ = showSelection() }
++        return true
 +    }
 +
 +    /// Metadata only: the visible page and the Profile's engine context are untouched.
@@ -5680,14 +6060,14 @@
 +    /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's
 +    /// workspaces only. Saved entries never enter this history; they stay in the sidebar.
 +    @discardableResult
-+    public func reopenClosedTab() -> Bool {
++    public func reopenClosedTab(at offset: Int = 0) -> Bool {
 +        let profileID = state.currentWorkspace.profileID
-+        guard let closed = closedTabs[profileID]?.last else {
++        guard let closed = closedTabs[profileID]?.closed(at: offset) else {
 +            lastError = .invalidCommand
 +            return false
 +        }
 +        guard change({ _ = try $0.reopenTab(closed) }) else { return false }
-+        closedTabs[profileID]?.pop()
++        closedTabs[profileID]?.remove(at: offset)
 +        return true
 +    }
 +
@@ -6282,7 +6662,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2289 @@
+@@ -0,0 +1,2325 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -6333,6 +6713,7 @@
 +    private let recovery: RecoveryController
 +    private var arcImport: ArcImportController?
 +    private var settingsWindow: SettingsWindowController?
++    private let switcherPopover = SwitcherPopover()
 +    private lazy var archiveController = ArchiveController(
 +        runtime: runtime, window: { [weak self] in self?.root.window },
 +        canPresent: { [weak self] in self?.canOpenBrowserPage ?? false },
@@ -6372,6 +6753,7 @@
 +        organizationStore = store
 +        self.recovery = recovery
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
++        runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
 +        let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
 +        sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
 +        root = sidebar
@@ -6454,7 +6836,7 @@
 +    public func newTab() { showCommandBar() }
 +
 +    /// Browser chords that would otherwise act on Chromium's tab strip or history: they follow the sidebar.
-+    public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
++    public func reopenClosedTab(at offset: Int = 0) { performWhenIdle({ runtime.reopenClosedTab(at: offset) }) }
 +    public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
 +    public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
 +    public func duplicateSelection() { performWhenIdle({ runtime.duplicateSelectedEntry() }) }
@@ -6520,6 +6902,7 @@
 +            state: { [weak self] in self?.runtime.state ?? .initial() },
 +            blockingService: { BlockingHost.shared.service(forProfile: $0) },
 +            createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
++            deleteProfile: { [weak self] id in self?.fromBrowserWindow { $0.confirmDeleteProfile(id) } },
 +            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
 +            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
 +            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
@@ -7725,67 +8108,101 @@
 +        requestNativeFocus?()
 +        let state = runtime.state
 +        let currentProfileID = state.currentWorkspace.profileID
-+        let menu = NSMenu()
-+        menu.autoenablesItems = false
++        var entries: [SwitcherEntry] = []
 +        var number = 1
 +        for group in state.profileGroups {
 +            if state.hasMultipleProfiles {
 +                let own = group.profile.id == currentProfileID
-+                menu.addItem(profileHeader(own ? group.profile.name : "\(group.profile.name) · opens in its own window",
-+                                           color: state.displayColor(of: group.profile)))
++                entries.append(.header(title: own ? group.profile.name : "\(group.profile.name) · opens in its own window",
++                                       dot: workspaceColor(state.displayColor(of: group.profile))))
 +            }
 +            for workspace in group.workspaces {
-+                let item = ActionMenuItem(title: workspace.name) { [weak self] in self?.switchWorkspace(workspace.id) }
-+                item.image = colorDot(workspaceColor(workspace.color))
-+                item.state = workspace.id == state.activeWorkspaceID ? .on : .off
-+                item.toolTip = "\(workspace.name) · Profile \(group.profile.name)"
-+                if number <= 9 {
-+                    item.keyEquivalent = "\(number)"
-+                    item.keyEquivalentModifierMask = .control
-+                }
-+                menu.addItem(item)
++                entries.append(.item(title: workspace.name, dot: workspaceColor(workspace.color), symbol: nil,
++                                     checked: workspace.id == state.activeWorkspaceID,
++                                     shortcut: number <= 9 ? "⌃\(number)" : nil, enabled: true,
++                                     identifier: "bato-switcher-workspace-\(number)") { [weak self] in self?.switchWorkspace(workspace.id) })
 +                number += 1
 +            }
 +        }
-+        menu.addItem(.separator())
-+        menu.addItem(ActionMenuItem(title: "New Workspace") { [weak self] in
++        entries.append(.separator)
++        entries.append(switcherAction("New Workspace", symbol: "plus", id: "new-workspace") { [weak self] in
 +            guard let self else { return }
 +            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
 +        })
-+        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
-+        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
-+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: switcherButton.bounds.maxY + 4), in: switcherButton)
++        entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
++            self?.editProfile(creating: true)
++        })
++        entries.append(switcherAction("Rename Profile…", symbol: "pencil", id: "rename-profile") { [weak self] in
++            self?.editProfile(creating: false)
++        })
++        entries.append(.separator)
++        entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
++            self?.showSettings(.profiles)
++        })
++        switcherPopover.show(entries, relativeTo: switcherButton)
 +    }
 +
 +    @objc private func showProfileMenu() {
 +        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
 +        let state = runtime.state
-+        let menu = NSMenu()
-+        menu.autoenablesItems = false
-+        for group in state.profileGroups {
-+            let item = ActionMenuItem(title: group.profile.name) { [weak self] in
++        var entries: [SwitcherEntry] = state.profileGroups.enumerated().map { index, group in
++            .item(title: group.profile.name, dot: workspaceColor(state.displayColor(of: group.profile)), symbol: nil,
++                  checked: group.profile.id == state.currentWorkspace.profileID, shortcut: nil,
++                  enabled: !group.workspaces.isEmpty, identifier: "bato-profile-item-\(index)") { [weak self] in
 +                // A Profile opens on its first workspace; other workspaces are in the switcher.
 +                if let first = group.workspaces.first { self?.switchWorkspace(first.id) }
 +            }
-+            item.image = colorDot(workspaceColor(state.displayColor(of: group.profile)))
-+            item.state = group.profile.id == state.currentWorkspace.profileID ? .on : .off
-+            item.isEnabled = !group.workspaces.isEmpty
-+            menu.addItem(item)
 +        }
-+        menu.addItem(.separator())
-+        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
-+        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
-+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: profileButton.bounds.minY - 4), in: profileButton)
++        entries.append(.separator)
++        entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
++            self?.editProfile(creating: true)
++        })
++        entries.append(switcherAction("Rename Profile…", symbol: "pencil", id: "rename-profile") { [weak self] in
++            self?.editProfile(creating: false)
++        })
++        entries.append(.separator)
++        entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
++            self?.showSettings(.profiles)
++        })
++        switcherPopover.show(entries, relativeTo: profileButton, edge: .minY)
 +    }
 +
-+    private func profileHeader(_ title: String, color: String) -> NSMenuItem {
-+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-+        item.isEnabled = false
-+        item.image = colorDot(workspaceColor(color))
-+        item.attributedTitle = NSAttributedString(string: title, attributes: [
-+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
-+        return item
++    private func switcherAction(_ title: String, symbol: String, id: String, action: @escaping () -> Void) -> SwitcherEntry {
++        .item(title: title, dot: nil, symbol: symbol, checked: false, shortcut: nil, enabled: true,
++              identifier: "bato-switcher-\(id)", action: action)
++    }
++
++    /// Asks before deleting a Profile, saying what goes with it. The launch Profile is never offered.
++    private func confirmDeleteProfile(_ id: UUID) {
++        guard hasStarted, id != runtime.state.launchProfileID, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil,
++              let profile = runtime.state.profiles.first(where: { $0.id == id }),
++              let loss = runtime.state.lossOfDeleting(profile: id) else { return }
++        requestNativeFocus?()
++        func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
++        let body = "This permanently deletes the Profile’s history, downloads list, logins, cookies and site data, "
++            + "and removes its \(count(loss.workspaces, "workspace")), \(count(loss.pages, "page")), "
++            + "\(count(loss.favorites, "favorite")) and \(count(loss.archived, "archived tab")). Its open windows close without asking. "
++            + "The sidebar organization is backed up first; browsing data cannot be recovered."
++        RecoverySheet.present(on: window, symbol: "trash", title: "Delete the Profile “\(profile.name)”?", body: body,
++                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Delete Profile", isDefault: false)],
++                              cancelIndex: 0) { [weak self] index in
++            guard index == 1 else { return }
++            DispatchQueue.main.async { [weak self] in self?.deleteProfile(id) }
++        }
++    }
++
++    private func deleteProfile(_ id: UUID) {
++        guard runtime.deleteProfile(id) else {
++            guard let window = root.window, window.attachedSheet == nil else { return }
++            RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The Profile couldn’t be deleted",
++                                  body: "Nothing was removed. Close any dialog in that Profile’s window and try again.",
++                                  buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
++            return
++        }
++        BlockingHost.shared.profiles?.removeProfile(id.uuidString)
++        render()
 +    }
 +
 +    private func editProfile(creating: Bool) {
@@ -7851,9 +8268,9 @@
 +class AdaptiveSidebarView: NSView {
 +    override init(frame frameRect: NSRect) {
 +        super.init(frame: frameRect)
-+        NSWorkspace.shared.notificationCenter.addObserver(self,
-+            selector: #selector(displayOptionsChanged),
-+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
++        AppearanceWatcher.start()
++        NotificationCenter.default.addObserver(self, selector: #selector(displayOptionsChanged),
++                                               name: AppearanceWatcher.didChange, object: nil)
 +        // Selector observers are zeroing references on supported macOS versions.
 +    }
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
@@ -7919,7 +8336,7 @@
 +    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
 +    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
++        let contrast = AppearanceWatcher.increaseContrast
 +        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: tile ? 1.5 : 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
 +        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
 +            fill.setFill()
@@ -7929,7 +8346,7 @@
 +        if tile {
 +            NSGraphicsContext.saveGraphicsState()
 +            let shadow = NSShadow()
-+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
++            shadow.shadowColor = SidebarStyle.tileShadow
 +            shadow.shadowOffset = NSSize(width: 0, height: -1)
 +            shadow.shadowBlurRadius = 3
 +            shadow.set()
@@ -7938,7 +8355,7 @@
 +        }
 +        path.fill()
 +        if tile {
-+            NSColor.white.withAlphaComponent(0.07).setStroke()
++            SidebarStyle.tileHairline.setStroke()
 +            path.lineWidth = 0.5
 +            path.stroke()
 +        }
@@ -7987,8 +8404,7 @@
 +    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
 +    override var isOpaque: Bool { true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let (top, bottom) = SidebarStyle.tint(accent, dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
-+                                              highContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
++        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: AppearanceWatcher.increaseContrast)
 +        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
 +    }
 +    var keyEquivalentsEnabled = true
@@ -8749,7 +9165,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,343 @@
 +import AppKit
 +import BatoCore
 +
@@ -9026,9 +9442,17 @@
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
 +    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
 +    override func viewDidChangeEffectiveAppearance() { refreshColors() }
++    override func viewDidMoveToWindow() {
++        super.viewDidMoveToWindow()
++        NotificationCenter.default.removeObserver(self)
++        if window != nil {
++            NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged), name: AppearanceWatcher.didChange, object: nil)
++        }
++    }
++    @objc private func contrastChanged() { refreshColors() }
 +    private func refreshColors() {
 +        effectiveAppearance.performAsCurrentDrawingAppearance {
-+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.88).cgColor
++            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 1 : 0.88).cgColor
 +            attributedTitle = NSAttributedString(string: title, attributes: [
 +                .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
 +        }
@@ -9070,7 +9494,16 @@
 +    override func updateLayer() {
 +        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 +        layer?.borderColor = NSColor.separatorColor.cgColor
++        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 0.5
 +    }
++    override func viewDidMoveToWindow() {
++        super.viewDidMoveToWindow()
++        NotificationCenter.default.removeObserver(self)
++        if window != nil {
++            NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
++        }
++    }
++    @objc private func refresh() { needsDisplay = true }
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
@@ -10367,7 +10800,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingProfiles.swift
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,119 @@
 +import Foundation
 +
 +/// Blocking for every Profile of one browser process.
@@ -10445,6 +10878,13 @@
 +            services[key] = service
 +            return service
 +        }
++    }
++
++    /// Forgets a deleted Profile's blocking settings and removes their directory.
++    public func removeProfile(_ key: String) {
++        guard Self.isValidKey(key) else { return }
++        lock.withLock { _ = services.removeValue(forKey: key) }
++        try? FileManager.default.removeItem(at: rootDirectory.appendingPathComponent(key))
 +    }
 +
 +    /// Re-reads every Profile's settings file after a backup restore replaced them.
@@ -11243,7 +11683,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,670 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -11254,6 +11694,7 @@
 +    let state: () -> BrowserState
 +    let blockingService: (String) -> BlockingService?
 +    let createProfile: () -> Void
++    let deleteProfile: (UUID) -> Void
 +    let renameCurrentProfile: () -> Void
 +    let importFromArc: () -> Void
 +    let openEssential: (BrowserEssential) -> Void
@@ -11284,6 +11725,11 @@
 +    private let contentHost = NSView()
 +    private var sidebarButtons: [SettingsPane: SettingsSidebarButton] = [:]
 +    private(set) var pane: SettingsPane = .profiles
++    private var history: [SettingsPane] = [.profiles]
++    private var historyIndex = 0
++    private let backButton = NSButton()
++    private let forwardButton = NSButton()
++    private let titleLabel = NSTextField(labelWithString: "")
 +
 +    init(hooks: SettingsHooks) {
 +        self.hooks = hooks
@@ -11300,15 +11746,36 @@
 +    }
 +
 +    func show(_ pane: SettingsPane? = nil) {
-+        if let pane { self.pane = pane }
++        if let pane { navigate(to: pane) }
 +        reload()
 +        if !window.isVisible { window.center() }
 +        window.makeKeyAndOrderFront(nil)
 +    }
 +
++    private func navigate(to target: SettingsPane) {
++        guard target != pane else { return }
++        history = Array(history.prefix(historyIndex + 1)) + [target]
++        historyIndex = history.count - 1
++        pane = target
++    }
++
++    @objc private func goBack() { step(-1) }
++    @objc private func goForward() { step(1) }
++
++    private func step(_ delta: Int) {
++        let next = historyIndex + delta
++        guard history.indices.contains(next) else { return }
++        historyIndex = next
++        pane = history[next]
++        reload()
++    }
++
 +    /// Rebuilds the visible pane from current organization, e.g. after a Profile was created.
 +    func reload() {
 +        for (candidate, button) in sidebarButtons { button.isSelected = candidate == pane }
++        titleLabel.stringValue = pane.title
++        backButton.isEnabled = historyIndex > 0
++        forwardButton.isEnabled = historyIndex < history.count - 1
 +        contentHost.subviews.forEach { $0.removeFromSuperview() }
 +        let scroll = NSScrollView()
 +        scroll.drawsBackground = false
@@ -11319,7 +11786,7 @@
 +        scroll.translatesAutoresizingMaskIntoConstraints = false
 +        let document = FlippedView()
 +        document.translatesAutoresizingMaskIntoConstraints = false
-+        let column = NSStackView(views: [heading(pane.title)] + content(for: pane))
++        let column = NSStackView(views: content(for: pane))
 +        column.orientation = .vertical
 +        column.alignment = .leading
 +        column.spacing = 20
@@ -11333,7 +11800,7 @@
 +            scroll.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
 +            scroll.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
 +            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-+            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 60),
++            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 76),
 +            column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 40),
 +            column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -40),
 +            column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
@@ -11355,7 +11822,7 @@
 +        sidebarStack.translatesAutoresizingMaskIntoConstraints = false
 +        for candidate in SettingsPane.allCases {
 +            let button = SettingsSidebarButton(title: candidate.title, symbol: candidate.symbolName) { [weak self] in
-+                self?.pane = candidate
++                self?.navigate(to: candidate)
 +                self?.reload()
 +            }
 +            sidebarButtons[candidate] = button
@@ -11364,9 +11831,11 @@
 +        }
 +        rail.addSubview(sidebarStack)
 +        contentHost.translatesAutoresizingMaskIntoConstraints = false
++        let bar = titleBar()
 +        let root = NSView()
 +        root.addSubview(rail)
 +        root.addSubview(contentHost)
++        root.addSubview(bar)
 +        window.contentView = root
 +        NSLayoutConstraint.activate([
 +            rail.topAnchor.constraint(equalTo: root.topAnchor),
@@ -11380,7 +11849,35 @@
 +            contentHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 +            contentHost.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
 +            contentHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
++            bar.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
++            bar.leadingAnchor.constraint(equalTo: rail.trailingAnchor, constant: 20),
 +        ])
++    }
++
++    /// Back/forward through visited panes plus the pane title, in the title bar row as in Dia.
++    private func titleBar() -> NSView {
++        func configure(_ button: NSButton, symbol: String, label: String, id: String, action: Selector) {
++            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
++            button.isBordered = false
++            button.imagePosition = .imageOnly
++            button.target = self
++            button.action = action
++            button.setAccessibilityLabel(label)
++            button.setAccessibilityIdentifier(id)
++            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
++            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
++        }
++        configure(backButton, symbol: "chevron.left", label: "Back", id: "bato-settings-back", action: #selector(goBack))
++        configure(forwardButton, symbol: "chevron.right", label: "Forward", id: "bato-settings-forward", action: #selector(goForward))
++        let pair = SettingsNavigationPill(views: [backButton, forwardButton])
++        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
++        titleLabel.setAccessibilityIdentifier("bato-settings-title")
++        let bar = NSStackView(views: [pair, titleLabel])
++        bar.orientation = .horizontal
++        bar.spacing = 12
++        bar.alignment = .centerY
++        bar.translatesAutoresizingMaskIntoConstraints = false
++        return bar
 +    }
 +
 +    private func content(for pane: SettingsPane) -> [NSView] {
@@ -11399,9 +11896,16 @@
 +    private func profilesPane() -> [NSView] {
 +        let note = caption("Each Profile keeps its own history, downloads, logins, cookies and extensions.")
 +        let rows = SettingsProfileRow.rows(from: hooks.state()).map { row -> NSView in
-+            let action: NSView? = row.isCurrent ? SettingsPillButton(title: "Rename…") { [weak self] in
-+                self?.hooks.renameCurrentProfile()
-+            } : nil
++            var actions: [NSView] = []
++            if row.isCurrent {
++                actions.append(SettingsPillButton(title: "Rename…") { [weak self] in self?.hooks.renameCurrentProfile() })
++            }
++            if row.id != hooks.state().launchProfileID {
++                let delete = SettingsPillButton(title: "Delete…") { [weak self] in self?.hooks.deleteProfile(row.id) }
++                delete.setAccessibilityIdentifier("bato-profile-delete")
++                actions.append(delete)
++            }
++            let action: NSView? = actions.isEmpty ? nil : actions.count == 1 ? actions[0] : NSStackView(views: actions)
 +            return SettingsRow(leading: ColorDot(hex: row.colorHex), title: row.name, detail: row.detail, trailing: action)
 +        }
 +        let create = SettingsPillButton(title: "Create Profile…") { [weak self] in self?.hooks.createProfile() }
@@ -11413,7 +11917,7 @@
 +        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
 +              let service = hooks.blockingService(profile.id.uuidString) else {
 +            return [caption("Content blocking starts with the browser engine and isn’t available yet."),
-+                    caption("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
++                    sectionHeading("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
 +        }
 +        let toggle = NSSwitch()
 +        toggle.state = service.settings.enabled ? .on : .off
@@ -11428,10 +11932,10 @@
 +        let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
 +                                   title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
 +                                   trailing: toggle, keeping: handler)
-+        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
++        var views: [NSView] = [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
 +        views += sitePermissions(forProfile: profile.name)
 +        let exceptions = service.exceptions
-+        views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
++        views.append(exceptions.isEmpty ? caption("No sites are excluded from blocking.") : sectionHeading("Sites excluded from blocking"))
 +        if !exceptions.isEmpty {
 +            views.append(SettingsGroup(rows: exceptions.map { host in
 +                SettingsRow(leading: nil, title: host, detail: nil, trailing: SettingsPillButton(title: "Remove") { [weak self] in
@@ -11482,16 +11986,16 @@
 +                            self?.reload()
 +                        })
 +        }
-+        if rows.count > 1 { views += [caption("Workspaces"), SettingsGroup(rows: rows)] }
++        if rows.count > 1 { views += [sectionHeading("Workspaces"), SettingsGroup(rows: rows)] }
 +        let count = state.archive.records(inProfile: profileID).count
 +        let open = SettingsRow(leading: nil, title: "Archived tabs",
 +                               detail: count == 0 ? "Nothing is archived yet." : "\(count) archived in this Profile.",
 +                               trailing: SettingsPillButton(title: "Open Archive…") { [weak self] in self?.hooks.openArchive() })
-+        return views + [caption("Restore"), SettingsGroup(rows: [open])]
++        return views + [sectionHeading("Restore"), SettingsGroup(rows: [open])]
 +    }
 +
 +    private func sitePermissions(forProfile name: String) -> [NSView] {
-+        [caption("Site permissions"),
++        [sectionHeading("Site permissions"),
 +         sitePermissionsGroup(detail: "Camera, location, notifications and more, per site, for the \(name) Profile.")]
 +    }
 +
@@ -11559,15 +12063,18 @@
 +                                              self?.reload()
 +                                          }))
 +        }
-+        return [caption("General"), SettingsGroup(rows: [defaultBrowserRow()]),
-+                caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
++        return [sectionHeading("General"), SettingsGroup(rows: [defaultBrowserRow()]),
++                sectionHeading("Browser pages"), SettingsGroup(rows: rows), sectionHeading("Backup"), SettingsGroup(rows: backupRows)]
 +    }
 +
 +    // MARK: Pieces
 +
-+    private func heading(_ text: String) -> NSTextField {
++    /// Bold title above a card, as in Dia; explanatory sentences stay captions.
++    private func sectionHeading(_ text: String) -> NSTextField {
 +        let label = NSTextField(labelWithString: text)
-+        label.font = .systemFont(ofSize: 26, weight: .semibold)
++        label.font = .systemFont(ofSize: 17, weight: .semibold)
++        label.setAccessibilityRole(.staticText)
++        label.setAccessibilityIdentifier("bato-settings-section-" + text.lowercased().replacingOccurrences(of: " ", with: "-"))
 +        return label
 +    }
 +
@@ -11646,9 +12153,9 @@
 +
 +    private func updateAppearance() {
 +        effectiveAppearance.performAsCurrentDrawingAppearance {
-+            layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.cgColor : nil
++            layer?.backgroundColor = isSelected ? NSColor.selectedContentBackgroundColor.cgColor : nil
 +        }
-+        let color: NSColor = isSelected ? .white : .labelColor
++        let color: NSColor = isSelected ? .alternateSelectedControlTextColor : .labelColor
 +        label.textColor = color
 +        icon.contentTintColor = color
 +        setAccessibilityValue(isSelected ? "selected" : nil)
@@ -11682,15 +12189,43 @@
 +            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
 +        ])
 +        updateColors()
++        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
 +    }
 +
 +    required init?(coder: NSCoder) { fatalError("Not used") }
 +
++    @objc private func refresh() { updateColors() }
 +    override func viewDidChangeEffectiveAppearance() { updateColors() }
 +
 +    private func updateColors() {
 +        effectiveAppearance.performAsCurrentDrawingAppearance {
-+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
++            layer?.backgroundColor = SidebarStyle.cardFill.cgColor
++            layer?.borderColor = SidebarStyle.cardStroke?.cgColor
++            layer?.borderWidth = SidebarStyle.cardStroke == nil ? 0 : 1
++        }
++    }
++}
++
++/// The back/forward pair: a rounded capsule that stays legible in both appearances.
++private final class SettingsNavigationPill: NSStackView {
++    override init(frame frameRect: NSRect) { super.init(frame: frameRect) }
++    convenience init(views: [NSView]) {
++        self.init(frame: .zero)
++        views.forEach(addArrangedSubview)
++        spacing = 0
++        wantsLayer = true
++        layer?.cornerRadius = 15
++        updateColors()
++        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
++    }
++    required init?(coder: NSCoder) { fatalError("Not used") }
++    @objc private func refresh() { updateColors() }
++    override func viewDidChangeEffectiveAppearance() { updateColors() }
++    private func updateColors() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = SidebarStyle.cardFill.cgColor
++            layer?.borderColor = NSColor.separatorColor.cgColor
++            layer?.borderWidth = 1
 +        }
 +    }
 +}
@@ -11821,7 +12356,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,112 @@
 +import AppKit
 +import BatoCore
 +
@@ -11856,28 +12391,52 @@
 +        return NSColor(hue: hue, saturation: boosted, brightness: max(brightness, 0.8), alpha: alpha)
 +    }
 +
-+    /// Top and bottom of the sidebar gradient. The workspace colour dominates, as in Dia; the system
-+    /// background only keeps the result from going neon. Increase Contrast keeps a lighter wash so text
-+    /// stays legible, but still clearly coloured.
-+    static func tint(_ accent: NSColor, dark: Bool, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
-+        let base = NSColor.windowBackgroundColor
-+        let hue = vivid(accent)
-+        if highContrast {
-+            return (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
-+                    base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
-+        }
-+        let body = dark ? (hue.blended(withFraction: 0.35, of: .black) ?? hue) : hue
-+        let top = base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base
-+        let bottom = base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base
-+        return (top, bottom)
++    /// Dark-mode body colour: bright picks (yellow, white) would otherwise turn the sidebar light grey
++    /// under white text, so brightness is capped before the blend.
++    private static func darkened(_ color: NSColor) -> NSColor {
++        guard let rgb = color.usingColorSpace(.sRGB) else { return color }
++        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
++        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
++        let capped = NSColor(hue: hue, saturation: saturation, brightness: min(brightness, 0.6), alpha: alpha)
++        return capped.blended(withFraction: 0.35, of: .black) ?? capped
 +    }
++
++    /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
++    /// Dia; the system background only keeps the result from going neon. Increase Contrast keeps a
++    /// lighter wash so text stays legible, but still clearly coloured. Resolved under `appearance`, so
++    /// the result is correct whichever appearance the caller happens to be drawing in.
++    static func tint(_ accent: NSColor, appearance: NSAppearance, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
++        var result: (top: NSColor, bottom: NSColor)?
++        appearance.performAsCurrentDrawingAppearance {
++            let dark = appearance.isDark
++            let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
++            let hue = vivid(accent)
++            if highContrast {
++                result = (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
++                          base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
++                return
++            }
++            let body = dark ? darkened(hue) : hue
++            result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
++                      base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
++        }
++        return result ?? (.windowBackgroundColor, .windowBackgroundColor)
++    }
++
++    /// Soft lift under favorite tiles: a heavy black shadow reads as dirt on a pale light-mode tint.
++    static let tileShadow = NSColor(name: nil) { $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.black.withAlphaComponent(0.14) }
++    /// Tile edge: white only shows on dark; light mode needs a dark hairline.
++    static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
++    /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.
++    static let cardFill = NSColor.labelColor.withAlphaComponent(0.06)
++    static var cardStroke: NSColor? { AppearanceWatcher.increaseContrast ? NSColor.separatorColor : nil }
 +
 +    /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
 +    /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.
 +    @MainActor
 +    static func letterIcon(for title: String, url: URL, size: CGFloat) -> NSImage {
 +        let spec = FaviconFallback.spec(title: title, url: url)
-+        let color = NSColor(hue: spec.hue, saturation: 0.5, brightness: 0.62, alpha: 1)
++        let color = NSColor(hue: spec.hue, saturation: 0.55, brightness: 0.52, alpha: 1)
 +        let letter = spec.letter
 +        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
 +            color.setFill()
@@ -11912,7 +12471,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/BackupStore.swift
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,275 @@
 +import Foundation
 +import Darwin
 +
@@ -11933,7 +12492,7 @@
 +}
 +
 +public struct BackupInfo: Equatable, Identifiable, Sendable {
-+    public enum Kind: Equatable, Sendable { case daily, lastSession, preImport, preMigration, preRestore }
++    public enum Kind: Equatable, Sendable { case daily, lastSession, preImport, preMigration, preRestore, preDelete }
 +    public let id: String
 +    public let kind: Kind
 +    public let createdAt: Date
@@ -11960,7 +12519,7 @@
 +    public static let lastSessionID = "last-session"
 +    /// Staging slot for the running session's start. Not a valid backup ID, so it is never listed or restorable.
 +    static let pendingSessionID = "pending-session"
-+    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore"]
++    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore", "pre-delete"]
 +
 +    private struct Manifest: Codable {
 +        var schema = 1
@@ -12024,7 +12583,8 @@
 +        }
 +        for name in Self.preChangeNames {
 +            guard let modified = modificationDate(snapshotURL(name)) else { continue }
-+            let kind: BackupInfo.Kind = name == "pre-import" ? .preImport : name == "pre-migration" ? .preMigration : .preRestore
++            let kind: BackupInfo.Kind = name == "pre-import" ? .preImport : name == "pre-migration" ? .preMigration
++                : name == "pre-delete" ? .preDelete : .preRestore
 +            found.append(BackupInfo(id: name, kind: kind, createdAt: modified))
 +        }
 +        return found.sorted { $0.createdAt > $1.createdAt }
@@ -12055,7 +12615,7 @@
 +        for stale in backups.filter({ $0.kind == .daily }).dropFirst(Self.dailyRetention) {
 +            try? FileManager.default.removeItem(at: root.appendingPathComponent(stale.id))
 +        }
-+        for stale in backups.filter({ [.preImport, .preMigration, .preRestore].contains($0.kind) }).dropFirst() {
++        for stale in backups.filter({ [.preImport, .preMigration, .preRestore, .preDelete].contains($0.kind) }).dropFirst() {
 +            try? FileManager.default.removeItem(at: snapshotURL(stale.id))
 +        }
 +    }
@@ -12345,7 +12905,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,319 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -12540,6 +13100,7 @@
 +        case .preImport: return "Before last import, \(when)"
 +        case .preMigration: return "Before last upgrade, \(when)"
 +        case .preRestore: return "Before last restore, \(when)"
++        case .preDelete: return "Before last Profile delete, \(when)"
 +        }
 +    }
 +
@@ -12559,7 +13120,7 @@
 +}
 +
 +/// A compact card sheet for recovery and restore: optional icon, title, body, optional accessory and
-+/// side-by-side buttons, about 320 pt wide.
++/// side-by-side buttons (primary on the right), about 320 pt wide.
 +@MainActor
 +final class RecoverySheet: NSObject {
 +    struct Button {
@@ -12612,11 +13173,15 @@
 +        views += [heading, message]
 +        if let accessory { views.append(accessory) }
 +
-+        let row = NSStackView(views: buttons.enumerated().map { index, spec in
-+            let button = NSButton(title: spec.title, target: self, action: #selector(buttonPressed(_:)))
++        // Secondary buttons first so the primary sits on the right, as in Dia; tags keep the caller's indices.
++        let ordered = buttons.enumerated().sorted { !$0.element.isDefault && $1.element.isDefault }
++        let row = NSStackView(views: ordered.map { index, spec in
++            let button = NSButton(title: spec.isDefault ? "\(spec.title)  ⏎" : spec.title, target: self,
++                                  action: #selector(buttonPressed(_:)))
 +            button.tag = index
 +            button.bezelStyle = .rounded
 +            button.controlSize = .large
++            button.setAccessibilityLabel(spec.title)
 +            button.setAccessibilityIdentifier("bato-recovery-button-\(index)")
 +            if spec.isDefault { button.keyEquivalent = "\r" }
 +            return button
@@ -13019,7 +13584,7 @@
 +        let ring = bounds.insetBy(dx: 3.5, dy: 3.5)
 +        let track = NSBezierPath(ovalIn: ring)
 +        track.lineWidth = 1.5
-+        NSColor.labelColor.withAlphaComponent(isActive ? 0.18 : 0.1).setStroke()
++        NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 0.4 : (isActive ? 0.18 : 0.1)).setStroke()
 +        track.stroke()
 +        if isActive {
 +            NSColor.controlAccentColor.setStroke()
@@ -13043,7 +13608,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,326 @@
 +import AppKit
 +import BatoCore
 +
@@ -13056,6 +13621,9 @@
 +    private let list = NSStackView()
 +    private let emptyLabel = NSTextField(labelWithString: "No downloads yet")
 +    private var profileKey = ""
++    private var listHeightLimit: NSLayoutConstraint?
++    /// Fixed rows of the popover around the list: header, spacing and insets.
++    private static let chromeHeight: CGFloat = 60
 +
 +    var isShown: Bool { popover.isShown }
 +
@@ -13070,9 +13638,34 @@
 +    func toggle(from button: NSView, profileKey: String) {
 +        if popover.isShown { popover.performClose(nil); return }
 +        self.profileKey = profileKey
++        let room = Self.room(around: button)
++        let list = SidebarStyle.downloadsPopoverMaxListHeight
++        listHeightLimit?.constant = max(80, min(list, room.height - Self.chromeHeight))
 +        reload()
 +        controller.markSeen(profileKey)
-+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
++        popover.show(relativeTo: button.bounds, of: button, preferredEdge: room.edge)
++        fitToList()
++    }
++
++    /// The side of the button with more screen space, and how much of it there is, so the popover
++    /// is never cut off by the screen edge or the bottom of the window.
++    private static func room(around button: NSView) -> (edge: NSRectEdge, height: CGFloat) {
++        guard let window = button.window else { return (.maxY, SidebarStyle.downloadsPopoverMaxListHeight) }
++        let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
++        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
++        let below = frame.minY - visible.minY
++        let above = visible.maxY - frame.maxY
++        let visuallyBelow: NSRectEdge = button.isFlipped ? .maxY : .minY
++        let visuallyAbove: NSRectEdge = button.isFlipped ? .minY : .maxY
++        return below >= above ? (visuallyBelow, below) : (visuallyAbove, above)
++    }
++
++    /// NSPopover keeps the largest size it has had; refit so the popover shrinks with its list.
++    private func fitToList() {
++        guard let view = popover.contentViewController?.view else { return }
++        view.layoutSubtreeIfNeeded()
++        let size = NSSize(width: SidebarStyle.downloadsPopoverWidth, height: view.fittingSize.height)
++        if popover.contentSize != size { popover.contentSize = size }
 +    }
 +
 +    func reload() {
@@ -13085,6 +13678,7 @@
 +            list.addArrangedSubview(row)
 +            row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
 +        }
++        if popover.isShown { fitToList() }
 +    }
 +
 +    func updateProfile(_ key: String) {
@@ -13145,9 +13739,11 @@
 +            content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 +            content.topAnchor.constraint(equalTo: view.topAnchor),
 +            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-+            view.widthAnchor.constraint(equalToConstant: SidebarStyle.downloadsPopoverWidth),
-+            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: SidebarStyle.downloadsPopoverMaxListHeight)
++            view.widthAnchor.constraint(equalToConstant: SidebarStyle.downloadsPopoverWidth)
 +        ])
++        let limit = scroll.heightAnchor.constraint(lessThanOrEqualToConstant: SidebarStyle.downloadsPopoverMaxListHeight)
++        limit.isActive = true
++        listHeightLimit = limit
 +        let listHeight = scroll.heightAnchor.constraint(equalTo: flipped.heightAnchor)
 +        listHeight.priority = .defaultHigh
 +        listHeight.isActive = true
@@ -13171,8 +13767,16 @@
 +    private var tracking: NSTrackingArea?
 +    private var hovered = false {
 +        didSet {
-+            layer?.backgroundColor = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false)?.cgColor
++            refreshFill()
 +            actions.isHidden = !hovered && !item.state.isActive
++        }
++    }
++
++    override func viewDidChangeEffectiveAppearance() { refreshFill() }
++
++    private func refreshFill() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false)?.cgColor
 +        }
 +    }
 +    private let actions = NSStackView()
@@ -14009,5 +14613,221 @@
 +        guard window.attachedSheet == nil else { return }
 +        RecoverySheet.present(on: window, symbol: failed ? "exclamationmark.triangle" : "checkmark.shield", title: title,
 +                              body: body, buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift
+@@ -0,0 +1,33 @@
++import AppKit
++
++extension NSAppearance {
++    var isDark: Bool { bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
++}
++
++/// One place that turns "the look of the app changed" into a notification: the system or app
++/// appearance, and the Increase Contrast and Reduce Transparency switches. Surfaces that cache a
++/// resolved colour or a layer colour listen here instead of being read once at launch.
++@MainActor
++final class AppearanceWatcher {
++    static let shared = AppearanceWatcher()
++    static let didChange = Notification.Name("BatoAppearanceDidChange")
++
++    private var appearanceObservation: NSKeyValueObservation?
++
++    private init() {
++        appearanceObservation = NSApplication.shared.observe(\.effectiveAppearance) { _, _ in
++            Task { @MainActor in AppearanceWatcher.post() }
++        }
++        NSWorkspace.shared.notificationCenter.addObserver(
++            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { _ in
++            MainActor.assumeIsolated { AppearanceWatcher.post() }
++        }
++    }
++
++    /// Call once at startup so the first change is not missed.
++    static func start() { _ = shared }
++
++    private static func post() { NotificationCenter.default.post(name: didChange, object: nil) }
++
++    nonisolated static var increaseContrast: Bool { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift
+@@ -0,0 +1,177 @@
++import AppKit
++
++/// One line of the workspace and Profile switcher.
++enum SwitcherEntry {
++    case header(title: String, dot: NSColor)
++    case item(title: String, dot: NSColor?, symbol: String?, checked: Bool, shortcut: String?, enabled: Bool,
++              identifier: String, action: () -> Void)
++    case separator
++}
++
++/// The workspace and Profile switcher as a popover: it follows the appearance and Reduce Transparency
++/// like any system popover, and every row is a pressable accessibility element. Replaces an NSMenu so
++/// colour dots, check marks and the settings gear can be laid out as in Dia.
++@MainActor
++final class SwitcherPopover: NSObject, NSPopoverDelegate {
++    static let width: CGFloat = 260
++    private let popover = NSPopover()
++
++    var isShown: Bool { popover.isShown }
++
++    func show(_ entries: [SwitcherEntry], relativeTo anchor: NSView, edge: NSRectEdge = .maxY) {
++        popover.close()
++        let stack = NSStackView()
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 1
++        stack.edgeInsets = NSEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        for entry in entries {
++            let view = makeView(for: entry)
++            stack.addArrangedSubview(view)
++            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -12).isActive = true
++        }
++        let content = NSView()
++        content.addSubview(stack)
++        NSLayoutConstraint.activate([
++            content.widthAnchor.constraint(equalToConstant: Self.width),
++            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
++            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
++            stack.topAnchor.constraint(equalTo: content.topAnchor),
++            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
++        ])
++        let host = NSViewController()
++        host.view = content
++        popover.contentViewController = host
++        popover.behavior = .transient
++        popover.delegate = self
++        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
++    }
++
++    func close() { popover.close() }
++
++    private func makeView(for entry: SwitcherEntry) -> NSView {
++        switch entry {
++        case .separator:
++            let line = NSBox()
++            line.boxType = .separator
++            return line
++        case .header(let title, let dot):
++            return SwitcherRow(title: title, dot: dot, symbol: nil, checked: false, shortcut: nil, enabled: false,
++                               isHeader: true, identifier: nil, action: nil)
++        case .item(let title, let dot, let symbol, let checked, let shortcut, let enabled, let identifier, let action):
++            return SwitcherRow(title: title, dot: dot, symbol: symbol, checked: checked, shortcut: shortcut,
++                               enabled: enabled, isHeader: false, identifier: identifier) { [weak self] in
++                self?.popover.close()
++                DispatchQueue.main.async(execute: action)
++            }
++        }
++    }
++}
++
++@MainActor
++private final class SwitcherRow: NSView {
++    private let action: (() -> Void)?
++    private let enabled: Bool
++    private var hovered = false { didSet { refreshFill() } }
++    private var tracking: NSTrackingArea?
++
++    init(title: String, dot: NSColor?, symbol: String?, checked: Bool, shortcut: String?, enabled: Bool,
++         isHeader: Bool, identifier: String?, action: (() -> Void)?) {
++        self.action = action
++        self.enabled = enabled
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.cornerRadius = 8
++        let leading = NSImageView()
++        leading.translatesAutoresizingMaskIntoConstraints = false
++        if let symbol {
++            leading.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
++            leading.symbolConfiguration = .init(pointSize: 13, weight: .regular)
++            leading.contentTintColor = .secondaryLabelColor
++        } else if let dot {
++            leading.image = SwitcherRow.dotImage(dot, large: !isHeader)
++        }
++        leading.widthAnchor.constraint(equalToConstant: 16).isActive = true
++        let label = NSTextField(labelWithString: title)
++        label.font = isHeader ? .systemFont(ofSize: 11, weight: .semibold) : .systemFont(ofSize: 14)
++        label.textColor = isHeader || !enabled ? .secondaryLabelColor : .labelColor
++        label.lineBreakMode = .byTruncatingTail
++        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil) ?? NSImage())
++        check.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
++        check.contentTintColor = .labelColor
++        check.isHidden = !checked
++        check.widthAnchor.constraint(equalToConstant: 14).isActive = true
++        var views: [NSView] = [leading, label]
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        views.append(spacer)
++        if let shortcut {
++            let keys = NSTextField(labelWithString: shortcut)
++            keys.font = .systemFont(ofSize: 13)
++            keys.textColor = .secondaryLabelColor
++            views.append(keys)
++        }
++        views.append(check)
++        let row = NSStackView(views: views)
++        row.spacing = 8
++        row.alignment = .centerY
++        row.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(row)
++        NSLayoutConstraint.activate([
++            heightAnchor.constraint(equalToConstant: isHeader ? 24 : 30),
++            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
++            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
++            row.centerYAnchor.constraint(equalTo: centerYAnchor),
++        ])
++        if action != nil {
++            setAccessibilityElement(true)
++            setAccessibilityRole(.button)
++            setAccessibilityLabel(title)
++            setAccessibilityValue(checked ? "current" : nil)
++            setAccessibilityEnabled(enabled)
++            if let identifier { setAccessibilityIdentifier(identifier) }
++        }
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    private static func dotImage(_ color: NSColor, large: Bool) -> NSImage {
++        let size: CGFloat = large ? 10 : 8
++        return NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
++            color.setFill()
++            NSBezierPath(ovalIn: NSRect(x: (rect.width - size) / 2, y: (rect.height - size) / 2, width: size, height: size)).fill()
++            return true
++        }
++    }
++
++    override func accessibilityPerformPress() -> Bool {
++        guard enabled, let action else { return false }
++        action()
++        return true
++    }
++
++    override func mouseDown(with event: NSEvent) { if enabled { action?() } }
++    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
++    override func viewDidChangeEffectiveAppearance() { refreshFill() }
++
++    override func updateTrackingAreas() {
++        super.updateTrackingAreas()
++        if let tracking { removeTrackingArea(tracking) }
++        guard action != nil else { return }
++        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
++                                  owner: self, userInfo: nil)
++        addTrackingArea(area)
++        tracking = area
++    }
++
++    override func mouseEntered(with event: NSEvent) { hovered = enabled }
++    override func mouseExited(with event: NSEvent) { hovered = false }
++
++    private func refreshFill() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = hovered ? SidebarStyle.rowFill(selected: false, hovered: true, tile: false)?.cgColor : nil
++        }
 +    }
 +}

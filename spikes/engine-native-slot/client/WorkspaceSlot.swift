@@ -15,6 +15,7 @@ private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32
+private typealias DeleteProfileData = @convention(c) (UnsafePointer<CChar>?) -> Int32
 private typealias DownloadSnapshot = @convention(c) () -> Int32
 private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
@@ -33,6 +34,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 @MainActor private var endPeekPages: EndPeek?
 @MainActor private var navigatePage: NavigatePage?
 @MainActor private var openProfileWindow: OpenProfileWindow?
+@MainActor private var deleteProfileData: DeleteProfileData?
 @MainActor private var downloadSnapshot: DownloadSnapshot?
 @MainActor private var downloadAct: DownloadAct?
 @MainActor private var nativeDownloads: NativeDownloadsEngine?
@@ -137,6 +139,18 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         }
         // Pages are live now, so the committed selection can be presented in the new window.
         if token != nil { onWindowReady?() }
+    }
+    /// Asks the engine to close this Profile's windows and destroy its storage. The window's later
+    /// detach finds no Profile and is ignored; the pages are gone from the engine's tables at once.
+    func destroyProfile(_ id: UUID) -> Bool {
+        guard id != launchProfileID, let destroy = deleteProfileData,
+              id.uuidString.withCString({ destroy($0) }) == 1 else { return false }
+        windows.removeValue(forKey: id)
+        pending.removeValue(forKey: id)
+        windowQueue.removeAll { $0 == id }
+        for (key, page) in pages where page.profileID == id { pages.removeValue(forKey: key) }
+        for (key, page) in transient where page.profileID == id { transient.removeValue(forKey: key) }
+        return true
     }
     /// A closed window takes its pages with it; their saved entries stay in organization.
     func windowDetached(_ token: UInt64) {
@@ -384,6 +398,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     private var keyObserver: NSObjectProtocol?
     private var menuTracking = false
     private var changingGeometry = false
+    /// Fullscreen only: the sidebar floats over the page. `mode` is untouched so leaving fullscreen
+    /// restores the docked or hidden sidebar the user had.
+    private var fullscreenRevealed = false
+    private var fullscreenObservers: [NSObjectProtocol] = []
     let token: UInt64
     /// The first slot owns organization; later slots are windows of other Profiles that borrow its sidebar.
     init(token: UInt64, directory: URL?) {
@@ -447,6 +465,19 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     }
     private func attached() {
         installPointerMonitor()
+        if fullscreenObservers.isEmpty, let window = root.window {
+            for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
+                fullscreenObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.fullscreenRevealed = false
+                        self.root.mode = entering ? 0 : self.mode
+                        self.root.layoutSubtreeIfNeeded()
+                    }
+                })
+            }
+        }
         if keyObserver == nil, let window = root.window {
             keyObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
@@ -509,16 +540,39 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         root.layoutSubtreeIfNeeded()
         return true
     }
+    private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
+    @discardableResult private func setFullscreenReveal(_ revealed: Bool) -> Bool {
+        guard canInteract, !changingGeometry else { return false }
+        changingGeometry = true
+        defer { changingGeometry = false }
+        guard sidebarGeometry?(token, width, revealed ? 2 : 0) == 1 else { return false }
+        fullscreenRevealed = revealed
+        root.mode = revealed ? 2 : 0
+        root.layoutSubtreeIfNeeded()
+        return true
+    }
     @discardableResult func toggle() -> Bool {
+        if isFullscreen { return setFullscreenReveal(!fullscreenRevealed) }
         guard setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
         if mode == 0 { _ = pageFocus?(token) }
         return true
     }
     private func reveal() {
+        if isFullscreen {
+            if !fullscreenRevealed, canInteract, !menuTracking { setFullscreenReveal(true) }
+            return
+        }
         guard mode == 0, canInteract, !menuTracking else { return }
         _ = setGeometry(mode: 2) // Hover never steals focus from the page.
     }
     private func dismissPeek(force: Bool = false) {
+        if isFullscreen {
+            guard fullscreenRevealed, canInteract, !menuTracking else { return }
+            if !force, let focused = root.window?.firstResponder as? NSView,
+               focused === root || focused.isDescendant(of: root) { return }
+            if setFullscreenReveal(false), force { _ = pageFocus?(token) }
+            return
+        }
         guard mode == 2, canInteract, !menuTracking else { return }
         if !force, let focused = root.window?.firstResponder as? NSView,
            focused === root || focused.isDescendant(of: root) { return }
@@ -546,8 +600,9 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         pointerMonitor = nil
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
         keyObserver = nil
-        for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
+        for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
         menuObservers.removeAll()
+        fullscreenObservers.removeAll()
         root.onEnter = nil
         root.onExit = nil
         root.onResize = nil
@@ -702,6 +757,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     if command == 6 { controller.openEssential(.downloads) }
     if command == 7 { controller.showSettings() }
     if command == 8 { controller.reopenClosedTab() }
+    if (40..<60).contains(command) { controller.reopenClosedTab(at: Int(command) - 40) }
     if command == 31 { controller.duplicateSelection() }
     if command == 32 { controller.togglePinSelection() }
     if command == 33 { controller.closeOtherTemporaryTabs() }
@@ -878,9 +934,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         // The bridge also rejects blocked pages, slot transitions and closing
         // windows. Negative means an untracked Chrome tab or unavailable slot.
         if key == "s" {
-            // Fullscreen detaches the native slot. Retain the owned window's
-            // shortcut without forwarding it to Chromium's Save Page command.
+            // In fullscreen the shortcut shows or hides the floating sidebar and is never forwarded to
+            // Chromium's Save Page command, even when no sidebar is reachable.
             if window.styleMask.contains(.fullScreen) {
+                _ = toggle()
                 acceptedKeys.insert(event.keyCode)
                 return nil
             }
@@ -1009,6 +1066,13 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     precondition(Thread.isMainThread)
     guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
     workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
+}
+
+@_cdecl("BatoSwiftWorkspaceConfigureProfileDelete")
+@MainActor public func configureWorkspaceProfileDelete(
+    _ destroy: @escaping @convention(c) (UnsafePointer<CChar>?) -> Int32) {
+    precondition(Thread.isMainThread)
+    deleteProfileData = destroy
 }
 
 @_cdecl("BatoSwiftDownloadsConfigure")

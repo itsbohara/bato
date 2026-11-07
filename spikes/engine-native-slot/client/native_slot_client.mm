@@ -68,6 +68,8 @@ using SwiftDownloadsConfigure = void (*)(int (*)(), int (*)(const char*, const c
 using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
                                        int64_t, int64_t, int64_t, int, int, int, int);
 using SwiftDownloadRemoved = void (*)(const char*, const char*);
+// ConfigureProfileDelete(destroy): destroy(profile_key) closes the Profile's windows and wipes its data.
+using SwiftConfigureProfileDelete = void (*)(int (*)(const char*));
 
 extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
     const unsigned char* png, size_t size);
@@ -89,6 +91,7 @@ PeekPresent g_peek_present = nullptr;
 PeekEnd g_peek_end = nullptr;
 decltype(&bato_native_slot_download_snapshot_v1) g_download_snapshot = nullptr;
 decltype(&bato_native_slot_download_action_v1) g_download_action = nullptr;
+decltype(&bato_native_slot_delete_profile_v1) g_delete_profile = nullptr;
 SwiftDownloadUpserted g_swift_download_upserted = nullptr;
 SwiftDownloadRemoved g_swift_download_removed = nullptr;
 SwiftPeekEnded g_swift_peek_ended = nullptr;
@@ -988,6 +991,25 @@ bool ValidProfileKey(const std::string& key) {
   return true;
 }
 
+// Destroys a non-launch Profile: the engine closes its windows and removes its storage; the cached
+// context is dropped so a later Profile with the same key (never reused in practice) starts clean.
+int DeleteProfileData(const char* utf8_key) {
+  if (!g_workspace_enabled || !NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
+      !g_delete_profile || !utf8_key) return 0;
+  const std::string key = utf8_key;
+  if (!ValidProfileKey(key) || !PendingWindow().key.empty()) return 0;
+  if (g_delete_profile(key.c_str()) != 1) return 0;
+  ProfileContexts().erase(key);
+  {
+    std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+    for (auto it = ProfileKeys().by_browser.begin(); it != ProfileKeys().by_browser.end();) {
+      it = it->second == key ? ProfileKeys().by_browser.erase(it) : std::next(it);
+    }
+  }
+  fprintf(stderr, "{\"event\":\"profile-delete-scheduled\",\"key\":\"%s\"}\n", key.c_str());
+  return 1;
+}
+
 // Requests a Chrome window whose Browser uses the Profile's own request context. The
 // Chrome runtime pairs a Browser with exactly one Profile, so pages of different Profiles
 // can never share a window. Returns 1 when the request was accepted; completion arrives
@@ -1261,6 +1283,8 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   // New Window opens the command bar because each Profile has exactly one window.
   if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
   if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
+  // History > Recently Closed rows: the engine offers 1000100 + position (history_menu_cocoa_controller.mm).
+  if (command_id >= 1000100 && command_id < 1000120) command = 40 + (command_id - 1000100);
   if (command_id == cef_id_for_command_id_name("IDC_SELECT_NEXT_TAB") ||
       command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_NEXT_TAB")) command = 9;
   if (command_id == cef_id_for_command_id_name("IDC_SELECT_PREVIOUS_TAB") ||
@@ -1369,6 +1393,10 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
   auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
       dlsym(loaded, "bato_native_slot_download_action_v1"));
+  auto delete_profile = reinterpret_cast<decltype(&bato_native_slot_delete_profile_v1)>(
+      dlsym(loaded, "bato_native_slot_delete_profile_v1"));
+  auto swift_configure_profile_delete = reinterpret_cast<SwiftConfigureProfileDelete>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureProfileDelete"));
   auto swift_configure_downloads = reinterpret_cast<SwiftDownloadsConfigure>(
       dlsym(RTLD_DEFAULT, "BatoSwiftDownloadsConfigure"));
   auto swift_download_upserted = reinterpret_cast<SwiftDownloadUpserted>(
@@ -1458,6 +1486,11 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     if (swift_configure_profiles && swift_profile_ready) {
       g_swift_profile_ready = swift_profile_ready;
       swift_configure_profiles(OpenProfileWindow);
+      // Profile delete is additive: without the engine export the Delete button stays refused.
+      if (delete_profile && swift_configure_profile_delete) {
+        g_delete_profile = delete_profile;
+        swift_configure_profile_delete(DeleteProfileData);
+      }
     }
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
                                  SelectWorkspacePage, CloseWorkspacePage,
