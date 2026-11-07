@@ -49,3 +49,34 @@ Not run: launch without the switches (optional step; blocking-inactive path is t
 
 ## Logs (SSD, /Volumes/Mahesh/personal/bato-build)
 logs/blocking-build.log, logs/blocking-v1.log, logs/blocking-v1-exit.json, logs/blocking-v1-before.json, logs/blocking-v1-before-quit.json, logs/blocking-fixture-18766.log, tmp/blk1-4.png screenshots, tmp/launch-blocking-v1.py.
+
+# Milestone 2 integration and real-host check (2026-11-07)
+
+## Integration
+- `WorkspaceSlot.swift` builds one `BlockingControls` (service from `BlockingHost.shared.service`, active page = the selected entry's latest URL plus its CEF browser id from `WorkspaceEngine.pages`, reload = `perform(.load(url))` on that page) and appends its two items under Page, after Copy URL. The Page menu is built once when the root attaches; when the service does not exist yet the items are simply absent. On the real host the service existed at attach time.
+- `native_slot.py build --execute` now copies `cargo-target/release/libbato_adblock_ffi.dylib` into `cefsimple.app/Contents/Frameworks/` after a successful build (cargo builds it, GN does not know it, and the host looks there by default). It prints a warning and skips when the dylib is absent. The launch wrapper alternative would have needed `--bato-blocking-lib` on every launch.
+- Two defects found on the real host and fixed in the staged `simple_handler.cc` (client.patch regenerated, round trip verified):
+  1. Browser abort on first request: `HostOfUrl("")` reached `CefParseURL`, whose wrapper `CHECK`s a non-empty URL. The main frame URL is empty during the first navigation. Now an empty URL returns "" and the page URL falls back to the request initiator/frame URL.
+  2. SIGSEGV after the message loop exited (exit -11, v2 run): the 250 ms refresh task kept calling `CefPostDelayedTask` during shutdown. A `g_blocking_stopping` flag is set before `CefQuitMessageLoop()` and the task stops rescheduling. The v3 run quit with exit 0. A task already past the check could still post once; not observed.
+
+## Build and tests
+- Swift suite (`logs/integrate-swift-tests.log`): 106 XCTest + 130 Swift Testing = 236, all pass.
+- Builds (`logs/integrate-build.log`, `integrate-build2.log`, `integrate-build3.log`): all "finished successfully"; only existing NSEvent Sendable warnings. `native_slot.py check`: patched, 41 files.
+
+## Real host (default lists, no `--bato-blocking`; `launch-integrate-v2.py`, `runtime/integrate-state-v2`)
+- Lists were fetched over the network on first start (state started with no lists): engine `ready` events `ms=23 bytes=2075727` (EasyList), then `ms=39 bytes=3589129` (EasyList + EasyPrivacy). Nothing was committed or bundled.
+- With the real lists the fixture rows that a generic EasyList rule matches are blocked (`xhr-beacon`, `fetch-beacon`, both `/ads/beacon.json`); the rest are allowed, as expected since the fixture rules live in the fixture list. Page menu: "Blocking: On for this site", "3 blocked on this page" (3 `blocked` log lines).
+- Toggle off for 127.0.0.1: `blocking-settings.json` gets `exceptions: ["127.0.0.1"]`, the page reloads about 0.5 s later, beacon rows become `executed`, menu reads "Blocking: Off for this site" and "0 blocked on this page". Toggle on: exceptions empty, rows fail again, count back to 3.
+
+## Real host (fixture list added with `--bato-blocking=<fixture list>`; `launch-integrate-v3.py`, `runtime/integrate-state-v3`)
+- `ready` events: 781 bytes / 0 ms (fixture list alone, before the downloads finished), then 2076508 / 23 ms and 3589910 / 44 ms.
+- All 20 rows of blocking-network.html match Expected (script-tracker, script-important, script-domain-only, image-pixel, xhr-beacon, fetch-beacon, worker-script-blocked, worker-fetch-beacon, css-ads, frame-ads fail; the 10 controls and same-origin / allowed-tracker execute). Menu shows "10 blocked on this page" (10 `blocked` lines).
+- 127.0.0.1 exception then reload: all 20 rows executed, count 0 (workers, CSS and frames included). Toggled back: 10 blocked again. Settings file reflects each change.
+- Quit through the Bato app-menu quit item: exit 0, one `native-slot-attached`, one `slot-client-detached`, one `native-slot-detached`, one `cef-message-loop-exited`, no signal. Organization file bytes before quit equal final bytes.
+
+## Still open
+- Persistence of an exception across a restart was not exercised (file content verified after each toggle; the next launch of the same state would show it).
+- Memory/latency numbers, first-launch race for the very first navigation (the `ready` event arrived before the first page load here), subdomain exception coverage, and the Settings pane remain unverified.
+- The cosmetic probe is not hidden (no cosmetic filtering), as designed.
+
+Logs (SSD): logs/integrate-v1.log (crash 1), integrate-v2.log/.out/-exit.json (crash on quit), integrate-v3.log/.out/-exit.json, integrate-swift-tests.log, integrate-build*.log, integrate-v2-pre-import.json and related org copies, tmp/launch-integrate-v{1,2,3}.py, tmp/arc-fixture/.
