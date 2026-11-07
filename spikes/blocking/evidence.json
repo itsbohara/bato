@@ -1,0 +1,7 @@
+{"date":"2026-11-07","pid":76390,"exit_code":0,"flags":["--bato-blocking","--bato-blocking-lib"],
+"blocked_events_per_load":10,
+"blocked_types":["script","stylesheet","image","subdocument","xmlhttprequest","worker-script","worker-fetch"],
+"rows":{"pass":["script-control","script-same-origin","script-allowed-tracker","script-important","script-domain-only","image-control","image-pixel","fetch-control","fetch-beacon","worker-script-control","worker-script-blocked","worker-fetch-control","worker-fetch-beacon","css-control","css-ads","frame-control","frame-ads"],
+"engine_pass_row_flaky":["script-tracker"],"fixture_defect":["xhr-control"],"blocked_row_pending":["xhr-beacon"]},
+"cosmetic_filtering":"absent (expected)","init_time":"not measured",
+"org_before_quit_equals_final":true,"org_sha256_prefix":"3188c82deb811af0","unswitched_launch":"not run"}
