@@ -171,9 +171,14 @@ private final class ArcImportSheet: NSWindowController {
         ImportPlan.alreadyImportedSpaceIDs(staging, in: currentState())
     }
 
+    /// Spaces that would actually be imported: checked, and not already imported unless copies were requested.
+    private var selected: Set<String> {
+        ImportPlan.spacesToImport(checked: included, alreadyImported: alreadyImported, asCopies: importAgain)
+    }
+
     private func options(salt: String = "") -> ImportOptions {
         ImportOptions(includeTodayTabs: includeToday,
-                      excludedSpaceIDs: Set(staging.spaces.map(\.id)).subtracting(included), idSalt: salt)
+                      excludedSpaceIDs: Set(staging.spaces.map(\.id)).subtracting(selected), idSalt: salt)
     }
 
     private func showPreview() {
@@ -187,7 +192,7 @@ private final class ArcImportSheet: NSWindowController {
         add(label("Choose what to bring into Bato. Arc isn’t modified, and passwords, logins and cookies aren’t imported. " +
                   "Each Arc profile becomes a new Bato Profile.", secondary: true))
 
-        let rows = NSStackView()
+        let rows = TopAlignedStackView()
         rows.orientation = .vertical
         rows.alignment = .leading
         rows.spacing = 8
@@ -276,21 +281,28 @@ private final class ArcImportSheet: NSWindowController {
     }
 
     private func refreshSummary() {
-        let plan = try? ImportPlan.make(staging, options: options(), into: .initial())
+        // Against the real organization, so Profiles from an earlier import of this file are not counted as new.
+        let plan = selected.isEmpty ? nil :
+            try? ImportPlan.make(staging, options: options(salt: importAgain ? "preview" : ""), into: currentState())
         guard let plan else {
-            totals.stringValue = "No spaces selected."
+            totals.stringValue = describeTotals(workspaces: 0, profiles: 0, pins: 0, folders: 0, favorites: 0, tabs: 0)
             unsupported.stringValue = ""
             importButton?.isEnabled = false
             return
         }
         let s = plan.summary
-        totals.stringValue = "\(plural(s.workspaces, "workspace")) in \(plural(s.profiles, "new Profile")) · " +
-            "\(plural(s.pins, "pin")) · \(plural(s.folders, "folder")) · \(plural(s.favorites, "favorite")) · " +
-            "\(plural(s.tabs, "tab"))"
+        totals.stringValue = describeTotals(workspaces: s.workspaces, profiles: s.profiles, pins: s.pins,
+                                            folders: s.folders, favorites: s.favorites, tabs: s.tabs)
         let notes = s.warningCounts.compactMap { kind, count in Self.describe(kind, count) }.sorted()
         unsupported.stringValue = notes.isEmpty ? "Nothing unsupported." :
             "Not imported or simplified:\n" + notes.map { "• \($0)" }.joined(separator: "\n")
         importButton?.isEnabled = true
+    }
+
+    private func describeTotals(workspaces: Int, profiles: Int, pins: Int, folders: Int, favorites: Int, tabs: Int) -> String {
+        "\(plural(workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(profiles, "new Profile")) · " +
+            "\(plural(pins, "pin")) · \(plural(folders, "folder")) · \(plural(favorites, "favorite")) · " +
+            "\(plural(tabs, "tab"))"
     }
 
     private func runImport() {
@@ -314,11 +326,13 @@ private final class ArcImportSheet: NSWindowController {
     private func showResult(_ summary: ImportSummary) {
         content.arrangedSubviews.forEach { $0.removeFromSuperview() }
         add(label("Import complete", size: 15, weight: .semibold))
-        add(label("Added \(plural(summary.workspaces, "workspace")) in \(plural(summary.profiles, "new Profile")): " +
+        add(label("Added \(plural(summary.workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(summary.profiles, "new Profile")): " +
                   "\(plural(summary.pins, "pin")), \(plural(summary.folders, "folder")), " +
                   "\(plural(summary.favorites, "favorite")), \(plural(summary.tabs, "tab")).", secondary: false))
-        add(label("New Profiles need browser Profile support that isn’t connected yet, so these workspaces can be " +
-                  "seen in the sidebar but not opened until it is.", secondary: true))
+        if summary.profiles > 0 {
+            add(label("Each new Profile keeps its own logins and site data in a separate browser window, " +
+                      "opened the first time you use one of its workspaces.", secondary: true))
+        }
         add(label("Undo restores your organization to exactly how it was before the import. It stays available only " +
                   "until anything else in Bato changes.", secondary: true))
         errorLabel.stringValue = ""
@@ -420,6 +434,12 @@ private final class ArcImportSheet: NSWindowController {
         case .duplicateFavorite: return "\(n) repeated favorite\(n == 1 ? "" : "s") skipped"
         }
     }
+}
+
+/// A scroll view's clip view is bottom-origin; a flipped document keeps short content at the top.
+@MainActor
+private final class TopAlignedStackView: NSStackView {
+    override var isFlipped: Bool { true }
 }
 
 /// Retains a closure as the control's target without subclassing it.
