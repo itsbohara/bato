@@ -1,0 +1,599 @@
+{
+ "sidebar": {
+  "containers": [
+   {
+    "global": {}
+   },
+   {
+    "spaces": [
+     {
+      "id": "S1",
+      "title": "Work",
+      "profile": {
+       "default": true
+      },
+      "containerIDs": [
+       "pinned",
+       "P1",
+       "unpinned",
+       "U1"
+      ],
+      "customInfo": {
+       "iconType": {
+        "emoji_v2": "💼"
+       },
+       "windowTheme": {
+        "primaryColorPalette": {
+         "midTone": {
+          "red": 1.0,
+          "green": 0.5,
+          "blue": 0.0,
+          "alpha": 1,
+          "colorSpace": "extendedSRGB"
+         }
+        }
+       }
+      }
+     },
+     {
+      "id": "S2",
+      "title": "  ",
+      "profile": {
+       "default": true
+      },
+      "newContainerIDs": [
+       {
+        "pinned": {
+         "_0": {
+          "shared": {}
+         }
+        }
+       },
+       "P2",
+       {
+        "unpinned": {
+         "_0": {
+          "shared": {}
+         }
+        }
+       },
+       "U2"
+      ]
+     },
+     {
+      "id": "S3",
+      "title": "Side",
+      "profile": {
+       "custom": {
+        "_0": {
+         "directoryBasename": "Profile 1"
+        }
+       }
+      },
+      "containerIDs": [
+       "pinned",
+       "P3",
+       "unpinned",
+       "U3"
+      ],
+      "customInfo": {
+       "windowTheme": {
+        "background": {
+         "gradient": {
+          "colors": []
+         }
+        }
+       }
+      }
+     }
+    ],
+    "items": [
+     {
+      "id": "t1",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/docs",
+        "savedTitle": "Docs"
+       }
+      }
+     },
+     {
+      "id": "f1",
+      "title": "Reading",
+      "childrenIds": [
+       "t3",
+       "f2"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "t3",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/read/1",
+        "savedTitle": "Read one"
+       }
+      }
+     },
+     {
+      "id": "f2",
+      "title": "L2",
+      "childrenIds": [
+       "f3"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "f3",
+      "title": "L3",
+      "childrenIds": [
+       "f4"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "f4",
+      "title": "L4",
+      "childrenIds": [
+       "f5",
+       "t4"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "f5",
+      "title": "L5",
+      "childrenIds": [
+       "t5"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "t4",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/deep/4",
+        "savedTitle": "Deep four"
+       }
+      }
+     },
+     {
+      "id": "t5",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/deep/5",
+        "savedTitle": "Deep five"
+       }
+      }
+     },
+     {
+      "id": "t2",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "arc://settings",
+        "savedTitle": "Settings"
+       }
+      }
+     },
+     {
+      "id": "t6",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/after",
+        "savedTitle": "After folder"
+       }
+      }
+     },
+     {
+      "id": "sp1",
+      "title": null,
+      "childrenIds": [
+       "t7",
+       "t8"
+      ],
+      "parentID": null,
+      "data": {
+       "splitView": {}
+      }
+     },
+     {
+      "id": "t7",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/left",
+        "savedTitle": "Left"
+       }
+      }
+     },
+     {
+      "id": "t8",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/right",
+        "savedTitle": "Right"
+       }
+      }
+     },
+     {
+      "id": "sp2",
+      "title": null,
+      "childrenIds": [
+       "t9",
+       "t10",
+       "t11"
+      ],
+      "parentID": null,
+      "data": {
+       "splitView": {}
+      }
+     },
+     {
+      "id": "t9",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/a",
+        "savedTitle": "A"
+       }
+      }
+     },
+     {
+      "id": "t10",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/b",
+        "savedTitle": "B"
+       }
+      }
+     },
+     {
+      "id": "t11",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/c",
+        "savedTitle": "C"
+       }
+      }
+     },
+     {
+      "id": "e1",
+      "title": "Empty",
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "f9",
+      "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "childrenIds": [
+       "t12"
+      ],
+      "parentID": null,
+      "data": {
+       "list": {}
+      }
+     },
+     {
+      "id": "t12",
+      "title": "日本語 ñ 🚀",
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/docs",
+        "savedTitle": "Docs again"
+       }
+      }
+     },
+     {
+      "id": "u1",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "easel": {}
+      }
+     },
+     {
+      "id": "P1",
+      "title": null,
+      "childrenIds": [
+       "t1",
+       "f1",
+       "t2",
+       "t6",
+       "sp1",
+       "sp2",
+       "e1",
+       "f9",
+       "u1",
+       "missing-child"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "U1",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "t20",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/s2/pin",
+        "savedTitle": "S2 pin"
+       }
+      }
+     },
+     {
+      "id": "d1",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/today/1",
+        "savedTitle": "Today one"
+       }
+      }
+     },
+     {
+      "id": "d2",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/today/2",
+        "savedTitle": "Today two"
+       }
+      }
+     },
+     {
+      "id": "d3",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "file:///etc/hosts",
+        "savedTitle": "Local"
+       }
+      }
+     },
+     {
+      "id": "P2",
+      "title": null,
+      "childrenIds": [
+       "t20"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "U2",
+      "title": null,
+      "childrenIds": [
+       "d1",
+       "d2",
+       "d3"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "t30",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/s3/pin",
+        "savedTitle": "S3 pin"
+       }
+      }
+     },
+     {
+      "id": "P3",
+      "title": null,
+      "childrenIds": [
+       "t30"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "U3",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "fv1",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/fav/1",
+        "savedTitle": "Fav one"
+       }
+      }
+     },
+     {
+      "id": "fv2",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/fav/2",
+        "savedTitle": "Fav two"
+       }
+      }
+     },
+     {
+      "id": "fv3",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/fav/1",
+        "savedTitle": "Fav dup"
+       }
+      }
+     },
+     {
+      "id": "fv4",
+      "title": null,
+      "childrenIds": [],
+      "parentID": null,
+      "data": {
+       "tab": {
+        "savedURL": "https://example.test/fav/custom",
+        "savedTitle": "Fav custom"
+       }
+      }
+     },
+     {
+      "id": "FAV1",
+      "title": null,
+      "childrenIds": [
+       "fv1",
+       "fv2",
+       "fv3"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     },
+     {
+      "id": "FAV2",
+      "title": null,
+      "childrenIds": [
+       "fv4"
+      ],
+      "parentID": null,
+      "data": {
+       "itemContainer": {
+        "containerType": {
+         "spaceItems": {}
+        }
+       }
+      }
+     }
+    ],
+    "topAppsContainerIDs": [
+     "default",
+     "FAV1",
+     {
+      "custom": {
+       "_0": {
+        "directoryBasename": "Profile 1"
+       }
+      }
+     },
+     "FAV2"
+    ]
+   }
+  ]
+ }
+}

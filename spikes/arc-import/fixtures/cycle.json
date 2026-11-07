@@ -1,0 +1,6 @@
+{"sidebar":{"containers":[{"spaces":["S1",{"id":"S1","title":"Loop","profile":{"default":true},"containerIDs":["pinned","P1","unpinned","U1"]}],
+"items":["P1",{"id":"P1","childrenIds":["fa"],"data":{"itemContainer":{}}},
+"U1",{"id":"U1","childrenIds":[],"data":{"itemContainer":{}}},
+"fa",{"id":"fa","title":"A","childrenIds":["fb"],"data":{"list":{}}},
+"fb",{"id":"fb","title":"B","childrenIds":["fa","t1"],"data":{"list":{}}},
+"t1",{"id":"t1","childrenIds":[],"data":{"tab":{"savedURL":"https://example.test/ok","savedTitle":"Ok"}}}]}]}}

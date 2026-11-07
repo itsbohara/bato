@@ -1,0 +1,3 @@
+{"sidebar":{"containers":[{"spaces":["S1",{"id":"S1","title":"Gaps","profile":{"default":true},"containerIDs":["pinned","P1","unpinned","MISSING"]}],
+"items":["P1",{"id":"P1","childrenIds":["nope","t1","t1"],"data":{"itemContainer":{}}},
+"t1",{"id":"t1","childrenIds":[],"data":{"tab":{"savedURL":"https://example.test/ok","savedTitle":"Ok"}}}]}]}}

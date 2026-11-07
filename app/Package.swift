@@ -15,11 +15,13 @@ let package = Package(
         .target(name: "BatoCore"),
         .target(name: "BatoPersistence", dependencies: ["BatoCore"]),
         .target(name: "BatoRuntime", dependencies: ["BatoCore"]),
+        .target(name: "BatoImport", dependencies: ["BatoCore"]),
         .target(name: "BatoBrowserUI", dependencies: ["BatoCore", "BatoPersistence", "BatoRuntime"]),
         .executableTarget(name: "BatoShell", dependencies: ["BatoCore", "BatoPersistence"]),
         .testTarget(name: "BatoCoreTests", dependencies: ["BatoCore"]),
-        .testTarget(name: "BatoPersistenceTests", dependencies: ["BatoPersistence"]),
+        .testTarget(name: "BatoPersistenceTests", dependencies: ["BatoPersistence", "BatoCore"]),
         .testTarget(name: "BatoRuntimeTests", dependencies: ["BatoRuntime", "BatoCore"]),
+        .testTarget(name: "BatoImportTests", dependencies: ["BatoImport", "BatoCore"]),
         .testTarget(name: "BatoShellTests", dependencies: ["BatoShell"]),
     ]
 )
