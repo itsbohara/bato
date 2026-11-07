@@ -7,12 +7,15 @@ public struct FilterListSource: Equatable, Sendable {
     public let url: URL
     public let minimumRuleCount: Int
     public let maximumBytes: Int
+    /// Adblock Plus lists open with a `[` header line. uBlock Origin's own lists open with `!` comments.
+    public let requiresHeader: Bool
 
-    public init(id: String, url: URL, minimumRuleCount: Int, maximumBytes: Int) {
+    public init(id: String, url: URL, minimumRuleCount: Int, maximumBytes: Int, requiresHeader: Bool = true) {
         self.id = id
         self.url = url
         self.minimumRuleCount = minimumRuleCount
         self.maximumBytes = maximumBytes
+        self.requiresHeader = requiresHeader
     }
 
     public static let easyList = FilterListSource(
@@ -22,6 +25,19 @@ public struct FilterListSource: Equatable, Sendable {
         id: "easyprivacy", url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!,
         minimumRuleCount: 5_000, maximumBytes: 20_000_000)
     public static let defaults = [easyList, easyPrivacy]
+
+    /// The uBlock Origin project's own filter lists (GPL-3.0, from uAssets). Downloaded only after
+    /// the user accepts the offer; never bundled.
+    public static let uBlockFilters = uBlock("ublock-filters", file: "filters", minimumRuleCount: 10_000, maximumBytes: 10_000_000)
+    public static let uBlockPrivacy = uBlock("ublock-privacy", file: "privacy", minimumRuleCount: 800, maximumBytes: 5_000_000)
+    public static let uBlockBadware = uBlock("ublock-badware", file: "badware", minimumRuleCount: 2_000, maximumBytes: 5_000_000)
+    public static let uBlockUnbreak = uBlock("ublock-unbreak", file: "unbreak", minimumRuleCount: 1_000, maximumBytes: 5_000_000)
+    public static let uBlockOrigin = [uBlockFilters, uBlockPrivacy, uBlockBadware, uBlockUnbreak]
+
+    private static func uBlock(_ id: String, file: String, minimumRuleCount: Int, maximumBytes: Int) -> FilterListSource {
+        FilterListSource(id: id, url: URL(string: "https://ublockorigin.github.io/uAssets/filters/\(file).min.txt")!,
+                         minimumRuleCount: minimumRuleCount, maximumBytes: maximumBytes, requiresHeader: false)
+    }
 }
 
 public enum FetchResult: Equatable, Sendable {
@@ -61,7 +77,7 @@ public enum FilterListValidator {
     public static func validate(_ data: Data, for source: FilterListSource) -> Result<Int, ListRejection> {
         guard data.count <= source.maximumBytes else { return .failure(.tooLarge) }
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { return .failure(.notText) }
-        guard text.drop(while: { $0 == "\u{FEFF}" || $0.isWhitespace }).hasPrefix("[") else {
+        guard !source.requiresHeader || text.drop(while: { $0 == "\u{FEFF}" || $0.isWhitespace }).hasPrefix("[") else {
             return .failure(.missingHeader)
         }
         let rules = text.split(whereSeparator: \.isNewline).count(where: { line in
@@ -79,7 +95,7 @@ public actor FilterListUpdater {
 
     private let listsDirectory: URL
     private let statusURL: URL
-    private let sources: [FilterListSource]
+    private var sources: [FilterListSource]
     private let fetcher: FilterListFetching
     private let now: @Sendable () -> Date
     private var statuses: [String: ListStatus]
@@ -96,6 +112,20 @@ public actor FilterListUpdater {
     }
 
     public func status() -> [String: ListStatus] { statuses }
+
+    /// Replaces the lists to keep fresh. Files of lists no longer wanted are left for `discard`.
+    public func setSources(_ sources: [FilterListSource]) {
+        self.sources = sources
+    }
+
+    /// Deletes the lists' files and status so the host stops filtering with them.
+    public func discard(_ removed: [FilterListSource]) {
+        for source in removed {
+            try? FileManager.default.removeItem(at: fileURL(source))
+            statuses.removeValue(forKey: source.id)
+        }
+        saveStatuses()
+    }
 
     /// Checks every list whose last check is older than `maxAge` or whose file is missing.
     @discardableResult

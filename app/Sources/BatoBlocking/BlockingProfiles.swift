@@ -10,6 +10,8 @@ public final class BlockingProfiles: @unchecked Sendable {
     public let rootDirectory: URL
     public let counters = BlockedCounters()
     private let updater: FilterListUpdater
+    private let baseSources: [FilterListSource]
+    private let choiceStore: UBlockListsChoiceStore
     private let lock = NSLock()
     private var services: [String: BlockingService] = [:]
     private var updateTask: Task<Void, Never>?
@@ -17,7 +19,39 @@ public final class BlockingProfiles: @unchecked Sendable {
     public init(rootDirectory: URL, sources: [FilterListSource] = FilterListSource.defaults,
                 fetcher: FilterListFetching = URLSessionListFetcher()) {
         self.rootDirectory = rootDirectory
-        updater = FilterListUpdater(directory: rootDirectory, sources: sources, fetcher: fetcher)
+        baseSources = sources
+        choiceStore = UBlockListsChoiceStore(directory: rootDirectory)
+        let wanted = choiceStore.choice == .enabled ? sources + FilterListSource.uBlockOrigin : sources
+        updater = FilterListUpdater(directory: rootDirectory, sources: wanted, fetcher: fetcher)
+    }
+
+    public var uBlockChoice: UBlockListsChoice { choiceStore.choice }
+
+    /// True until the user has answered the first-run offer.
+    public var shouldOfferUBlockLists: Bool { choiceStore.choice == .undecided }
+
+    /// Records a "not now" so the offer is not shown again. Settings can still add the lists.
+    public func declineUBlockLists() throws {
+        guard choiceStore.choice == .undecided else { return }
+        try choiceStore.set(.declined)
+    }
+
+    /// The user's consent to download the uBlock Origin lists. Nothing is fetched before this call.
+    /// Returns each uBlock list's outcome; a failed list is retried by the daily update.
+    @discardableResult
+    public func enableUBlockLists() async throws -> [String: ListUpdateOutcome] {
+        try choiceStore.set(.enabled)
+        await updater.setSources(baseSources + FilterListSource.uBlockOrigin)
+        let outcomes = await updater.update(maxAge: BlockingService.defaultUpdateInterval)
+        let ids = Set(FilterListSource.uBlockOrigin.map(\.id))
+        return outcomes.filter { ids.contains($0.key) }
+    }
+
+    /// Stops using the uBlock Origin lists and deletes their downloads.
+    public func disableUBlockLists() async throws {
+        try choiceStore.set(.declined)
+        await updater.setSources(baseSources)
+        await updater.discard(FilterListSource.uBlockOrigin)
     }
 
     /// `<state>/blocking`.
