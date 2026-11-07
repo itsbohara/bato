@@ -25,8 +25,8 @@ public final class NativeWorkspaceController: NSObject {
     private let workspaceActions = NSButton(frame: .zero)
     private let sidebarToggle = NSButton(frame: .zero)
     private var trafficLightClearanceWidth: NSLayoutConstraint?
-    private let profileLabel = NSTextField(labelWithString: "")
-    private let spaceLabel = NSTextField(labelWithString: "")
+    private let profileButton = NSButton(frame: .zero)
+    private let switcherButton = NSButton(frame: .zero)
     private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
@@ -40,6 +40,7 @@ public final class NativeWorkspaceController: NSObject {
     private var sheetObserver: NSObjectProtocol?
     private var workspaceEditor: WorkspaceEditor?
     private var folderEditor: FolderEditor?
+    private var profileEditor: ProfileEditor?
     private var pageFinder: PageFinder?
     private let organizationStore: OrganizationStore<BrowserState>
     private var arcImport: ArcImportController?
@@ -294,6 +295,7 @@ public final class NativeWorkspaceController: NSObject {
             view.closeSelection = { [weak self] in self?.closeSelection() }
             view.editAddress = { [weak self] in self?.editAddress() ?? false }
             view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
+            view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
         }
 
         let workspaceEdit = ActionButton(title: "") { [weak self] in self?.editWorkspace() }
@@ -315,14 +317,22 @@ public final class NativeWorkspaceController: NSObject {
         let clearanceWidth = trafficLightClearance.widthAnchor.constraint(equalToConstant: SidebarMetrics.trafficLightClearance)
         clearanceWidth.isActive = true
         self.trafficLightClearanceWidth = clearanceWidth
-        spaceLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        spaceLabel.textColor = .labelColor
-        spaceLabel.lineBreakMode = .byTruncatingTail
-        spaceLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spaceLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        spaceLabel.setAccessibilityLabel("Current workspace")
-        spaceLabel.setAccessibilityIdentifier("bato-space-name")
-        let heading = NSStackView(views: [trafficLightClearance, spaceLabel, sidebarToggle, workspaceEdit, workspaceActions])
+        switcherButton.target = self
+        switcherButton.action = #selector(showWorkspaceSwitcher)
+        switcherButton.isBordered = false
+        switcherButton.bezelStyle = .recessed
+        switcherButton.font = .systemFont(ofSize: 13, weight: .semibold)
+        switcherButton.contentTintColor = .labelColor
+        switcherButton.alignment = .left
+        switcherButton.lineBreakMode = .byTruncatingTail
+        switcherButton.imagePosition = .imageLeading
+        switcherButton.imageHugsTitle = true
+        switcherButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        switcherButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        switcherButton.setAccessibilityLabel("Current workspace")
+        switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
+        switcherButton.setAccessibilityIdentifier("bato-space-name")
+        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceEdit, workspaceActions])
         heading.orientation = .horizontal
         heading.alignment = .centerY
         heading.distribution = .fill
@@ -396,17 +406,21 @@ public final class NativeWorkspaceController: NSObject {
         let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
         workspaceRow.orientation = .horizontal
         workspaceRow.spacing = 6
-        let profileIcon = NSImageView(image: sidebarSymbol("person.crop.circle", size: 13))
-        profileIcon.contentTintColor = .secondaryLabelColor
-        profileIcon.setAccessibilityElement(false)
-        profileLabel.font = .systemFont(ofSize: 11)
-        profileLabel.textColor = .secondaryLabelColor
-        profileLabel.lineBreakMode = .byTruncatingTail
-        profileLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let profileRow = NSStackView(views: [profileIcon, profileLabel])
-        profileRow.orientation = .horizontal
-        profileRow.spacing = 6
-        let footer = NSStackView(views: [workspaceRow, profileRow])
+        profileButton.target = self
+        profileButton.action = #selector(showProfileMenu)
+        profileButton.isBordered = false
+        profileButton.bezelStyle = .recessed
+        profileButton.font = .systemFont(ofSize: 11)
+        profileButton.contentTintColor = .secondaryLabelColor
+        profileButton.alignment = .left
+        profileButton.lineBreakMode = .byTruncatingTail
+        profileButton.imagePosition = .imageLeading
+        profileButton.imageHugsTitle = true
+        profileButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        profileButton.setAccessibilityLabel("Profile")
+        profileButton.setAccessibilityHelp("Switch, create or rename Profiles")
+        profileButton.setAccessibilityIdentifier("bato-profile-button")
+        let footer = NSStackView(views: [workspaceRow, profileButton])
         footer.orientation = .vertical
         footer.alignment = .leading
         footer.spacing = 8
@@ -434,7 +448,7 @@ public final class NativeWorkspaceController: NSObject {
             separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
             workspaceRow.widthAnchor.constraint(equalTo: footer.widthAnchor),
-            profileRow.widthAnchor.constraint(equalTo: footer.widthAnchor),
+            profileButton.widthAnchor.constraint(equalTo: footer.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 36)
         ])
@@ -482,9 +496,11 @@ public final class NativeWorkspaceController: NSObject {
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
-        spaceLabel.stringValue = workspace.name
-        spaceLabel.toolTip = workspace.name
-        spaceLabel.setAccessibilityValue(workspace.name)
+        let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
+        switcherButton.title = workspace.name
+        switcherButton.image = colorDot(workspaceColor(workspace.color))
+        switcherButton.toolTip = "\(workspace.name) · Profile \(currentProfile?.name ?? "")"
+        switcherButton.setAccessibilityValue("\(workspace.name), Profile \(currentProfile?.name ?? "")")
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -528,7 +544,10 @@ public final class NativeWorkspaceController: NSObject {
         workspacePicker.removeAllItems()
         workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
         if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
-        profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
+        profileButton.title = currentProfile?.name ?? ""
+        profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
+        profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
+        profileButton.setAccessibilityValue(currentProfile?.name ?? "")
         pageFinder?.refresh()
         let peek = runtime.peekSession.preview
         peekRow.isHidden = peek == nil
@@ -1247,6 +1266,136 @@ public final class NativeWorkspaceController: NSObject {
         editor.focusName()
     }
 
+    private func switchWorkspace(_ id: UUID) {
+        guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
+              id != runtime.state.activeWorkspaceID else { return }
+        perform { runtime.activateWorkspace(id) }
+    }
+
+    /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
+    @objc private func showWorkspaceSwitcher() {
+        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        let state = runtime.state
+        let currentProfileID = state.currentWorkspace.profileID
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        var number = 1
+        for group in state.profileGroups {
+            if state.hasMultipleProfiles {
+                let own = group.profile.id == currentProfileID
+                menu.addItem(profileHeader(own ? group.profile.name : "\(group.profile.name) · opens in its own window",
+                                           color: state.displayColor(of: group.profile)))
+            }
+            for workspace in group.workspaces {
+                let item = ActionMenuItem(title: workspace.name) { [weak self] in self?.switchWorkspace(workspace.id) }
+                item.image = colorDot(workspaceColor(workspace.color))
+                item.state = workspace.id == state.activeWorkspaceID ? .on : .off
+                item.toolTip = "\(workspace.name) · Profile \(group.profile.name)"
+                if number <= 9 {
+                    item.keyEquivalent = "\(number)"
+                    item.keyEquivalentModifierMask = .control
+                }
+                menu.addItem(item)
+                number += 1
+            }
+        }
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(title: "New Workspace") { [weak self] in
+            guard let self else { return }
+            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
+        })
+        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
+        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: switcherButton.bounds.maxY + 4), in: switcherButton)
+    }
+
+    @objc private func showProfileMenu() {
+        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        let state = runtime.state
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for group in state.profileGroups {
+            let item = ActionMenuItem(title: group.profile.name) { [weak self] in
+                // A Profile opens on its first workspace; other workspaces are in the switcher.
+                if let first = group.workspaces.first { self?.switchWorkspace(first.id) }
+            }
+            item.image = colorDot(workspaceColor(state.displayColor(of: group.profile)))
+            item.state = group.profile.id == state.currentWorkspace.profileID ? .on : .off
+            item.isEnabled = !group.workspaces.isEmpty
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
+        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: profileButton.bounds.minY - 4), in: profileButton)
+    }
+
+    private func profileHeader(_ title: String, color: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.image = colorDot(workspaceColor(color))
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
+        return item
+    }
+
+    private func editProfile(creating: Bool) {
+        guard hasStarted, profileEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let state = runtime.state
+        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }) else { return }
+        requestNativeFocus?()
+        func failure() -> String {
+            runtime.lastError == .saveFailed ? "Changes couldn’t be saved. Reopen Bato to reload organization."
+                : "The Profile couldn’t be saved. Check its name and try again."
+        }
+        let duplicate = "Another Profile already has that name."
+        let editor: ProfileEditor
+        if creating {
+            let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
+            let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
+            editor = ProfileEditor(creating: true, name: "", color: color) { [weak self] name, color, workspaceName in
+                guard let self else { return "Bato is no longer available." }
+                guard self.runtime.state.isProfileNameAvailable(name) else { return duplicate }
+                guard self.runtime.createProfile(name: name, color: color, workspaceName: workspaceName.isEmpty ? name : workspaceName,
+                                                 deferPageSelection: true) else { return failure() }
+                self.render()
+                return nil
+            }
+        } else {
+            let profileID = profile.id
+            editor = ProfileEditor(creating: false, name: profile.name, color: state.displayColor(of: profile)) { [weak self] name, color, _ in
+                guard let self else { return "Bato is no longer available." }
+                guard self.runtime.state.isProfileNameAvailable(name, excluding: profileID) else { return duplicate }
+                guard self.runtime.updateProfile(profileID, name: name, color: color) else { return failure() }
+                self.render()
+                return nil
+            }
+        }
+        profileEditor = editor
+        guard let sheet = editor.window else { profileEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] response in
+            guard let self else { return }
+            self.profileEditor = nil
+            guard creating, response == .OK else { return }
+            // The new Profile's workspace was selected with its page work deferred; finish it after the sheet.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.root.window === window else { return }
+                if let request = self.requestPagePresentation { request() } else { self.resumeCommittedSelection() }
+            }
+        }
+        editor.focusName()
+    }
+
+    /// Control-1…9 follow the switcher's order, which groups workspaces by Profile.
+    private func switchToShortcut(_ number: Int) -> Bool {
+        guard hasStarted, let id = runtime.state.switcherWorkspaceID(forShortcut: number) else { return false }
+        switchWorkspace(id)
+        return true
+    }
+
     @objc private func workspaceChanged() {
         let index = workspacePicker.indexOfSelectedItem
         guard workspaceIDs.indices.contains(index) else { return }
@@ -1393,6 +1542,7 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     var closeSelection: (() -> Void)?
     var editAddress: (() -> Bool)?
     var copyLink: (() -> Bool)?
+    var switchToWorkspace: ((Int) -> Bool)?
     override var isFlipped: Bool { true }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
@@ -1406,6 +1556,8 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
         case (.command, "w"): closeSelection?(); return true
         case (.command, "l"): if editAddress?() == true { return true }
         case ([.command, .shift], "c"): if copyLink?() == true { return true }
+        case (.control, let digit?) where digit.count == 1 && "123456789".contains(digit):
+            if switchToWorkspace?(Int(digit)!) == true { return true }
         default: break
         }
         return super.performKeyEquivalent(with: event)
@@ -1440,6 +1592,19 @@ private final class ActionMenuItem: NSMenuItem {
     @objc private func runAction() { invoke() }
 }
 
+private let sidebarColorPalette: [(name: String, hex: String)] = [
+    ("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
+    ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
+
+@MainActor
+private func colorDot(_ color: NSColor, size: CGFloat = 9) -> NSImage {
+    NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+        color.setFill()
+        NSBezierPath(ovalIn: rect).fill()
+        return true
+    }
+}
+
 /// Uses a sheet-local draft: Cancel never publishes organization changes.
 @MainActor
 private final class WorkspaceEditor: NSWindowController {
@@ -1462,9 +1627,7 @@ private final class WorkspaceEditor: NSWindowController {
         nameField.cell?.sendsActionOnEndEditing = false
         colorPicker.setAccessibilityLabel("Workspace color")
         colorPicker.setAccessibilityIdentifier("bato-workspace-color")
-        let palette = [("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
-                       ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
-        for (title, value) in palette {
+        for (title, value) in sidebarColorPalette {
             colorPicker.addItem(withTitle: title)
             colors.append(value)
         }
@@ -1820,4 +1983,121 @@ private func workspaceColor(_ hex: String) -> NSColor {
     return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
                    green: CGFloat((value >> 8) & 255) / 255,
                    blue: CGFloat(value & 255) / 255, alpha: 1)
+}
+
+/// Sheet-local draft for a new or renamed Profile; Cancel publishes nothing.
+@MainActor
+private final class ProfileEditor: NSWindowController {
+    private let nameField = NSTextField(string: "")
+    private let workspaceField = NSTextField(string: "")
+    private let colorPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let save: (String, String, String) -> String?
+    private var colors: [String] = []
+
+    init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
+        self.save = save
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: creating ? 330 : 240),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = creating ? "New Profile" : "Rename Profile"
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        nameField.stringValue = name
+        nameField.setAccessibilityLabel("Profile name")
+        nameField.setAccessibilityIdentifier("bato-profile-name")
+        nameField.cell?.sendsActionOnEndEditing = false
+        workspaceField.placeholderString = "Same as Profile name"
+        workspaceField.setAccessibilityLabel("First workspace name")
+        workspaceField.setAccessibilityIdentifier("bato-profile-first-workspace")
+        colorPicker.setAccessibilityLabel("Profile color")
+        colorPicker.setAccessibilityIdentifier("bato-profile-color")
+        for (title, value) in sidebarColorPalette {
+            colorPicker.addItem(withTitle: title)
+            colorPicker.lastItem?.image = colorDot(workspaceColor(value))
+            colors.append(value)
+        }
+        if let index = colors.firstIndex(where: { $0.caseInsensitiveCompare(color) == .orderedSame }) {
+            colorPicker.selectItem(at: index)
+        } else {
+            colorPicker.addItem(withTitle: "Current color (\(color))")
+            colorPicker.lastItem?.image = colorDot(workspaceColor(color))
+            colors.append(color)
+            colorPicker.selectItem(at: colors.count - 1)
+        }
+        let note = NSTextField(wrappingLabelWithString: creating
+            ? "A Profile keeps its own logins, cookies and site data, and opens in its own window."
+            : "Renaming keeps this Profile’s logins and site data.")
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.textColor = .systemRed
+        errorLabel.setAccessibilityIdentifier("bato-profile-error")
+        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
+        cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityIdentifier("bato-profile-cancel")
+        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
+        apply.keyEquivalent = "\r"
+        apply.setAccessibilityIdentifier("bato-profile-save")
+        window.defaultButtonCell = apply.cell as? NSButtonCell
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let buttons = NSStackView(views: [spacer, cancel, apply])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        var rows: [NSView] = [NSTextField(labelWithString: "Name"), nameField,
+                              NSTextField(labelWithString: "Color"), colorPicker]
+        if creating { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
+        rows += [note, errorLabel, buttons]
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView?.addSubview(stack)
+        if let content = window.contentView {
+            var constraints = [
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+                nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                note.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            ]
+            if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
+            NSLayoutConstraint.activate(constraints)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func focusName() {
+        window?.makeFirstResponder(nameField)
+        nameField.selectText(nil)
+    }
+
+    private func saveDraft() {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            errorLabel.stringValue = "Enter a Profile name."
+            focusName()
+            return
+        }
+        let index = colorPicker.indexOfSelectedItem
+        guard colors.indices.contains(index) else { return }
+        let workspaceName = workspaceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let error = save(name, colors[index], workspaceName) {
+            errorLabel.stringValue = error
+        } else {
+            dismiss(.OK)
+        }
+    }
+
+    private func dismiss(_ response: NSApplication.ModalResponse) {
+        guard let window, let parent = window.sheetParent else { return }
+        parent.endSheet(window, returnCode: response)
+        window.orderOut(nil)
+    }
 }
