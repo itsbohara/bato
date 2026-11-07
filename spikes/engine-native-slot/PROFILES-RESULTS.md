@@ -99,7 +99,7 @@ v6: wrapper `tmp/launch-profiles-v6.py`, guard `profiles-v5-exit.json` (natural 
 v6 results
 1. Token 1 bound to key "" and context ending `/Default`: pass.
 2. Personal page read `bato-shared-a` (launch value, all four stores); after Write marker (`bato-launch-v6`) only `Default/LocalStorage-wal` changed: pass. D9 fixed.
-3. Arc (Work) window read `bato-shared-a` on first visit (shared marker from earlier v2 run is... see note), then wrote `bato-b-v6`; Side window read `bato-shared-a` and wrote `bato-side-v6`. Note: Arc and Side first reads show `bato-shared-a`, the value left in each Profile's directory by the v2-era runs (Arc's was overwritten earlier by the v5 test write; unverified origin), so isolation is judged by the later distinct writes (launch `bato-launch-v6`, Arc `bato-b-v6`, Side `bato-side-v6`) and v7.
+3. Arc (Work) and Side windows each opened in their own window and context. Arc's first read was `bato-shared-a` because in v5 I mistakenly clicked Write marker with the default field value and wrote `bato-shared-a` into Arc's storage (v5 test error, not a defect). Distinct writes followed: launch `bato-launch-v6`, Arc `bato-b-v6`, Side `bato-side-v6`; v7 confirms isolation.
 4. No `profile-*-refused`, `*-mismatch` lines; no new `<cache>/<UUID>` dirs; organization pre-quit == final.
 5. Quit with 3 windows: **hang persists** (still alive after 70 s; SIGTERM exit 0). keep-alive: after the three BROWSER keep-alives release, one `OMNIBOX_EVERYWHERE (1)` keep-alive remains pending at 3 s and 10 s, which keeps the app alive.
 
@@ -117,3 +117,15 @@ Verbatim v6 lines:
 {"event":"keep-alive-state","phase":"pending-10s","state":"{registered_count_=1, restart_allowed_count_=1, KeepAlives=[OMNIBOX_EVERYWHERE (1)]}"}
 ```
 v7 bound lines: token 1 `Default`, token 2 `C7B9998D-...` (Side), token 3 `EB7E187B-...` (Arc); keep-alive lines identical to v6.
+
+## profiles-v8 and profiles-v9: OmniboxEverywhere disabled
+
+v8: wrapper `tmp/launch-profiles-v8.py`, guard `profiles-v7-exit.json` (SIGTERM exit 0, noted), state copied from v7 final (startup on Work/Arc). v9: guard `profiles-v8-exit.json` (natural exit 0), state copied from v8 final (startup on Personal). Same cache path. Logs `logs/profiles-v8*`, `logs/profiles-v9*`.
+
+- v8: three Profile windows open (launch, Arc, Side); storage reads `bato-launch-v6`, `bato-b-v6`, `bato-side-v6` as expected. Quit via app menu: **natural exit 0 within 5 s** (no SIGTERM), organization pre-quit == final, seven browsers closed, `profile-contexts-released` 2 then 0, three `native-slot-detached`, one `sample-native-quit-requested`.
+- v9: relaunch, three windows opened again (launch, Arc, Side); Quit via app menu: **natural exit 0 within 5 s**, same markers, organization pre-quit == final. v9 did not repeat the storage reads. D8 is fixed.
+- No `*-refused` or `*-mismatch` lines. keep-alive-state (identical in v8 and v9, no OMNIBOX_EVERYWHERE):
+```
+{"event":"keep-alive-state","phase":"quit-requested","state":"{registered_count_=4, restart_allowed_count_=0, KeepAlives=[BROWSER (3), APP_CONTROLLER (1)]}"}
+```
+- Bound lines: token 1 `Default` (key ""), Arc `EB7E187B-...`, Side `C7B9998D-...` (in v8 browser ids 1/2/4, in v9 1/4/6), each context `<cache>/<UUID>` or `<cache>/Default`.

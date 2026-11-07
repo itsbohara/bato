@@ -101,14 +101,14 @@
  "d6_copies_summary": "still says 2 new Profiles (not fixed)",
  "defects_open": [
   "D5",
-  "D6 (partly)",
-  "D8 quit hang: OMNIBOX_EVERYWHERE keep-alive never released with 3 windows"
+  "D6 (partly)"
  ],
  "defects_fixed": [
   "D1",
+  "D2 crash not reproduced",
   "D3",
   "D4",
-  "D2 crash not reproduced",
+  "D8",
   "D9"
  ],
  "v4": {
@@ -176,5 +176,25 @@
   },
   "d8": "same hang",
   "hang_sample": "logs/profiles-v7-hang-sample.txt"
- }
+ },
+ "v8": {
+  "guard": "profiles-v7-exit.json (SIGTERM)",
+  "exit_code": 0,
+  "exit_note": "natural, 5s",
+  "reads": {
+   "launch": "bato-launch-v6",
+   "arc": "bato-b-v6",
+   "side": "bato-side-v6"
+  },
+  "keep_alive": "quit-requested: BROWSER (3), APP_CONTROLLER (1); no OMNIBOX_EVERYWHERE",
+  "pre_quit_equals_final": true
+ },
+ "v9": {
+  "guard": "profiles-v8-exit.json",
+  "exit_code": 0,
+  "exit_note": "natural, 5s, 3 windows",
+  "keep_alive": "same as v8",
+  "pre_quit_equals_final": true
+ },
+ "v5_arc_read_note": "v5 mistakenly wrote bato-shared-a into Arc (default field value); not a defect"
 }
