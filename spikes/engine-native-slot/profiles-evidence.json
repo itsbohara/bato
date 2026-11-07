@@ -102,14 +102,14 @@
  "defects_open": [
   "D5",
   "D6 (partly)",
-  "D8 quit hang persists",
-  "D9 Personal page runs in the Side profile context after startup on Side"
+  "D8 quit hang: OMNIBOX_EVERYWHERE keep-alive never released with 3 windows"
  ],
  "defects_fixed": [
   "D1",
   "D3",
   "D4",
-  "D2 crash not reproduced"
+  "D2 crash not reproduced",
+  "D9"
  ],
  "v4": {
   "guard": "logs/integrate-v3-exit.json (v2/v3 exited via SIGTERM)",
@@ -136,5 +136,45 @@
   },
   "d6": "3 workspaces as copies in 2 new Profiles (still says new Profiles)",
   "pre_quit_equals_final": true
+ },
+ "v5": {
+  "guard": "logs/integrate-v3-exit.json",
+  "exit_code": 0,
+  "exit_note": "natural, no SIGTERM, 2 windows",
+  "start_selection": "Work (Arc EB7E187B)",
+  "windows_at_start": 2,
+  "initial_window_bound_to": "EB7E187B context (key empty)",
+  "personal_page_read": "bato-b-value (Arc data)",
+  "wal_changed_on_write": "EB7E187B-A5B7-5A98-9057-CA4EAAC91290",
+  "guard_triggered": false,
+  "mismatch_lines": 0,
+  "keep_alive_state": [
+   "phase quit-requested: registered_count_=3, restart_allowed_count_=0, KeepAlives=[BROWSER (2), APP_CONTROLLER (1)]"
+  ],
+  "pre_quit_equals_final": true
+ },
+ "v6": {
+  "guard": "profiles-v5-exit.json",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after hang",
+  "token1_context": "Default",
+  "personal_read": "bato-shared-a",
+  "wal_changed": "Default only",
+  "d9": "fixed",
+  "mismatch_lines": 0,
+  "d8": "hang persists; remaining keep-alive OMNIBOX_EVERYWHERE (1) at 3s and 10s",
+  "hang_sample": "logs/profiles-v6-hang-sample.txt"
+ },
+ "v7": {
+  "guard": "profiles-v6-exit.json (SIGTERM)",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after hang",
+  "persisted": {
+   "launch": "bato-launch-v6",
+   "arc": "bato-b-v6",
+   "side": "bato-side-v6"
+  },
+  "d8": "same hang",
+  "hang_sample": "logs/profiles-v7-hang-sample.txt"
  }
 }

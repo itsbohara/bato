@@ -72,3 +72,48 @@ Wrapper `tmp/launch-profiles-v4.py`, guard `logs/integrate-v3-exit.json` (v2 and
 - **D8 not fixed.** Quit via the app menu with three windows logged `profile-contexts-released` (count 2, then 0), seven browsers closed, `sample-quit-message-loop-requested`, `native-quit-controller-returned` and three `native-slot-detached`, yet the process was still alive after 60 s and 3 min 54 s. The sample shows the main thread idle in `NSApplication run` with only a `CrShutdownDetector` thread; no thread was waiting on a profile. SIGTERM then exited 0 (`logs/profiles-v4-exit.json`; again not a natural exit). Organization pre-quit == final.
 - **D6.** With "import again as copies" ticked the summary now reads "3 workspaces as copies in 2 new Profiles - 13 pins - 6 folders - 3 favorites - 0 tabs"; the all-imported state shows zero counts. Copies are labelled, but the text still says "2 new Profiles" for Profiles that already exist (`04-copies.png`). Cancelled.
 - No `Cannot create profile` or `profile-window-refused` in the log.
+
+## profiles-v5: per-Profile guard and keep-alive diagnostic
+
+Wrapper `tmp/launch-profiles-v5.py`, guard `logs/integrate-v3-exit.json`, state `runtime/profiles-state-v5` copied from profiles-state-v4's final organization, same cache path. Note: v4's final selection was Work (Arc), not Side, so startup was on **Work (Arc, EB7E187B)**, still a non-launch Profile. Logs `logs/profiles-v5*`, screenshots `logs/profiles-v5-shots/`, wal listings `logs/profiles-v5-wal-{before,after}.txt`.
+
+Sequence and findings:
+1. Startup: two windows, an Arc window (example.test, x=166) and the initial `about:blank` window (x=144). The log shows the initial window was bound to the Arc context (token 1, `key:""`, context `.../EB7E187B-...`).
+2. Selected Personal (launch Profile): the page opened in the existing initial window (the one bound to the Arc context). No new dir, no `profile-window-mismatch` or `profile-page-mismatch` line, no new bound record. storage.html read `bato-b-value` (Arc's value; Personal's `bato-shared-a` lives in `Default`).
+3. Write marker: `EB7E187B-.../LocalStorage-wal` changed (16:42:04 to 16:42:52); `Default`, `3DAF918F`, `C7B9998D` wal files did not. So **the Personal page ran in the Arc Profile's context and the guard did not refuse it.**
+4. Selected Work (Arc): no new window, no new log line.
+5. Quit via app menu with two windows: natural exit 0 (no SIGTERM), organization pre-quit == final, no new dirs. Only one `keep-alive-state` line (quit-requested) because the process exited before the 3 s line (the diagnostic reported none at 3 s or 10 s). This run had only one Profile context in use; the earlier hangs (v2 to v4) had windows bound to two or three different contexts, so the hang may depend on more than one live Profile context (hypothesis).
+
+Verbatim guard and diagnostic lines (all of them):
+```
+{"event":"profile-window-bound","token":1,"browser":1,"key":"","context":"/Volumes/Mahesh/personal/bato-build/runtime/profiles/workspace-v3/EB7E187B-A5B7-5A98-9057-CA4EAAC91290"}
+{"event":"profile-window-bound","token":2,"browser":2,"key":"EB7E187B-A5B7-5A98-9057-CA4EAAC91290","context":"/Volumes/Mahesh/personal/bato-build/runtime/profiles/workspace-v3/EB7E187B-A5B7-5A98-9057-CA4EAAC91290"}
+{"event":"keep-alive-state","phase":"quit-requested","state":"{registered_count_=3, restart_allowed_count_=0, KeepAlives=[BROWSER (2), APP_CONTROLLER (1)]}"}
+```
+No `profile-window-mismatch` and no `profile-page-mismatch` lines occurred. Also logged: `profile-contexts-released` count 1 then 0.
+
+## profiles-v6 and profiles-v7: pinned launch Profile
+
+v6: wrapper `tmp/launch-profiles-v6.py`, guard `profiles-v5-exit.json` (natural exit 0), state copied from profiles-state-v5 final (startup on Arc/Work). v7: guard `profiles-v6-exit.json` (SIGTERM exit 0, noted), state copied from v6 final (startup on Side). Same cache path. Logs `logs/profiles-v6*`, `logs/profiles-v7*`, hang samples `logs/profiles-v{6,7}-hang-sample.txt`.
+
+v6 results
+1. Token 1 bound to key "" and context ending `/Default`: pass.
+2. Personal page read `bato-shared-a` (launch value, all four stores); after Write marker (`bato-launch-v6`) only `Default/LocalStorage-wal` changed: pass. D9 fixed.
+3. Arc (Work) window read `bato-shared-a` on first visit (shared marker from earlier v2 run is... see note), then wrote `bato-b-v6`; Side window read `bato-shared-a` and wrote `bato-side-v6`. Note: Arc and Side first reads show `bato-shared-a`, the value left in each Profile's directory by the v2-era runs (Arc's was overwritten earlier by the v5 test write; unverified origin), so isolation is judged by the later distinct writes (launch `bato-launch-v6`, Arc `bato-b-v6`, Side `bato-side-v6`) and v7.
+4. No `profile-*-refused`, `*-mismatch` lines; no new `<cache>/<UUID>` dirs; organization pre-quit == final.
+5. Quit with 3 windows: **hang persists** (still alive after 70 s; SIGTERM exit 0). keep-alive: after the three BROWSER keep-alives release, one `OMNIBOX_EVERYWHERE (1)` keep-alive remains pending at 3 s and 10 s, which keeps the app alive.
+
+v7 results
+- Startup on Side; saved values persisted per Profile: Side read localStorage/cookie/indexedDB/cacheStorage `bato-side-v6`, Personal (launch) read `bato-launch-v6`, Arc read `bato-b-v6`. **All three persist.**
+- Same quit hang (3 windows; keep-alive identical), SIGTERM exit 0; organization pre-quit == final; no mismatch lines.
+
+Verbatim v6 lines:
+```
+{"event":"profile-window-bound","token":1,"browser":1,"key":"","context":"/Volumes/Mahesh/personal/bato-build/runtime/profiles/workspace-v3/Default"}
+{"event":"profile-window-bound","token":2,"browser":2,"key":"EB7E187B-A5B7-5A98-9057-CA4EAAC91290","context":"/Volumes/Mahesh/personal/bato-build/runtime/profiles/workspace-v3/EB7E187B-A5B7-5A98-9057-CA4EAAC91290"}
+{"event":"profile-window-bound","token":3,"browser":6,"key":"C7B9998D-7792-5FDC-A20D-51E90724E029","context":"/Volumes/Mahesh/personal/bato-build/runtime/profiles/workspace-v3/C7B9998D-7792-5FDC-A20D-51E90724E029"}
+{"event":"keep-alive-state","phase":"quit-requested","state":"{registered_count_=5, restart_allowed_count_=1, KeepAlives=[OMNIBOX_EVERYWHERE (1), BROWSER (3), APP_CONTROLLER (1)]}"}
+{"event":"keep-alive-state","phase":"pending-3s","state":"{registered_count_=1, restart_allowed_count_=1, KeepAlives=[OMNIBOX_EVERYWHERE (1)]}"}
+{"event":"keep-alive-state","phase":"pending-10s","state":"{registered_count_=1, restart_allowed_count_=1, KeepAlives=[OMNIBOX_EVERYWHERE (1)]}"}
+```
+v7 bound lines: token 1 `Default`, token 2 `C7B9998D-...` (Side), token 3 `EB7E187B-...` (Arc); keep-alive lines identical to v6.
