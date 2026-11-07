@@ -68,6 +68,11 @@ public extension ImportPlan {
         let known = Set(existing.workspaces.map(\.id))
         return Set(staging.spaces.filter { known.contains(ids.id("workspace", $0.id)) }.map(\.id))
     }
+
+    /// The checked spaces that an import would add: already-imported ones are skipped unless copies were requested.
+    static func spacesToImport(checked: Set<String>, alreadyImported: Set<String>, asCopies: Bool) -> Set<String> {
+        asCopies ? checked : checked.subtracting(alreadyImported)
+    }
 }
 
 /// A validated draft of the organization after import. Nothing is persisted or applied here.

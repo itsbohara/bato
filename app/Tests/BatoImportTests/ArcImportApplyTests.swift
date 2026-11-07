@@ -166,6 +166,12 @@ final class ArcImportApplyTests: XCTestCase {
         XCTAssertEqual(copy.state.workspaces.count, applied.state.workspaces.count + staging.spaces.count)
     }
 
+    func testAlreadyImportedSpacesAreNotSelectedUnlessCopiesRequested() {
+        XCTAssertEqual(ImportPlan.spacesToImport(checked: ["a", "b"], alreadyImported: ["a", "b"], asCopies: false), [])
+        XCTAssertEqual(ImportPlan.spacesToImport(checked: ["a", "b"], alreadyImported: ["a"], asCopies: false), ["b"])
+        XCTAssertEqual(ImportPlan.spacesToImport(checked: ["a", "b"], alreadyImported: ["a", "b"], asCopies: true), ["a", "b"])
+    }
+
     func testImportingRemainingSpaceLaterReusesItsProfile() throws {
         let staging = try staging()
         let first = staging.spaces[0]

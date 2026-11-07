@@ -4,7 +4,7 @@ import BatoRuntime
 import BatoBrowserUI
 import BatoBlocking
 
-private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
+private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 private typealias CommandID = @convention(c) (Int32) -> Int32
 private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
@@ -14,6 +14,7 @@ private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
+private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
 @MainActor private var createPage: CreatePage?
 @MainActor private var selectPage: PageAction?
@@ -29,29 +30,116 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
 @MainActor private var presentPeekPages: PresentPeek?
 @MainActor private var endPeekPages: EndPeek?
 @MainActor private var navigatePage: NavigatePage?
+@MainActor private var openProfileWindow: OpenProfileWindow?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
 
+/// Routes pages to one Chromium window per Bato Profile: a Chrome Browser has exactly one
+/// Profile, so pages of different Profiles can never share a window. The launch Profile
+/// keeps the original window and context; every other Profile gets its own context and
+/// window on its first page, which stays pending until that window's anchor is bound.
 @MainActor private final class WorkspaceEngine: PageEngine {
-    let supportedProfileIDs: Set<UUID>
-    let token: UInt64
+    let launchProfileID: UUID
+    /// Window token per Profile that currently has a bound window.
+    private(set) var windows: [UUID: UInt64] = [:]
     var pages: [Int32: LivePage] = [:]
     /// Previews are never organization pages: they stay here until promoted or terminal.
     var transient: [Int32: LivePage] = [:]
     var peek: (generation: UInt64, parent: Int32, preview: Int32)?
     var onEvent: ((PageEvent) -> Void)?
     var onAnchorLost: (() -> Void)?
+    /// Called with the token whose window should carry the sidebar and be in front.
+    var onShow: ((UInt64) -> Void)?
+    var onWindowReady: (() -> Void)?
+    private var currentProfileID: UUID
+    private var pending: [UUID: [(page: LivePage, url: URL)]] = [:]
+    private var windowRequest: UUID?
+    private var windowQueue: [UUID] = []
     init(token: UInt64, profileID: UUID) {
-        self.token = token
-        supportedProfileIDs = [profileID]
+        launchProfileID = profileID
+        currentProfileID = profileID
+        windows[profileID] = token
     }
+    var supportedProfileIDs: Set<UUID> { [launchProfileID] }
+    func supportsProfile(_ id: UUID) -> Bool { id == launchProfileID || openProfileWindow != nil }
+    func activateProfile(_ id: UUID) { currentProfileID = id }
+    func token(forProfile id: UUID) -> UInt64? { windows[id] }
+    func isCurrentWindow(_ token: UInt64) -> Bool { windows[currentProfileID] == token }
+
     func create(_ page: LivePage, url: URL) -> Bool {
-        guard supportedProfileIDs.contains(page.profileID) else { return false }
-        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
+        guard supportsProfile(page.profileID) else { return false }
+        if let token = windows[page.profileID] { return createNow(token, page, url) }
+        guard requestWindow(for: page.profileID) else { return false }
+        pending[page.profileID, default: []].append((page, url))
+        return true
+    }
+    /// The client refuses a window whose context is not this Profile's, so a page can never run in another Profile's storage.
+    private func createTab(_ token: UInt64, profileID: UUID, url: URL) -> Int32 {
+        url.absoluteString.withCString { address in
+            profileID.uuidString.withCString { key in
+                createPage?(token, address, key, profileID == launchProfileID ? 1 : 0) ?? 0
+            }
+        }
+    }
+    private func createNow(_ token: UInt64, _ page: LivePage, _ url: URL) -> Bool {
+        let id = createTab(token, profileID: page.profileID, url: url)
         guard id > 0, pages[id] == nil else { return false }
         pages[id] = page
         return true
     }
+    private func requestWindow(for profileID: UUID) -> Bool {
+        if windowRequest == profileID || windowQueue.contains(profileID) { return true }
+        guard windowRequest == nil else {
+            windowQueue.append(profileID)
+            return true
+        }
+        return startWindowRequest(profileID)
+    }
+    private func startWindowRequest(_ profileID: UUID) -> Bool {
+        windowRequest = profileID
+        let accepted = profileID.uuidString.withCString {
+            openProfileWindow?($0, profileID == launchProfileID ? 1 : 0) == 1
+        }
+        if !accepted { windowRequest = nil }
+        return accepted
+    }
+    /// The requested window's anchor is bound (token set) or the request failed (token nil).
+    func windowRequestFinished(profileID: UUID, token: UInt64?) {
+        guard windowRequest == profileID else { return }
+        windowRequest = nil
+        let waiting = pending.removeValue(forKey: profileID) ?? []
+        if let token {
+            windows[profileID] = token
+            for (page, url) in waiting where !createNow(token, page, url) { onEvent?(.creationFailed(page)) }
+        } else {
+            for (page, _) in waiting { onEvent?(.creationFailed(page)) }
+        }
+        while windowRequest == nil, !windowQueue.isEmpty {
+            let next = windowQueue.removeFirst()
+            if !startWindowRequest(next) {
+                for (page, _) in pending.removeValue(forKey: next) ?? [] { onEvent?(.creationFailed(page)) }
+            }
+        }
+        // Pages are live now, so the committed selection can be presented in the new window.
+        if token != nil { onWindowReady?() }
+    }
+    /// A closed window takes its pages with it; their saved entries stay in organization.
+    func windowDetached(_ token: UInt64) {
+        guard let profileID = windows.first(where: { $0.value == token })?.key else { return }
+        windows.removeValue(forKey: profileID)
+        let lost = pages.filter { $0.value.profileID == profileID }
+        for id in lost.keys { pages.removeValue(forKey: id) }
+        for (id, page) in transient where page.profileID == profileID { transient.removeValue(forKey: id) }
+        if lost.isEmpty { return }
+        peek = nil
+        DispatchQueue.main.async { [weak self] in
+            for page in lost.values { self?.onEvent?(.unloaded(page)) }
+        }
+    }
+
     func select(_ page: LivePage?) {
+        let profileID = page?.profileID ?? currentProfileID
+        guard let token = windows[profileID] ?? (page == nil ? windows[launchProfileID] ?? windows.values.first : nil) else { return }
+        onShow?(token)
         let id: Int32
         if let page {
             guard let found = pages.first(where: { $0.value == page }) else {
@@ -64,18 +152,22 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     }
     var supportsSplits: Bool { presentSplitPages != nil && separateSplitPages != nil }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
-        guard supportedProfileIDs.contains(left.profileID), left.profileID == right.profileID,
+        guard left.profileID == right.profileID, let token = windows[left.profileID],
               let a = pages.first(where: { $0.value == left })?.key,
               let b = pages.first(where: { $0.value == right })?.key,
               let f = pages.first(where: { $0.value == focused })?.key else { return false }
+        onShow?(token)
         return presentSplitPages?(token, a, b, f, ratio) == 1
     }
-    func separateSplit() -> Bool { separateSplitPages?(token) == 1 }
+    func separateSplit() -> Bool {
+        guard let token = windows[currentProfileID] else { return true }
+        return separateSplitPages?(token) == 1
+    }
     var supportsPeek: Bool { presentPeekPages != nil && endPeekPages != nil }
     func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool {
-        guard peek == nil, supportedProfileIDs.contains(preview.profileID),
+        guard peek == nil, parent.profileID == preview.profileID, let token = windows[preview.profileID],
               let parentID = pages.first(where: { $0.value == parent })?.key else { return false }
-        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
+        let id = createTab(token, profileID: preview.profileID, url: url)
         guard id > 0, pages[id] == nil, transient[id] == nil else { return false }
         transient[id] = preview
         let generation = presentPeekPages?(token, parentID, id) ?? 0
@@ -85,10 +177,12 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
             return false
         }
         peek = (generation, parentID, id)
+        peekToken = token
         return true
     }
+    private var peekToken: UInt64?
     func endPeek(restoreParent: Bool) -> PeekEndResult {
-        guard let current = peek else { return .stale }
+        guard let current = peek, let token = peekToken else { return .stale }
         switch endPeekPages?(token, current.generation, restoreParent ? 1 : 0) {
         case 1: peek = nil; return .ended
         case 2: peek = nil; return .parentRestoreFailed
@@ -98,7 +192,8 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     var supportsNavigation: Bool { navigatePage != nil }
     /// Organization pages only: a transient preview is never a navigation target.
     func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool {
-        guard let id = pages.first(where: { $0.value == page })?.key, let navigatePage else { return false }
+        guard let id = pages.first(where: { $0.value == page })?.key, let token = windows[page.profileID],
+              let navigatePage else { return false }
         switch command {
         case .load(let url): return url.absoluteString.withCString { navigatePage(token, id, $0) } == 1
         }
@@ -109,12 +204,20 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
         pages[id] = preview
     }
     func requestClose(_ page: LivePage) {
-        guard let id = (pages.first(where: { $0.value == page }) ?? transient.first(where: { $0.value == page }))?.key else { return }
+        if let index = pending[page.profileID]?.firstIndex(where: { $0.page == page }) {
+            pending[page.profileID]?.remove(at: index)
+            DispatchQueue.main.async { [weak self] in self?.onEvent?(.closed(page)) }
+            return
+        }
+        guard let id = (pages.first(where: { $0.value == page }) ?? transient.first(where: { $0.value == page }))?.key,
+              let token = windows[page.profileID] else { return }
         if closePage?(token, id) != 1 { onEvent?(.closeCancelled(page)) }
     }
-    func receive(id: Int32, kind: Int32, url: String, title: String) {
-        if kind == 5 || kind == 7 { onAnchorLost?(); return }
-        if kind == 6 && id == 0 { onEvent?(.selectionCleared); return }
+    func receive(token: UInt64, id: Int32, kind: Int32, url: String, title: String) {
+        // Only the window of the selected workspace's Profile may clear or restart the selection:
+        // another Profile's window showing its blank anchor says nothing about it.
+        if kind == 5 || kind == 7 { if isCurrentWindow(token) { onAnchorLost?() }; return }
+        if kind == 6 && id == 0 { if isCurrentWindow(token) { onEvent?(.selectionCleared) }; return }
         guard let page = pages[id] ?? transient[id] else { return }
         switch kind {
         case 6: if transient[id] == nil { onEvent?(.selected(page)) }
@@ -142,11 +245,11 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     var onEnter: (() -> Void)?
     var onExit: (() -> Void)?
     var onResize: ((CGFloat) -> Void)?
-    weak var content: NSView?
+    weak var content: NSView? { didSet { needsLayout = true } }
     var mode: Int32 = 1 {
         didSet {
             content?.isHidden = mode == 0
-            grip.isHidden = mode == 0
+            grip.isHidden = mode == 0 || content == nil
             needsLayout = true
         }
     }
@@ -164,7 +267,7 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     override func layout() {
         super.layout()
         content?.isHidden = mode == 0
-        grip.isHidden = mode == 0
+        grip.isHidden = mode == 0 || content == nil
         content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width - 6), height: bounds.height)
         grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
     }
@@ -231,48 +334,74 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     }
 }
 
-@MainActor private final class WorkspaceSlot {
-    let root = AttachedWorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
+/// State shared by every window slot: one organization, one controller and one engine.
+/// The sidebar lives in exactly one window at a time and follows the selected page.
+@MainActor private final class WorkspaceHost {
     var controller: NativeWorkspaceController?
     var engine: WorkspaceEngine?
-    var menuRouter: WorkspaceKeyRouter?
+    var router: WorkspaceKeyRouter?
+    var primaryCreated = false
+    weak var mounted: WorkspaceSlot?
+
+    func mount(_ slot: WorkspaceSlot) {
+        guard mounted !== slot, let content = controller?.root else { return }
+        mounted?.root.content = nil
+        content.removeFromSuperview()
+        slot.root.content = content
+        slot.root.addSubview(content, positioned: .below, relativeTo: nil)
+        mounted = slot
+        router?.retarget(token: slot.token, root: slot.root)
+    }
+}
+
+@MainActor private let workspaceHost = WorkspaceHost()
+
+@MainActor private final class WorkspaceSlot {
+    let root = AttachedWorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
+    var controller: NativeWorkspaceController? { workspaceHost.controller }
+    var engine: WorkspaceEngine? { workspaceHost.engine }
     private var blockingControls: BlockingControls?
     private var width: Int32 = 260
     private var mode: Int32 = 1
     private var pointerMonitor: Any?
     private var menuObservers: [NSObjectProtocol] = []
+    private var keyObserver: NSObjectProtocol?
     private var menuTracking = false
     private var changingGeometry = false
-    private let token: UInt64
-    init(token: UInt64, directory: URL) {
+    let token: UInt64
+    /// The first slot owns organization; later slots are windows of other Profiles that borrow its sidebar.
+    init(token: UInt64, directory: URL?) {
         self.token = token
+        root.onEnter = { [weak self] in self?.reveal() }
+        root.onExit = { [weak self] in self?.dismissPeek() }
+        root.onResize = { [weak self] width in
+            guard let self else { return }
+            _ = self.setGeometry(width: Int32(min(400, max(220, width.rounded()))), mode: self.mode)
+        }
+        root.onAttach = { [weak self] in self?.attached() }
+        guard let directory else { return }
         do {
             let controller = try NativeWorkspaceController(directory: directory, handlesKeyEquivalents: false) { profileID in
                 let engine = WorkspaceEngine(token: token, profileID: profileID)
-                self.engine = engine
+                workspaceHost.engine = engine
                 return engine
             }
-            self.controller = controller
-            controller.requestNativeFocus = { [weak self] in
-                guard let self else { return }
-                if self.mode == 0, !self.setGeometry(mode: 2) { return }
-                _ = nativeFocus?(token)
+            workspaceHost.controller = controller
+            controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
+            controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
+            controller.requestPagePresentation = {
+                if let token = workspaceHost.mounted?.token { scheduleSelection?(token) }
             }
-            controller.requestSidebarToggle = { [weak self] in _ = self?.toggle() }
-            root.onEnter = { [weak self] in self?.reveal() }
-            root.onExit = { [weak self] in self?.dismissPeek() }
-            root.onResize = { [weak self] width in
-                guard let self else { return }
-                _ = self.setGeometry(width: Int32(min(400, max(220, width.rounded()))), mode: self.mode)
-            }
-            controller.requestPagePresentation = { scheduleSelection?(token) }
             engine?.onEvent = { [weak controller] event in controller?.receive(event) }
             engine?.onAnchorLost = { [weak controller] in _ = controller?.runtime.start() }
+            engine?.onWindowReady = { [weak controller] in _ = controller?.runtime.start() }
+            engine?.onShow = { token in workspaceSlots[token]?.show() }
             root.content = controller.root
             root.addSubview(controller.root, positioned: .below, relativeTo: nil)
             root.needsLayout = true
+            workspaceHost.mounted = self
             let router = WorkspaceKeyRouter(token: token, root: root,
-                                            toggle: { [weak self] in self?.toggle() ?? false },
+                                            toggle: { workspaceHost.mounted?.toggle() ?? false },
                                             dismissPeek: { [weak controller] in
                 guard let controller, let preview = controller.runtime.peekSession.preview,
                       !preview.isPendingDismissal else { return false }
@@ -286,18 +415,45 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
             }, editAddress: { [weak controller] in controller?.editAddress() ?? false },
                copyLink: { [weak controller] in controller?.copyCurrentLink() ?? false },
                pageItems: { [weak self] in self?.blockingMenuItems() ?? [] })
-            menuRouter = router
-            root.onAttach = { [weak self, weak controller, weak router] in
-                self?.installPointerMonitor()
-                controller?.start()
-                router?.install()
-            }
+            workspaceHost.router = router
         } catch {
             let message = NSTextField(wrappingLabelWithString:
                 "Organization unavailable. Its existing file has been left intact. Close Bato and check the file before reopening.")
             message.frame = NSRect(x: 14, y: 24, width: 232, height: 130)
             root.addSubview(message)
         }
+    }
+    private func attached() {
+        installPointerMonitor()
+        if keyObserver == nil, let window = root.window {
+            keyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.becameKey() }
+            }
+        }
+        if workspaceHost.mounted === self {
+            workspaceHost.controller?.start()
+            workspaceHost.router?.retarget(token: token, root: root)
+            workspaceHost.router?.install()
+        }
+    }
+    /// Carries the sidebar to the focused window and adopts that window's visible page as the selection.
+    private func becameKey() {
+        workspaceHost.mount(self)
+        guard let engine, let controller, let id = activePage?(token), id > 0,
+              let page = engine.pages[id] else { return }
+        controller.receive(.selected(page))
+    }
+    /// Brings this window forward with the sidebar, e.g. when a page of its Profile is selected.
+    func show() {
+        workspaceHost.mount(self)
+        if NSApp.isActive, let window = root.window, !window.isKeyWindow, window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+    func focusNative() {
+        if mode == 0, !setGeometry(mode: 2) { return }
+        _ = nativeFocus?(token)
     }
     /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
     private func blockingMenuItems() -> [NSMenuItem] {
@@ -366,9 +522,10 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     func detach() {
         if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
         pointerMonitor = nil
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        keyObserver = nil
         for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
         menuObservers.removeAll()
-        menuRouter?.restore()
         root.onEnter = nil
         root.onExit = nil
         root.onResize = nil
@@ -379,7 +536,7 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
 
 @_cdecl("BatoSwiftWorkspaceConfigure")
 @MainActor public func configureWorkspace(_ directory: UnsafePointer<CChar>?,
-    _ create: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32,
+    _ create: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32,
     _ select: @escaping @convention(c) (UInt64, Int32) -> Int32,
     _ close: @escaping @convention(c) (UInt64, Int32) -> Int32,
     _ active: @escaping @convention(c) (UInt64) -> Int32,
@@ -406,26 +563,38 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
 
 @MainActor func workspaceModeEnabled() -> Bool { workspaceDirectory != nil }
 
+/// The client only offers windows it requested for a Profile; the first one owns organization.
 @MainActor func createWorkspaceSlot(_ token: UInt64) -> UnsafeMutableRawPointer? {
-    guard let directory = workspaceDirectory, workspaceSlots.isEmpty else { return nil }
-    let slot = WorkspaceSlot(token: token, directory: directory)
+    guard let directory = workspaceDirectory else { return nil }
+    let primary = !workspaceHost.primaryCreated
+    if !primary && workspaceHost.controller == nil { return nil }
+    workspaceHost.primaryCreated = true
+    let slot = WorkspaceSlot(token: token, directory: primary ? directory : nil)
     workspaceSlots[token] = slot
     return Unmanaged.passUnretained(slot.root).toOpaque()
 }
 @MainActor func focusWorkspaceSlot(_ token: UInt64) -> UnsafeMutableRawPointer? {
     guard let slot = workspaceSlots[token] else { return nil }
-    return Unmanaged.passUnretained(slot.controller?.focusTarget ?? slot.root).toOpaque()
+    let sidebar = workspaceHost.mounted === slot ? slot.controller?.focusTarget : nil
+    return Unmanaged.passUnretained(sidebar ?? slot.root).toOpaque()
 }
 @MainActor func detachWorkspaceSlot(_ token: UInt64) {
-    workspaceSlots[token]?.detach()
-    workspaceSlots.removeValue(forKey: token)
+    guard let slot = workspaceSlots.removeValue(forKey: token) else { return }
+    slot.detach()
+    workspaceHost.engine?.windowDetached(token)
+    guard workspaceHost.mounted === slot || workspaceHost.mounted == nil else { return }
+    if let next = workspaceSlots.values.first {
+        workspaceHost.mount(next)
+    } else {
+        workspaceHost.router?.restore()
+    }
 }
 
 @_cdecl("BatoSwiftWorkspacePageEvent")
 @MainActor public func workspacePageEvent(_ token: UInt64, _ browserID: Int32, _ kind: Int32,
                                         _ url: UnsafePointer<CChar>?, _ title: UnsafePointer<CChar>?) {
     precondition(Thread.isMainThread)
-    workspaceSlots[token]?.engine?.receive(id: browserID, kind: kind,
+    workspaceHost.engine?.receive(token: token, id: browserID, kind: kind,
         url: url.map { String(cString: $0) } ?? "", title: title.map { String(cString: $0) } ?? "")
 }
 
@@ -450,7 +619,7 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
 /// Route physical T/W before Chromium's page-focused key-equivalent path.
 /// Leave Chromium's menu items intact for untracked tabs and menu commands.
 @MainActor private final class WorkspaceKeyRouter: NSObject {
-    private let token: UInt64
+    private var token: UInt64
     private weak var root: NSView?
     private weak var ownedWindow: NSWindow?
     private var keyMonitor: Any?
@@ -473,6 +642,12 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
         self.dismissPeek = dismissPeek; self.promotePeek = promotePeek
         self.editAddress = editAddress; self.copyLink = copyLink; self.pageItems = pageItems
         super.init()
+    }
+    /// The sidebar moved to another window: its shortcuts now belong to that window.
+    func retarget(token: UInt64, root: NSView) {
+        self.token = token
+        self.root = root
+        ownedWindow = root.window
     }
     @objc private func toggleFromMenu() { _ = toggle() }
     @objc private func promotePeekFromMenu() { _ = promotePeek() }
@@ -713,4 +888,20 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     _ navigate: @escaping @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32) {
     precondition(Thread.isMainThread)
     navigatePage = navigate
+}
+
+
+@_cdecl("BatoSwiftWorkspaceConfigureProfiles")
+@MainActor public func configureWorkspaceProfiles(
+    _ open: @escaping @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32) {
+    precondition(Thread.isMainThread)
+    openProfileWindow = open
+}
+
+/// token is the bound window's slot, or 0 when the request failed or timed out.
+@_cdecl("BatoSwiftWorkspaceProfileWindowReady")
+@MainActor public func workspaceProfileWindowReady(_ token: UInt64, _ key: UnsafePointer<CChar>?, _ ok: Int32) {
+    precondition(Thread.isMainThread)
+    guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
+    workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
 }

@@ -24,7 +24,9 @@ public final class NativeWorkspaceController: NSObject {
     private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let workspaceActions = NSButton(frame: .zero)
     private let sidebarToggle = NSButton(frame: .zero)
+    private var trafficLightClearanceWidth: NSLayoutConstraint?
     private let profileLabel = NSTextField(labelWithString: "")
+    private let spaceLabel = NSTextField(labelWithString: "")
     private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
@@ -49,7 +51,8 @@ public final class NativeWorkspaceController: NSObject {
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 
     /// Load failures throw without replacing the existing document. The factory
-    /// receives the organization Profile to bind to an explicit engine context.
+    /// receives the organization's launch Profile, which stays bound to the engine's original context
+    /// whichever workspace is selected at startup.
     /// It must not infer engine isolation from this UUID alone.
     /// Hosts with their own scoped keyboard router must disable sidebar key equivalents.
     public init(directory: URL, handlesKeyEquivalents: Bool = true,
@@ -62,13 +65,14 @@ public final class NativeWorkspaceController: NSObject {
             state = BrowserState.initial()
             try store.save(state)
         }
-        let engine = try makeEngine(state.currentWorkspace.profileID)
+        let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
         organizationStore = store
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
         sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
         root = sidebar
         super.init()
+        sidebar.windowChanged = { [weak self] in DispatchQueue.main.async { self?.fitTrafficLightClearance() } }
         configureView()
         runtime.onStateChange = { [weak self] _ in self?.render() }
         render()
@@ -307,12 +311,23 @@ public final class NativeWorkspaceController: NSObject {
         sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
         sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
         sidebarToggle.isHidden = requestSidebarToggle == nil
-        let headingSpacer = NSView()
-        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let heading = NSStackView(views: [sidebarToggle, headingSpacer, workspaceEdit, workspaceActions])
+        let trafficLightClearance = NSView()
+        let clearanceWidth = trafficLightClearance.widthAnchor.constraint(equalToConstant: SidebarMetrics.trafficLightClearance)
+        clearanceWidth.isActive = true
+        self.trafficLightClearanceWidth = clearanceWidth
+        spaceLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        spaceLabel.textColor = .labelColor
+        spaceLabel.lineBreakMode = .byTruncatingTail
+        spaceLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spaceLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        spaceLabel.setAccessibilityLabel("Current workspace")
+        spaceLabel.setAccessibilityIdentifier("bato-space-name")
+        let heading = NSStackView(views: [trafficLightClearance, spaceLabel, sidebarToggle, workspaceEdit, workspaceActions])
         heading.orientation = .horizontal
+        heading.alignment = .centerY
         heading.distribution = .fill
         heading.spacing = 2
+        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight).isActive = true
 
         configureTextAction(newTabButton, symbol: "plus")
         newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
@@ -410,7 +425,7 @@ public final class NativeWorkspaceController: NSObject {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: SidebarMetrics.sideInset),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -SidebarMetrics.sideInset),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 0),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
             pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -451,11 +466,25 @@ public final class NativeWorkspaceController: NSObject {
         button.heightAnchor.constraint(equalToConstant: 29).isActive = true
     }
 
+    /// Keeps the workspace label clear of the real window buttons, which differ with the system's window style.
+    private func fitTrafficLightClearance() {
+        guard let constraint = trafficLightClearanceWidth, let window = root.window,
+              let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
+        let lightsEnd = container.convert(zoom.frame, to: nil).maxX
+        let rowStart = root.convert(NSPoint(x: SidebarMetrics.sideInset, y: 0), to: nil).x
+        let fitted = max(SidebarMetrics.trafficLightClearance, ceil(lightsEnd - rowStart + SidebarMetrics.trafficLightGap))
+        if constraint.constant != fitted { constraint.constant = fitted }
+    }
+
     private func render() {
+        fitTrafficLightClearance()
         commandBar?.refresh()
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
+        spaceLabel.stringValue = workspace.name
+        spaceLabel.toolTip = workspace.name
+        spaceLabel.setAccessibilityValue(workspace.name)
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -1319,6 +1348,12 @@ private final class SidebarPageView: AdaptiveSidebarView {
 enum SidebarMetrics {
     static let cornerRadius: CGFloat = 10
     static let sideInset: CGFloat = 10
+    /// Must equal kNativeSidebarTopRowHeight in the engine overlay: the sidebar spans the window top and its first row shares the traffic lights' row.
+    static let topRowHeight: CGFloat = 46
+    /// Space the three traffic lights occupy at the row's leading edge, net of the side inset.
+    static let trafficLightClearance: CGFloat = 62
+    /// Gap between the green light and the workspace label, net of the row's own 2pt item spacing.
+    static let trafficLightGap: CGFloat = 6
 }
 
 @MainActor
@@ -1343,12 +1378,17 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
         let base = NSColor.windowBackgroundColor
         // Opaque, understated workspace color remains readable with Reduce
         // Transparency and adapts to the system's current light/dark palette.
-        let fraction: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.04 : 0.11
+        let fraction: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.05 : 0.2
         let top = base.blended(withFraction: fraction, of: accent) ?? base
         let bottom = base.blended(withFraction: fraction * 0.4, of: accent) ?? base
         NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
     }
     var keyEquivalentsEnabled = true
+    var windowChanged: (() -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowChanged?()
+    }
     var newTab: (() -> Void)?
     var closeSelection: (() -> Void)?
     var editAddress: (() -> Bool)?

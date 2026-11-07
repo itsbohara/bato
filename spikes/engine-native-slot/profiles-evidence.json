@@ -1,0 +1,200 @@
+{
+ "run": "profiles-v1",
+ "date": "2026-11-07",
+ "wrapper": "tmp/launch-profiles-v1.py",
+ "exit_code": -11,
+ "fixture_server_18765": "running",
+ "profiles": {
+  "launch": "3DAF918F",
+  "imported": [
+   "EB7E187B (Arc)",
+   "C7B9998D (Arc - Profile 1)"
+  ]
+ },
+ "dirs_created": [
+  "<cache>/Default/EB7E187B-A5B7-5A98-9057-CA4EAAC91290",
+  "<cache>/Default/C7B9998D-7792-5FDC-A20D-51E90724E029"
+ ],
+ "windows_opened_per_profile_select": 1,
+ "isolation": {
+  "launch_value": "bato-shared-a",
+  "b_initial": null,
+  "b_value": "bato-b-value",
+  "launch_after_b": "bato-shared-a",
+  "b_after_reopen": "bato-b-value",
+  "stores": [
+   "localStorage",
+   "cookie",
+   "indexedDB",
+   "cacheStorage"
+  ]
+ },
+ "persistence_across_relaunch": "not run (exit -11 blocks guard; contexts in-memory per D1)",
+ "cross_profile_split": "not constructible in UI; unit-test only",
+ "visual": {
+  "lights_centre_y": 54,
+  "toolbar_centre_y": 54,
+  "sidebar_height": 1040,
+  "label_x": 195,
+  "green_light_right_x": 196,
+  "toolbar_x": 360,
+  "omnibox_about_blank": "literal about:blank, not placeholder",
+  "search_engine": "unchecked"
+ },
+ "import_sheet": {
+  "preview_rows_at_top": true,
+  "all_imported_counts_zero": true,
+  "import_disabled_until_copies": true
+ },
+ "defects": [
+  "D1 contexts at Default/<UUID> fall back to off-the-record (no persistence)",
+  "D2 exit -11 SIGSEGV quitting with 3 windows",
+  "D3 label overlaps green light by 1pt",
+  "D4 stale import completion copy",
+  "D5 pin title overwritten by page title",
+  "D6 copies summary says new Profiles"
+ ],
+ "org_bytes_pre_quit_equal_final": true,
+ "private_logs": "SSD logs/profiles-v1*",
+ "superseded_by": [
+  "profiles-v2",
+  "profiles-v3"
+ ],
+ "v2": {
+  "guard": "logs/integrate-v3-exit.json",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after ~5 min quit hang",
+  "cache_dirs": [
+   "<cache>/EB7E187B-A5B7-5A98-9057-CA4EAAC91290",
+   "<cache>/C7B9998D-7792-5FDC-A20D-51E90724E029"
+  ],
+  "dir_sizes": [
+   "3.6M",
+   "3.5M"
+  ],
+  "profile_data_files": [
+   "Cookies",
+   "LocalStorage",
+   "IndexedDB"
+  ],
+  "cannot_create_profile_logs": 0,
+  "isolation": "pass",
+  "quit_markers_per_window": {
+   "native-slot-detached": 3,
+   "browser_closed": 7,
+   "native-quit-requested": 1
+  },
+  "label_gap_D3": "fixed",
+  "import_copy_D4": "fixed",
+  "pre_quit_equals_final": true
+ },
+ "v3": {
+  "guard": "logs/profiles-v2-exit.json",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after quit hang",
+  "b_persisted": true,
+  "b_values": "bato-b-value in localStorage, cookie, indexedDB, cacheStorage",
+  "launch_profile_persisted": false,
+  "launch_profile_note": "new <cache>/3DAF918F context created (D9), data remains in Default",
+  "pre_quit_equals_final": true
+ },
+ "d6_copies_summary": "still says 2 new Profiles (not fixed)",
+ "defects_open": [
+  "D5",
+  "D6 (partly)"
+ ],
+ "defects_fixed": [
+  "D1",
+  "D2 crash not reproduced",
+  "D3",
+  "D4",
+  "D8",
+  "D9"
+ ],
+ "v4": {
+  "guard": "logs/integrate-v3-exit.json (v2/v3 exited via SIGTERM)",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after hang >3.5 min",
+  "start_selection": "Side (non-launch)",
+  "d9": {
+   "fixed": false,
+   "new_dirs_created": false,
+   "personal_read": "null, expected bato-shared-a",
+   "write_landed_in": "<cache>/C7B9998D (Side profile)",
+   "warning": "Multiple CacheStorage instances using the same directory"
+  },
+  "b_persisted": true,
+  "d8": {
+   "fixed": false,
+   "profile_contexts_released": [
+    2,
+    0
+   ],
+   "alive_after_s": 234,
+   "hang_sample": "logs/profiles-v4-hang-sample.txt",
+   "main_thread": "idle NSApplication run"
+  },
+  "d6": "3 workspaces as copies in 2 new Profiles (still says new Profiles)",
+  "pre_quit_equals_final": true
+ },
+ "v5": {
+  "guard": "logs/integrate-v3-exit.json",
+  "exit_code": 0,
+  "exit_note": "natural, no SIGTERM, 2 windows",
+  "start_selection": "Work (Arc EB7E187B)",
+  "windows_at_start": 2,
+  "initial_window_bound_to": "EB7E187B context (key empty)",
+  "personal_page_read": "bato-b-value (Arc data)",
+  "wal_changed_on_write": "EB7E187B-A5B7-5A98-9057-CA4EAAC91290",
+  "guard_triggered": false,
+  "mismatch_lines": 0,
+  "keep_alive_state": [
+   "phase quit-requested: registered_count_=3, restart_allowed_count_=0, KeepAlives=[BROWSER (2), APP_CONTROLLER (1)]"
+  ],
+  "pre_quit_equals_final": true
+ },
+ "v6": {
+  "guard": "profiles-v5-exit.json",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after hang",
+  "token1_context": "Default",
+  "personal_read": "bato-shared-a",
+  "wal_changed": "Default only",
+  "d9": "fixed",
+  "mismatch_lines": 0,
+  "d8": "hang persists; remaining keep-alive OMNIBOX_EVERYWHERE (1) at 3s and 10s",
+  "hang_sample": "logs/profiles-v6-hang-sample.txt"
+ },
+ "v7": {
+  "guard": "profiles-v6-exit.json (SIGTERM)",
+  "exit_code": 0,
+  "exit_note": "SIGTERM after hang",
+  "persisted": {
+   "launch": "bato-launch-v6",
+   "arc": "bato-b-v6",
+   "side": "bato-side-v6"
+  },
+  "d8": "same hang",
+  "hang_sample": "logs/profiles-v7-hang-sample.txt"
+ },
+ "v8": {
+  "guard": "profiles-v7-exit.json (SIGTERM)",
+  "exit_code": 0,
+  "exit_note": "natural, 5s",
+  "reads": {
+   "launch": "bato-launch-v6",
+   "arc": "bato-b-v6",
+   "side": "bato-side-v6"
+  },
+  "keep_alive": "quit-requested: BROWSER (3), APP_CONTROLLER (1); no OMNIBOX_EVERYWHERE",
+  "pre_quit_equals_final": true
+ },
+ "v9": {
+  "guard": "profiles-v8-exit.json",
+  "exit_code": 0,
+  "exit_note": "natural, 5s, 3 windows",
+  "keep_alive": "same as v8",
+  "pre_quit_equals_final": true
+ },
+ "v5_arc_read_note": "v5 mistakenly wrote bato-shared-a into Arc (default field value); not a defect"
+}

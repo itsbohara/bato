@@ -12,10 +12,12 @@
 #include "include/cef_id_mappers.h"
 #include "include/cef_image.h"
 #include "include/cef_parser.h"
+#include "include/cef_request_context_handler.h"
 #include "include/cef_task.h"
 #include "include/internal/bato_native_slot.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "tests/cefsimple/native_slot_client.h"
+#include "tests/cefsimple/simple_handler.h"
 
 extern "C" void* BatoSwiftNativeSlotCreate(uint64_t token);
 extern "C" void* BatoSwiftNativeSlotFocusTarget(uint64_t token);
@@ -24,7 +26,7 @@ extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
                                               int (*advance)(uint64_t, int),
                                               int (*navigate)(uint64_t, const char*));
 extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
-    int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
+    int (*create)(uint64_t, const char*, const char*, int), int (*select)(uint64_t, int),
     int (*close)(uint64_t, int), int (*active)(uint64_t),
     int (*native_focus)(uint64_t), int (*command_id)(int),
     void (*schedule_selection)(uint64_t),
@@ -51,6 +53,12 @@ extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 // ConfigureNavigation(navigate): navigate(token, browser, url) loads url in that page.
 using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, const char*));
 
+// Multi-Profile hooks are optional Swift exports, resolved with dlsym.
+// ConfigureProfiles(open): open(profile_key, launch) asks for a window in that Profile's context.
+// ProfileWindowReady(token, profile_key, ok): the requested window is bound (ok != 0) or failed.
+using SwiftConfigureProfiles = void (*)(int (*)(const char*, int));
+using SwiftProfileWindowReady = void (*)(uint64_t, const char*, int);
+
 extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
     const unsigned char* png, size_t size);
 
@@ -73,6 +81,7 @@ SwiftPeekEnded g_swift_peek_ended = nullptr;
 SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
 SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
+SwiftProfileWindowReady g_swift_profile_ready = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
@@ -87,6 +96,8 @@ struct WorkspaceSlot {
   CefRefPtr<CefRequestContext> context;
   std::map<int, BoundPage> pages;
   std::set<int> pending_close;
+  // Empty for the launch window; otherwise the Profile key the window was requested for.
+  std::string profile_key;
   int split_left = 0;
   int split_right = 0;
   uint64_t split_revision = 0;
@@ -98,6 +109,29 @@ struct WorkspaceSlot {
   CefRefPtr<CefBrowser> peek_parent_browser;
   CefRefPtr<CefBrowser> peek_preview_browser;
 };
+// One window and request context per Bato Profile: a Chrome Browser has exactly one Profile.
+// Contexts are created lazily and kept for the process, so a closed Profile window reopens
+// on the same storage. At most one window request is in flight; the engine binds the window's
+// blank anchor to this request, never by guessing from window order.
+struct WindowRequest {
+  std::string key;
+  bool launch = false;
+  CefRefPtr<CefRequestContext> context;
+  uint64_t serial = 0;
+};
+// Intentionally leaked: CEF refs must not be destroyed at process exit.
+WindowRequest& PendingWindow() {
+  static auto* request = new WindowRequest;
+  return *request;
+}
+uint64_t g_window_serial = 0;
+bool g_primary_slot_created = false;
+std::map<std::string, CefRefPtr<CefRequestContext>>& ProfileContexts() {
+  static auto* contexts = new std::map<std::string, CefRefPtr<CefRequestContext>>;
+  return *contexts;
+}
+constexpr int64_t kProfileWindowTimeoutMs = 20000;
+
 // Main-thread-only process storage. Entries and all CEF refs are explicitly
 // released on detach; a process-lifetime container avoids exit-time CEF calls.
 std::map<uint64_t, WorkspaceSlot>& WorkspaceSlots() {
@@ -157,6 +191,8 @@ enum class WorkspaceRejection {
   kCreatedBrowserIsPeer,
   kCreatedWindowMismatch,
   kCreatedContextMismatch,
+  kProfileMismatch,
+  kCreatedProfileMismatch,
   kCreatedFrameInvalid,
   kPageAlreadyBound,
   kPageInsertionFailed,
@@ -230,6 +266,12 @@ void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
     case WorkspaceRejection::kCreatedWindowMismatch:
       value = "created-window-mismatch";
       break;
+    case WorkspaceRejection::kProfileMismatch:
+      value = "profile-mismatch";
+      break;
+    case WorkspaceRejection::kCreatedProfileMismatch:
+      value = "created-profile-mismatch";
+      break;
     case WorkspaceRejection::kCreatedContextMismatch:
       value = "created-context-mismatch";
       break;
@@ -252,6 +294,74 @@ void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
   fprintf(stderr,
           "{\"event\":\"workspace-adapter-rejected\",\"operation\":\"%s\",\"reason\":\"%s\"}\n",
           operation, value);
+}
+
+void LogProfileRefusal(const char* reason) {
+  fprintf(stderr, "{\"event\":\"profile-window-refused\",\"reason\":\"%s\"}\n", reason);
+}
+
+std::string ResolvePath(const std::string& path) {
+  if (path.empty()) return "";
+  NSString* text = [NSString stringWithUTF8String:path.c_str()];
+  return std::string(text.stringByStandardizingPath.stringByResolvingSymlinksInPath.UTF8String ?: "");
+}
+
+// The --cache-path root, which is Chrome's user data dir and the parent of every Profile directory.
+std::string CacheRoot() {
+  return ResolvePath(CefCommandLine::GetGlobalCommandLine()->GetSwitchValue("cache-path").ToString());
+}
+
+// Where each Profile's context must live. The launch Profile is always <root>/Default, which
+// startup pins with --profile-directory; any other Profile is a direct child named by its key.
+std::string ExpectedProfilePath(const std::string& key, bool launch) {
+  const auto root = CacheRoot();
+  if (root.empty()) return "";
+  return launch ? root + "/Default" : root + "/" + key;
+}
+
+bool ContextPathIs(CefRefPtr<CefRequestContext> context, const std::string& path) {
+  return context && !path.empty() && ResolvePath(context->GetCachePath().ToString()) == path;
+}
+
+void PostProfileWindowResult(uint64_t token, const std::string& key, bool ok) {
+  if (!g_swift_profile_ready) return;
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, std::string key, bool ok) {
+        if (g_swift_profile_ready) g_swift_profile_ready(token, key.c_str(), ok ? 1 : 0);
+      }, token, key, ok));
+}
+
+// Seeds an unbound slot from its window's blank anchor. The first window is the launch
+// Profile; any later one must use the context of the single outstanding window request.
+// Returns false when the browser is neither, leaving the slot unbound.
+bool BindAnchor(uint64_t token, WorkspaceSlot& slot, CefRefPtr<CefBrowser> browser) {
+  const int identifier = browser->GetIdentifier();
+  auto context = browser->GetHost()->GetRequestContext();
+  const bool initial = identifier == g_initial_browser_id;
+  if (!initial && (PendingWindow().key.empty() || !context->IsSame(PendingWindow().context))) return false;
+  // Absolute check: a window is only ever bound to the directory its Profile owns.
+  const bool launch = initial || PendingWindow().launch;
+  const auto expected = ExpectedProfilePath(initial ? "" : PendingWindow().key, launch);
+  if (!ContextPathIs(context, expected)) {
+    fprintf(stderr, "{\"event\":\"profile-window-refused\",\"reason\":\"anchor-context-path\",\"token\":%llu,"
+            "\"browser\":%d,\"context\":\"%s\",\"expected\":\"%s\"}\n",
+            static_cast<unsigned long long>(token), identifier,
+            context->GetCachePath().ToString().c_str(), expected.c_str());
+    return false;
+  }
+  if (!initial) {
+    // The launch Profile's window carries no key: it is the global context, never a Profile directory.
+    const std::string key = PendingWindow().key;
+    slot.profile_key = PendingWindow().launch ? "" : key;
+    PendingWindow() = WindowRequest();
+    PostProfileWindowResult(token, key, true);
+  }
+  slot.anchor = browser;
+  slot.context = context;
+  fprintf(stderr, "{\"event\":\"profile-window-bound\",\"token\":%llu,\"browser\":%d,\"key\":\"%s\",\"context\":\"%s\"}\n",
+          static_cast<unsigned long long>(token), identifier, slot.profile_key.c_str(),
+          context->GetCachePath().ToString().c_str());
+  return true;
 }
 
 WorkspaceSlot* AvailableSlot(uint64_t token) {
@@ -278,9 +388,9 @@ WorkspaceSlot* AvailableSlot(uint64_t token) {
     return reject(WorkspaceRejection::kActiveBrowserInvalid);
   auto& slot = found->second;
   if (!slot.context) {
-    // Only the initial browser can seed the original blank anchor. A new tab
-    // can also briefly have an empty URL, so emptiness alone is insufficient.
-    if (identifier != g_initial_browser_id)
+    // Only the initial browser or the requested Profile window's first browser can seed a
+    // blank anchor. A new tab can also briefly have an empty URL, so emptiness alone is insufficient.
+    if (identifier != g_initial_browser_id && PendingWindow().key.empty())
       return reject(WorkspaceRejection::kInitialBrowserMismatch);
     auto frame = active->GetMainFrame();
     if (!frame)
@@ -288,8 +398,8 @@ WorkspaceSlot* AvailableSlot(uint64_t token) {
     const auto initial_url = frame->GetURL().ToString();
     if (!initial_url.empty() && initial_url != "about:blank")
       return reject(WorkspaceRejection::kInitialDestinationMismatch);
-    slot.anchor = active;
-    slot.context = active->GetHost()->GetRequestContext();
+    if (!BindAnchor(token, slot, active))
+      return reject(WorkspaceRejection::kInitialBrowserMismatch);
   }
   // An anchor closed by Chrome does not change the bound engine Profile. A real
   // page may prove same-window ownership, but must never become the blank anchor.
@@ -386,7 +496,34 @@ class WorkspaceIconDownload final : public CefDownloadImageCallback {
   IMPLEMENT_REFCOUNTING(WorkspaceIconDownload);
 };
 
-int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
+// The context a page of this Profile must run in: the launch Profile (empty key) uses the global
+// context, every other Profile its own. Null when that context does not exist.
+CefRefPtr<CefRequestContext> ProfileContext(const std::string& key, bool launch) {
+  if (launch) return CefRequestContext::GetGlobalContext();
+  auto found = ProfileContexts().find(key);
+  return found == ProfileContexts().end() ? nullptr : found->second;
+}
+
+// A page may only be created in a window whose context is its Profile's. Diagnostic records carry
+// identifiers and cache paths only, never destinations or titles.
+bool WindowMatchesProfile(uint64_t token, const WorkspaceSlot& slot, const std::string& key, bool launch) {
+  auto expected = ProfileContext(key, launch);
+  const bool match = expected && slot.context && slot.context->IsSame(expected) &&
+      (launch ? slot.profile_key.empty() : slot.profile_key == key) &&
+      ContextPathIs(slot.context, ExpectedProfilePath(key, launch));
+  if (!match) {
+    fprintf(stderr,
+            "{\"event\":\"profile-window-mismatch\",\"token\":%llu,\"slot_key\":\"%s\",\"page_key\":\"%s\","
+            "\"launch\":%s,\"slot_context\":\"%s\",\"expected_context\":\"%s\"}\n",
+            static_cast<unsigned long long>(token), slot.profile_key.c_str(), key.c_str(),
+            launch ? "true" : "false",
+            slot.context ? slot.context->GetCachePath().ToString().c_str() : "",
+            expected ? expected->GetCachePath().ToString().c_str() : "");
+  }
+  return match;
+}
+
+int CreateWorkspacePage(uint64_t token, const char* utf8_url, const char* utf8_profile_key, int launch) {
   auto reject = [](WorkspaceRejection reason) {
     LogWorkspaceRejection("create-page", reason);
     return 0;
@@ -398,6 +535,9 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
   auto* slot = AvailableSlot(token);
   if (!slot)
     return reject(WorkspaceRejection::kAvailableSlotRejected);
+  const std::string profile_key = utf8_profile_key ? utf8_profile_key : "";
+  if (!WindowMatchesProfile(token, *slot, profile_key, launch != 0))
+    return reject(WorkspaceRejection::kProfileMismatch);
   // Copy URL and retain the same-window peer/context across Chrome callbacks.
   const CefString url(utf8_url);
   CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
@@ -421,6 +561,17 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
     return reject(WorkspaceRejection::kCreatedWindowMismatch);
   if (!browser->GetHost()->GetRequestContext()->IsSame(context))
     return reject(WorkspaceRejection::kCreatedContextMismatch);
+  // The tab itself must also run in the Profile's context, whatever the slot believes.
+  auto expected = ProfileContext(profile_key, launch != 0);
+  if (!expected || !browser->GetHost()->GetRequestContext()->IsSame(expected) ||
+      !ContextPathIs(browser->GetHost()->GetRequestContext(), ExpectedProfilePath(profile_key, launch != 0))) {
+    fprintf(stderr, "{\"event\":\"profile-page-mismatch\",\"token\":%llu,\"browser\":%d,\"page_key\":\"%s\","
+            "\"page_context\":\"%s\"}\n", static_cast<unsigned long long>(token), identifier,
+            profile_key.c_str(),
+            browser->GetHost()->GetRequestContext()->GetCachePath().ToString().c_str());
+    browser->GetHost()->CloseBrowser(true);
+    return reject(WorkspaceRejection::kCreatedProfileMismatch);
+  }
   auto frame = browser->GetMainFrame();
   if (!frame || !frame->IsValid())
     return reject(WorkspaceRejection::kCreatedFrameInvalid);
@@ -675,9 +826,90 @@ int NavigateCurrentPage(uint64_t token, const char* utf8_url) {
   return 1;
 }
 
+// The first window is the launch Profile's; later windows are accepted only while a Profile
+// window request is outstanding. Any other window keeps stock Chrome UI with no sidebar.
 void* Create(void*, uint64_t token) {
-  if (g_workspace_enabled) WorkspaceSlots().try_emplace(token);
+  if (g_workspace_enabled) {
+    if (g_primary_slot_created && PendingWindow().key.empty()) return nullptr;
+    g_primary_slot_created = true;
+    WorkspaceSlots().try_emplace(token);
+    void* view = BatoSwiftNativeSlotCreate(token);
+    if (!view) WorkspaceSlots().erase(token);
+    return view;
+  }
   return BatoSwiftNativeSlotCreate(token);
+}
+
+bool ValidProfileKey(const std::string& key) {
+  if (key.size() != 36) return false;
+  for (size_t i = 0; i < key.size(); ++i) {
+    const char c = key[i];
+    const bool dash = i == 8 || i == 13 || i == 18 || i == 23;
+    if (dash ? c != '-' : !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  return true;
+}
+
+// Requests a Chrome window whose Browser uses the Profile's own request context. The
+// Chrome runtime pairs a Browser with exactly one Profile, so pages of different Profiles
+// can never share a window. Returns 1 when the request was accepted; completion arrives
+// through BatoSwiftWorkspaceProfileWindowReady. launch != 0 reopens the launch Profile's
+// window on the original global context.
+int OpenProfileWindow(const char* utf8_key, int launch) {
+  if (!g_workspace_enabled || !NSThread.isMainThread || !CefCurrentlyOn(TID_UI) ||
+      !g_active_browser_id || !g_swift_profile_ready || !utf8_key) return 0;
+  const std::string key = utf8_key;
+  if (!ValidProfileKey(key) || !PendingWindow().key.empty()) return 0;
+  CefRefPtr<CefRequestContext> context;
+  if (launch) {
+    context = CefRequestContext::GetGlobalContext();
+    if (!ContextPathIs(context, ExpectedProfilePath("", true))) {
+      LogProfileRefusal("launch-context-not-default");
+      return 0;
+    }
+  } else {
+    auto& contexts = ProfileContexts();
+    auto found = contexts.find(key);
+    if (found == contexts.end()) {
+      // CEF persists a Chrome-style context only as a direct child of its user data dir, which is
+      // the --cache-path root. Any other location silently becomes an in-memory profile, so
+      // refuse instead of losing storage.
+      const std::string path = ExpectedProfilePath(key, false);
+      if (path.empty()) {
+        LogProfileRefusal("cache-root-unavailable");
+        return 0;
+      }
+      CefRequestContextSettings settings;
+      CefString(&settings.cache_path) = path;
+      context = CefRequestContext::CreateContext(settings, nullptr);
+      if (!ContextPathIs(context, path)) {
+        LogProfileRefusal("context-path-rejected");
+        return 0;
+      }
+      found = contexts.emplace(key, context).first;
+    }
+    context = found->second;
+  }
+  PendingWindow().key = key;
+  PendingWindow().launch = launch != 0;
+  PendingWindow().context = context;
+  const uint64_t serial = ++g_window_serial;
+  PendingWindow().serial = serial;
+  CefWindowInfo window_info;
+  CefBrowserSettings browser_settings;
+  if (!CefBrowserHost::CreateBrowser(window_info, SimpleHandler::GetInstance(), "about:blank",
+                                     browser_settings, nullptr, context)) {
+    PendingWindow() = WindowRequest();
+    return 0;
+  }
+  CefPostDelayedTask(TID_UI, base::BindOnce(
+      [](uint64_t serial) {
+        if (PendingWindow().serial != serial || PendingWindow().key.empty()) return;
+        const std::string key = PendingWindow().key;
+        PendingWindow() = WindowRequest();
+        PostProfileWindowResult(0, key, false);
+      }, serial), kProfileWindowTimeoutMs);
+  return 1;
 }
 void Detached(void*, uint64_t token) {
   WorkspaceSlots().erase(token);
@@ -740,7 +972,7 @@ void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
   if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
   const int identifier = browser->GetIdentifier();
   if (g_initial_browser_id == 0) g_initial_browser_id = identifier;
-  if (identifier != g_initial_browser_id) return;
+  if (identifier != g_initial_browser_id && PendingWindow().key.empty()) return;
   // OnAfterCreated precedes SetBrowser/tab-strip attachment. Only the posted
   // task may inspect the active window identity or request lazy restoration.
   CefPostTask(TID_UI, base::BindOnce(
@@ -753,9 +985,9 @@ void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
         const int identifier = browser->GetIdentifier();
         for (auto& [token, slot] : WorkspaceSlots()) {
           if (slot.context || g_active_browser_id(token) != identifier) continue;
-          slot.anchor = browser;
-          slot.context = browser->GetHost()->GetRequestContext();
+          if (!BindAnchor(token, slot, browser)) continue;
           PostLifecycleEvent(token, 0, 7);
+          return;
         }
       }, browser));
 }
@@ -827,6 +1059,14 @@ void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser) {
     PostLifecycleEvent(token, identifier, requested ? 2 : 4);
     return;
   }
+}
+
+void BatoWorkspaceReleaseProfileContexts() {
+  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
+  const size_t released = ProfileContexts().size();
+  ProfileContexts().clear();
+  PendingWindow() = WindowRequest();
+  fprintf(stderr, "{\"event\":\"profile-contexts-released\",\"count\":%zu}\n", released);
 }
 
 bool BatoWorkspaceIsAnchor(CefRefPtr<CefBrowser> browser) {
@@ -995,6 +1235,15 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);
     g_new_tab = new_tab;
     g_request_close = request_close;
+    // Multi-Profile windows are additive: without the Swift hooks only the launch Profile opens.
+    auto swift_configure_profiles = reinterpret_cast<SwiftConfigureProfiles>(
+        dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureProfiles"));
+    auto swift_profile_ready = reinterpret_cast<SwiftProfileWindowReady>(
+        dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceProfileWindowReady"));
+    if (swift_configure_profiles && swift_profile_ready) {
+      g_swift_profile_ready = swift_profile_ready;
+      swift_configure_profiles(OpenProfileWindow);
+    }
     BatoSwiftWorkspaceConfigure(directory.c_str(), CreateWorkspacePage,
                                  SelectWorkspacePage, CloseWorkspacePage,
                                  ActiveWorkspacePage, native_focus, WorkspaceCommandId,

@@ -16,6 +16,10 @@ void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
                                         const std::vector<CefString>& urls);
 void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
+// Drops the client's references to Profile request contexts and any outstanding window
+// request. Called when the application starts quitting: held contexts must not outlive the
+// browsers, and a later Profile window recreates its context on the same storage.
+void BatoWorkspaceReleaseProfileContexts();
 // Peek client entry points for the Swift workspace. Main/CEF UI thread only.
 // Present returns a nonzero engine generation, or 0 when refused. End takes
 // that generation; restore_parent != 0 reactivates the parent. Parent and
