@@ -285,13 +285,13 @@ private final class ArcImportSheet: NSWindowController {
         let plan = selected.isEmpty ? nil :
             try? ImportPlan.make(staging, options: options(salt: importAgain ? "preview" : ""), into: currentState())
         guard let plan else {
-            totals.stringValue = describeTotals(workspaces: 0, profiles: 0, pins: 0, folders: 0, favorites: 0, tabs: 0)
+            totals.stringValue = describeTotals(workspaces: "0 workspaces", pins: 0, folders: 0, favorites: 0, tabs: 0)
             unsupported.stringValue = ""
             importButton?.isEnabled = false
             return
         }
         let s = plan.summary
-        totals.stringValue = describeTotals(workspaces: s.workspaces, profiles: s.profiles, pins: s.pins,
+        totals.stringValue = describeTotals(workspaces: s.workspaceDescription(asCopies: importAgain), pins: s.pins,
                                             folders: s.folders, favorites: s.favorites, tabs: s.tabs)
         let notes = s.warningCounts.compactMap { kind, count in Self.describe(kind, count) }.sorted()
         unsupported.stringValue = notes.isEmpty ? "Nothing unsupported." :
@@ -299,8 +299,8 @@ private final class ArcImportSheet: NSWindowController {
         importButton?.isEnabled = true
     }
 
-    private func describeTotals(workspaces: Int, profiles: Int, pins: Int, folders: Int, favorites: Int, tabs: Int) -> String {
-        "\(plural(workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(profiles, "new Profile")) · " +
+    private func describeTotals(workspaces: String, pins: Int, folders: Int, favorites: Int, tabs: Int) -> String {
+        "\(workspaces) · " +
             "\(plural(pins, "pin")) · \(plural(folders, "folder")) · \(plural(favorites, "favorite")) · " +
             "\(plural(tabs, "tab"))"
     }
@@ -326,7 +326,7 @@ private final class ArcImportSheet: NSWindowController {
     private func showResult(_ summary: ImportSummary) {
         content.arrangedSubviews.forEach { $0.removeFromSuperview() }
         add(label("Import complete", size: 15, weight: .semibold))
-        add(label("Added \(plural(summary.workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(summary.profiles, "new Profile")): " +
+        add(label("Added \(summary.workspaceDescription(asCopies: importAgain)): " +
                   "\(plural(summary.pins, "pin")), \(plural(summary.folders, "folder")), " +
                   "\(plural(summary.favorites, "favorite")), \(plural(summary.tabs, "tab")).", secondary: false))
         if summary.profiles > 0 {

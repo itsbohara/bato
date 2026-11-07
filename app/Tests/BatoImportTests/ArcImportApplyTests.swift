@@ -182,4 +182,27 @@ final class ArcImportApplyTests: XCTestCase {
         XCTAssertEqual(Set(two.state.profiles.map(\.id)).count, two.state.profiles.count)
         XCTAssertEqual(two.summary.profiles, two.state.profiles.count - one.state.profiles.count)
     }
+
+    func testSummaryWordingDistinguishesNewReusedAndCopiedProfiles() throws {
+        let staging = try staging()
+        let first = try ImportPlan.make(staging, into: .initial())
+        XCTAssertEqual(first.summary.reusedProfiles, 0)
+        XCTAssertTrue(first.summary.workspaceDescription(asCopies: false).contains("new Profile"))
+
+        let copies = try ImportPlan.make(staging, options: ImportOptions(idSalt: "copy-1"), into: first.state)
+        XCTAssertEqual(copies.summary.profiles, first.summary.profiles)
+        XCTAssertTrue(copies.summary.workspaceDescription(asCopies: true).contains(" as copies in "))
+        XCTAssertTrue(copies.summary.workspaceDescription(asCopies: true).hasSuffix("(separate from the originals)"))
+
+        let rest = Set(staging.spaces.dropFirst().map(\.id))
+        let one = try ImportPlan.make(staging, options: ImportOptions(excludedSpaceIDs: rest), into: .initial())
+        let two = try ImportPlan.make(staging, options: ImportOptions(excludedSpaceIDs: [staging.spaces[0].id]), into: one.state)
+        if two.summary.profiles == 0 {
+            XCTAssertGreaterThan(two.summary.reusedProfiles, 0)
+            let text = two.summary.workspaceDescription(asCopies: false)
+            XCTAssertTrue(text.contains("existing Profile"))
+            XCTAssertFalse(text.contains("0 new"))
+            XCTAssertFalse(text.contains("new Profile"))
+        }
+    }
 }

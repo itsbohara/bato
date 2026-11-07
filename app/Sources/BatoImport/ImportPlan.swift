@@ -48,7 +48,10 @@ public struct ImportSummary: Equatable, Sendable {
         }
     }
 
+    /// Profiles the import creates.
     public var profiles: Int
+    /// Profiles of the imported spaces that already existed and are reused.
+    public var reusedProfiles: Int
     public var workspaces: Int
     public var favorites: Int
     public var spaces: [Space]
@@ -58,6 +61,22 @@ public struct ImportSummary: Equatable, Sendable {
     public var folders: Int { spaces.reduce(0) { $0 + $1.folders } }
     public var tabs: Int { spaces.reduce(0) { $0 + $1.tabs } }
     public var splits: Int { spaces.reduce(0) { $0 + $1.splits } }
+
+    /// "3 workspaces as copies in 2 new Profiles (separate from the originals)", "1 workspace in 1 existing Profile".
+    /// Copies always get Profiles of their own: their identifiers differ from the first import's.
+    public func workspaceDescription(asCopies: Bool) -> String {
+        var scopes: [String] = []
+        if profiles > 0 { scopes.append(Self.count(profiles, "new Profile")) }
+        if reusedProfiles > 0 { scopes.append(Self.count(reusedProfiles, "existing Profile")) }
+        var text = Self.count(workspaces, "workspace") + (asCopies ? " as copies" : "")
+        if !scopes.isEmpty { text += " in " + scopes.joined(separator: " and ") }
+        if asCopies && profiles > 0 { text += " (separate from the originals)" }
+        return text
+    }
+
+    private static func count(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
+    }
 }
 
 public extension ImportPlan {
@@ -122,7 +141,7 @@ public struct ImportPlan: Equatable, Sendable {
         let included = Set(spaces.map(\.id))
         let warnings = staging.warnings.filter { $0.spaceID.map(included.contains) ?? true }
         let summary = ImportSummary(
-            profiles: profiles.count, workspaces: workspaces.count,
+            profiles: profiles.count, reusedProfiles: usedProfiles.count - profiles.count, workspaces: workspaces.count,
             favorites: profiles.reduce(0) { $0 + $1.favorites.count },
             spaces: zip(spaces, workspaces).map { ImportSummary.Space(arcID: $0.id, workspace: $1) },
             warningCounts: warnings.reduce(into: [:]) { $0[$1.kind, default: 0] += 1 })
