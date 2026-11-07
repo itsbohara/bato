@@ -52,6 +52,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        // Legacy scrollers take 16 pt from the clip view, narrowing cards on long panes only.
+        scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false

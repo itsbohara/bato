@@ -822,7 +822,7 @@ public final class NativeWorkspaceController: NSObject {
             select.image = icon
             select.imageScaling = .scaleProportionallyDown
         } else {
-            select.image = tile ? SidebarStyle.letterIcon(for: title, host: page.lastURL.host, size: 26)
+            select.image = tile ? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: 26)
                 : sidebarSymbol(page.kind == .pinned ? "pin.fill" : "globe", size: 14)
         }
         select.imagePosition = tile ? .imageOnly : .imageLeading
@@ -1514,18 +1514,18 @@ private final class SidebarPageView: AdaptiveSidebarView {
         } else {
             NSColor.clear.setFill()
         }
-        if tile || selected {
+        if tile {
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(tile ? 0.28 : 0.18)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
             shadow.shadowOffset = NSSize(width: 0, height: -1)
-            shadow.shadowBlurRadius = tile ? 3 : 2
+            shadow.shadowBlurRadius = 3
             shadow.set()
             path.fill()
             NSGraphicsContext.restoreGraphicsState()
         }
         path.fill()
-        if tile || selected {
+        if tile {
             NSColor.white.withAlphaComponent(0.07).setStroke()
             path.lineWidth = 0.5
             path.stroke()

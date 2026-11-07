@@ -6445,7 +6445,7 @@
 +            select.image = icon
 +            select.imageScaling = .scaleProportionallyDown
 +        } else {
-+            select.image = tile ? SidebarStyle.letterIcon(for: title, host: page.lastURL.host, size: 26)
++            select.image = tile ? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: 26)
 +                : sidebarSymbol(page.kind == .pinned ? "pin.fill" : "globe", size: 14)
 +        }
 +        select.imagePosition = tile ? .imageOnly : .imageLeading
@@ -7137,18 +7137,18 @@
 +        } else {
 +            NSColor.clear.setFill()
 +        }
-+        if tile || selected {
++        if tile {
 +            NSGraphicsContext.saveGraphicsState()
 +            let shadow = NSShadow()
-+            shadow.shadowColor = NSColor.black.withAlphaComponent(tile ? 0.28 : 0.18)
++            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
 +            shadow.shadowOffset = NSSize(width: 0, height: -1)
-+            shadow.shadowBlurRadius = tile ? 3 : 2
++            shadow.shadowBlurRadius = 3
 +            shadow.set()
 +            path.fill()
 +            NSGraphicsContext.restoreGraphicsState()
 +        }
 +        path.fill()
-+        if tile || selected {
++        if tile {
 +            NSColor.white.withAlphaComponent(0.07).setStroke()
 +            path.lineWidth = 0.5
 +            path.stroke()
@@ -7777,7 +7777,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,170 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -7877,6 +7877,15 @@
 +    public let action: CommandBarAction
 +}
 +
++public enum CommandBarSelection {
++    /// An arrow-key choice survives a refresh only while the query is unchanged; typing re-ranks, so the top row wins.
++    public static func rowAfterRefresh(previousID: String?, previousQuery: String, query: String,
++                                       results: [CommandBarResult]) -> Int? {
++        if query == previousQuery, let index = results.firstIndex(where: { $0.id == previousID }) { return index }
++        return results.isEmpty ? nil : 0
++    }
++}
++
 +public enum CommandBarResults {
 +    /// Stable IDs let the UI preserve selection while organization events arrive.
 +    /// Results never mutate state; activation must revalidate through PageRuntime.
@@ -7923,9 +7932,25 @@
 +        return results
 +    }
 +}
++
++public enum FaviconFallback {
++    public struct Spec: Equatable, Sendable {
++        public let letter: String
++        public let hue: Double
++    }
++
++    public static func spec(title: String, url: URL) -> Spec {
++        let host = (url.host ?? "").lowercased()
++        let hostless = host.isEmpty || host == "localhost" || host.allSatisfy { $0.isNumber || $0 == "." || $0 == ":" }
++        let source = hostless ? title : host.replacingOccurrences(of: "www.", with: "")
++        let letter = source.first(where: \.isLetter) ?? source.first(where: \.isNumber) ?? "?"
++        let seed = (url.absoluteString + title).unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
++        return Spec(letter: String(letter).uppercased(), hue: Double(seed % 360) / 360)
++    }
++}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,320 @@
 +import AppKit
 +import BatoCore
 +
@@ -7941,6 +7966,7 @@
 +    private let hint = NSTextField(labelWithString: "")
 +    private let errorLabel = NSTextField(wrappingLabelWithString: "")
 +    private let openButton = GoPillButton()
++    private var refreshedQuery = ""
 +    private let resultsForQuery: (String) -> [CommandBarResult]
 +    private var results: [CommandBarResult] = []
 +    private(set) var chosenAction: CommandBarAction?
@@ -8071,13 +8097,14 @@
 +
 +    func refresh() {
 +        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
-+        results = resultsForQuery(field.stringValue)
++        let query = field.stringValue
++        results = resultsForQuery(query)
 +        table.reloadData()
-+        if let index = results.firstIndex(where: { $0.id == selectedID }) {
-+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-+        } else if !results.isEmpty {
-+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++        if let row = CommandBarSelection.rowAfterRefresh(previousID: selectedID, previousQuery: refreshedQuery,
++                                                         query: query, results: results) {
++            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
 +        }
++        refreshedQuery = query
 +        openButton.isEnabled = results.indices.contains(table.selectedRow)
 +        if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
 +            hint.stringValue = message
@@ -10287,7 +10314,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,443 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10342,6 +10369,8 @@
 +        scroll.drawsBackground = false
 +        scroll.hasVerticalScroller = true
 +        scroll.autohidesScrollers = true
++        // Legacy scrollers take 16 pt from the clip view, narrowing cards on long panes only.
++        scroll.scrollerStyle = .overlay
 +        scroll.translatesAutoresizingMaskIntoConstraints = false
 +        let document = FlippedView()
 +        document.translatesAutoresizingMaskIntoConstraints = false
@@ -10731,8 +10760,9 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,86 @@
 +import AppKit
++import BatoCore
 +
 +/// Visual constants and fills for sidebar rows and sheets. Fills are translucent label colors so
 +/// they read as a lift on any workspace tint, in light and dark, rather than a second palette.
@@ -10753,25 +10783,39 @@
 +        return nil
 +    }
 +
++    /// Lifts a stored workspace colour to a hue that survives blending: muted picks like slate blue or
++    /// sage would otherwise vanish into the dark system background. Truly neutral greys stay neutral.
++    static func vivid(_ accent: NSColor) -> NSColor {
++        guard let rgb = accent.usingColorSpace(.sRGB) else { return accent }
++        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
++        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
++        let boosted = saturation < 0.05 ? saturation : max(saturation, 0.6)
++        return NSColor(hue: hue, saturation: boosted, brightness: max(brightness, 0.8), alpha: alpha)
++    }
++
 +    /// Top and bottom of the sidebar gradient. The workspace colour dominates, as in Dia; the system
-+    /// background only keeps the result from going neon. High contrast falls back to a faint wash.
++    /// background only keeps the result from going neon. Increase Contrast keeps a lighter wash so text
++    /// stays legible, but still clearly coloured.
 +    static func tint(_ accent: NSColor, dark: Bool, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
 +        let base = NSColor.windowBackgroundColor
++        let hue = vivid(accent)
 +        if highContrast {
-+            return (base.blended(withFraction: 0.08, of: accent) ?? base, base.blended(withFraction: 0.04, of: accent) ?? base)
++            return (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
++                    base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
 +        }
-+        let body = dark ? (accent.blended(withFraction: 0.35, of: .black) ?? accent) : accent
++        let body = dark ? (hue.blended(withFraction: 0.35, of: .black) ?? hue) : hue
 +        let top = base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base
 +        let bottom = base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base
 +        return (top, bottom)
 +    }
 +
-+    /// Initial-letter tile for pages without a favicon; the hue is stable per host.
++    /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
++    /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.
 +    @MainActor
-+    static func letterIcon(for title: String, host: String?, size: CGFloat) -> NSImage {
-+        let letter = String((host?.replacingOccurrences(of: "www.", with: "").first ?? title.first ?? "?").uppercased())
-+        let seed = (host ?? title).unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
-+        let color = NSColor(hue: CGFloat(seed % 360) / 360, saturation: 0.5, brightness: 0.62, alpha: 1)
++    static func letterIcon(for title: String, url: URL, size: CGFloat) -> NSImage {
++        let spec = FaviconFallback.spec(title: title, url: url)
++        let color = NSColor(hue: spec.hue, saturation: 0.5, brightness: 0.62, alpha: 1)
++        let letter = spec.letter
 +        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
 +            color.setFill()
 +            NSBezierPath(roundedRect: rect, xRadius: size * 0.28, yRadius: size * 0.28).fill()

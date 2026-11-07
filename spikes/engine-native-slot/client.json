@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "74fe579f2d1f60b7f975bc9e1d2ac5d5891ec5b9f62d34861d6e65abb5bad1f5",
+  "patch_sha256": "baa4ae37bd61c31b07918f4afc21c3f3416b7bfa0039297a795f0e322ea8648c",
   "files": [
     {
       "root": "cef",
@@ -86,19 +86,19 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "be1ab9d5eb5412135e4220212954a89f01e2404c50cea59353a870eb9d97c07e"
+      "patched_sha256": "6140c807d5d86ccb1afe0d3b2cfd18d72c397dcb120222bf7380ebd076430538"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/CommandBar.swift",
       "original_sha256": null,
-      "patched_sha256": "6788acff90a35b7e87bdee5a1d86e8fe043f1ece1a5bf5dceff6d1e9bd163869"
+      "patched_sha256": "a43de6c81ed7be4133d1df776385587c3be73600f9e7a0ded9c0577a7d22722a"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
       "original_sha256": null,
-      "patched_sha256": "52660e1086a0ec612ae0661265c0f50c4956d040efb841ddffe84c42bac950bb"
+      "patched_sha256": "09352494cc479cb572610f97ccddcf55346a9fa3118af90f7c40066a7c4d9ef0"
     },
     {
       "root": "cef",
@@ -212,13 +212,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
       "original_sha256": null,
-      "patched_sha256": "58b3e7d4d8680de51b2759d13c9fccbd1145dc7f4de2b518feafed7f1c85c5f3"
+      "patched_sha256": "91812a7c33f8820f4e582de4fcc503e0cd7821af887bc1ea6cf17b602cac27cb"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
       "original_sha256": null,
-      "patched_sha256": "416b753c78302acb9fba02b242e674ebc56fb378429c74bf457267e193901a5d"
+      "patched_sha256": "0c81a5e9adea72cde7207008ca0b056a1341fcb8c1798d89465ddf23efd48530"
     }
   ],
   "source_mirrors": {
