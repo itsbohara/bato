@@ -1056,7 +1056,7 @@
          tabs::TabInterface::MaybeGetFromContents(source);
 --- a/chrome/browser/ui/chrome_pages.cc
 +++ b/chrome/browser/ui/chrome_pages.cc
-@@ -93,10 +93,30 @@
+@@ -93,10 +93,34 @@
  #include "components/webapps/isolated_web_apps/scheme.h"
  #endif  //! BUILDFLAG(IS_ANDROID)
 
@@ -1084,10 +1084,24 @@
 +  return false;
 +#endif
 +}
++
++// Not a Chromium command id. Bato's client recognises it and opens the site settings of the
++// selected page in a tab it tracks, instead of the untracked tab Chrome would add.
++constexpr int kBatoCommandShowSiteSettings = 1000001;
 
  const char kHashMark[] = "#";
 
-@@ -358,6 +378,9 @@
+@@ -269,6 +293,9 @@
+ void ShowSiteSettingsImpl(BrowserWindowInterface* browser,
+                           Profile* profile,
+                           const GURL& url) {
++  if (browser && HandledByCef(browser, kBatoCommandShowSiteSettings)) {
++    return;
++  }
+   // If a valid non-file origin, open a settings page specific to the current
+   // origin of the page. Otherwise, open Content Settings.
+   constexpr char kParamRequest[] = "site";
+@@ -358,6 +385,9 @@
  }
 
  void ShowHistory(BrowserWindowInterface* browser) {
@@ -1097,7 +1111,7 @@
    ShowHistory(browser, std::string());
  }
 
-@@ -367,6 +390,9 @@
+@@ -367,6 +397,9 @@
  }
 
  void ShowDownloads(BrowserWindowInterface* browser) {
@@ -1107,7 +1121,7 @@
    base::RecordAction(UserMetricsAction("ShowDownloads"));
  #if !BUILDFLAG(IS_CHROMEOS)
    // Hide the download bubble if it is showing, to avoid redundancy with the
-@@ -464,6 +490,9 @@
+@@ -464,6 +497,9 @@
  }
 
  void ShowSettings(BrowserWindowInterface* browser) {
@@ -1117,6 +1131,17 @@
    ShowSettingsSubPage(browser, std::string());
  }
 
+@@ -489,6 +525,10 @@
+
+ void ShowSettingsSubPageInTabbedBrowser(BrowserWindowInterface* browser,
+                                         std::string_view sub_page) {
++  if (sub_page.starts_with(kContentSettingsSubPage) &&
++      HandledByCef(browser, kBatoCommandShowSiteSettings)) {
++    return;
++  }
+   base::RecordAction(UserMetricsAction("ShowOptions"));
+
+   // Since the user may be triggering navigation from another UI element such as
 --- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 @@ -39,7 +39,13 @@
