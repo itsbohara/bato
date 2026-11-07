@@ -274,9 +274,17 @@ private final class GoPillButton: NSButton {
     required init?(coder: NSCoder) { fatalError("Not supported") }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
     override func viewDidChangeEffectiveAppearance() { refreshColors() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        if window != nil {
+            NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged), name: AppearanceWatcher.didChange, object: nil)
+        }
+    }
+    @objc private func contrastChanged() { refreshColors() }
     private func refreshColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.88).cgColor
+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 1 : 0.88).cgColor
             attributedTitle = NSAttributedString(string: title, attributes: [
                 .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
         }
@@ -318,7 +326,16 @@ private final class CommandBarSurface: NSView {
     override func updateLayer() {
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 0.5
     }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        if window != nil {
+            NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
+        }
+    }
+    @objc private func refresh() { needsDisplay = true }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true

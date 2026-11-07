@@ -192,6 +192,7 @@ final class RecoveryController {
         case .preImport: return "Before last import, \(when)"
         case .preMigration: return "Before last upgrade, \(when)"
         case .preRestore: return "Before last restore, \(when)"
+        case .preDelete: return "Before last Profile delete, \(when)"
         }
     }
 
@@ -211,7 +212,7 @@ final class RecoveryController {
 }
 
 /// A compact card sheet for recovery and restore: optional icon, title, body, optional accessory and
-/// side-by-side buttons, about 320 pt wide.
+/// side-by-side buttons (primary on the right), about 320 pt wide.
 @MainActor
 final class RecoverySheet: NSObject {
     struct Button {
@@ -264,11 +265,15 @@ final class RecoverySheet: NSObject {
         views += [heading, message]
         if let accessory { views.append(accessory) }
 
-        let row = NSStackView(views: buttons.enumerated().map { index, spec in
-            let button = NSButton(title: spec.title, target: self, action: #selector(buttonPressed(_:)))
+        // Secondary buttons first so the primary sits on the right, as in Dia; tags keep the caller's indices.
+        let ordered = buttons.enumerated().sorted { !$0.element.isDefault && $1.element.isDefault }
+        let row = NSStackView(views: ordered.map { index, spec in
+            let button = NSButton(title: spec.isDefault ? "\(spec.title)  ⏎" : spec.title, target: self,
+                                  action: #selector(buttonPressed(_:)))
             button.tag = index
             button.bezelStyle = .rounded
             button.controlSize = .large
+            button.setAccessibilityLabel(spec.title)
             button.setAccessibilityIdentifier("bato-recovery-button-\(index)")
             if spec.isDefault { button.keyEquivalent = "\r" }
             return button

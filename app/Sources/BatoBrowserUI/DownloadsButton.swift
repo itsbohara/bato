@@ -32,7 +32,7 @@ final class DownloadsButton: NSButton {
         let ring = bounds.insetBy(dx: 3.5, dy: 3.5)
         let track = NSBezierPath(ovalIn: ring)
         track.lineWidth = 1.5
-        NSColor.labelColor.withAlphaComponent(isActive ? 0.18 : 0.1).setStroke()
+        NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 0.4 : (isActive ? 0.18 : 0.1)).setStroke()
         track.stroke()
         if isActive {
             NSColor.controlAccentColor.setStroke()

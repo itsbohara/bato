@@ -48,6 +48,7 @@ public final class NativeWorkspaceController: NSObject {
     private let recovery: RecoveryController
     private var arcImport: ArcImportController?
     private var settingsWindow: SettingsWindowController?
+    private let switcherPopover = SwitcherPopover()
     private lazy var archiveController = ArchiveController(
         runtime: runtime, window: { [weak self] in self?.root.window },
         canPresent: { [weak self] in self?.canOpenBrowserPage ?? false },
@@ -87,6 +88,7 @@ public final class NativeWorkspaceController: NSObject {
         organizationStore = store
         self.recovery = recovery
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
+        runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
         let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
         sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
         root = sidebar
@@ -169,7 +171,7 @@ public final class NativeWorkspaceController: NSObject {
     public func newTab() { showCommandBar() }
 
     /// Browser chords that would otherwise act on Chromium's tab strip or history: they follow the sidebar.
-    public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
+    public func reopenClosedTab(at offset: Int = 0) { performWhenIdle({ runtime.reopenClosedTab(at: offset) }) }
     public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
     public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
     public func duplicateSelection() { performWhenIdle({ runtime.duplicateSelectedEntry() }) }
@@ -235,6 +237,7 @@ public final class NativeWorkspaceController: NSObject {
             state: { [weak self] in self?.runtime.state ?? .initial() },
             blockingService: { BlockingHost.shared.service(forProfile: $0) },
             createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
+            deleteProfile: { [weak self] id in self?.fromBrowserWindow { $0.confirmDeleteProfile(id) } },
             renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
             importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
             openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
@@ -1440,67 +1443,101 @@ public final class NativeWorkspaceController: NSObject {
         requestNativeFocus?()
         let state = runtime.state
         let currentProfileID = state.currentWorkspace.profileID
-        let menu = NSMenu()
-        menu.autoenablesItems = false
+        var entries: [SwitcherEntry] = []
         var number = 1
         for group in state.profileGroups {
             if state.hasMultipleProfiles {
                 let own = group.profile.id == currentProfileID
-                menu.addItem(profileHeader(own ? group.profile.name : "\(group.profile.name) · opens in its own window",
-                                           color: state.displayColor(of: group.profile)))
+                entries.append(.header(title: own ? group.profile.name : "\(group.profile.name) · opens in its own window",
+                                       dot: workspaceColor(state.displayColor(of: group.profile))))
             }
             for workspace in group.workspaces {
-                let item = ActionMenuItem(title: workspace.name) { [weak self] in self?.switchWorkspace(workspace.id) }
-                item.image = colorDot(workspaceColor(workspace.color))
-                item.state = workspace.id == state.activeWorkspaceID ? .on : .off
-                item.toolTip = "\(workspace.name) · Profile \(group.profile.name)"
-                if number <= 9 {
-                    item.keyEquivalent = "\(number)"
-                    item.keyEquivalentModifierMask = .control
-                }
-                menu.addItem(item)
+                entries.append(.item(title: workspace.name, dot: workspaceColor(workspace.color), symbol: nil,
+                                     checked: workspace.id == state.activeWorkspaceID,
+                                     shortcut: number <= 9 ? "⌃\(number)" : nil, enabled: true,
+                                     identifier: "bato-switcher-workspace-\(number)") { [weak self] in self?.switchWorkspace(workspace.id) })
                 number += 1
             }
         }
-        menu.addItem(.separator())
-        menu.addItem(ActionMenuItem(title: "New Workspace") { [weak self] in
+        entries.append(.separator)
+        entries.append(switcherAction("New Workspace", symbol: "plus", id: "new-workspace") { [weak self] in
             guard let self else { return }
             self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
         })
-        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
-        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: switcherButton.bounds.maxY + 4), in: switcherButton)
+        entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
+            self?.editProfile(creating: true)
+        })
+        entries.append(switcherAction("Rename Profile…", symbol: "pencil", id: "rename-profile") { [weak self] in
+            self?.editProfile(creating: false)
+        })
+        entries.append(.separator)
+        entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
+            self?.showSettings(.profiles)
+        })
+        switcherPopover.show(entries, relativeTo: switcherButton)
     }
 
     @objc private func showProfileMenu() {
         guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
         let state = runtime.state
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for group in state.profileGroups {
-            let item = ActionMenuItem(title: group.profile.name) { [weak self] in
+        var entries: [SwitcherEntry] = state.profileGroups.enumerated().map { index, group in
+            .item(title: group.profile.name, dot: workspaceColor(state.displayColor(of: group.profile)), symbol: nil,
+                  checked: group.profile.id == state.currentWorkspace.profileID, shortcut: nil,
+                  enabled: !group.workspaces.isEmpty, identifier: "bato-profile-item-\(index)") { [weak self] in
                 // A Profile opens on its first workspace; other workspaces are in the switcher.
                 if let first = group.workspaces.first { self?.switchWorkspace(first.id) }
             }
-            item.image = colorDot(workspaceColor(state.displayColor(of: group.profile)))
-            item.state = group.profile.id == state.currentWorkspace.profileID ? .on : .off
-            item.isEnabled = !group.workspaces.isEmpty
-            menu.addItem(item)
         }
-        menu.addItem(.separator())
-        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
-        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: profileButton.bounds.minY - 4), in: profileButton)
+        entries.append(.separator)
+        entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
+            self?.editProfile(creating: true)
+        })
+        entries.append(switcherAction("Rename Profile…", symbol: "pencil", id: "rename-profile") { [weak self] in
+            self?.editProfile(creating: false)
+        })
+        entries.append(.separator)
+        entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
+            self?.showSettings(.profiles)
+        })
+        switcherPopover.show(entries, relativeTo: profileButton, edge: .minY)
     }
 
-    private func profileHeader(_ title: String, color: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.image = colorDot(workspaceColor(color))
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
-        return item
+    private func switcherAction(_ title: String, symbol: String, id: String, action: @escaping () -> Void) -> SwitcherEntry {
+        .item(title: title, dot: nil, symbol: symbol, checked: false, shortcut: nil, enabled: true,
+              identifier: "bato-switcher-\(id)", action: action)
+    }
+
+    /// Asks before deleting a Profile, saying what goes with it. The launch Profile is never offered.
+    private func confirmDeleteProfile(_ id: UUID) {
+        guard hasStarted, id != runtime.state.launchProfileID, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              let profile = runtime.state.profiles.first(where: { $0.id == id }),
+              let loss = runtime.state.lossOfDeleting(profile: id) else { return }
+        requestNativeFocus?()
+        func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
+        let body = "This permanently deletes the Profile’s history, downloads list, logins, cookies and site data, "
+            + "and removes its \(count(loss.workspaces, "workspace")), \(count(loss.pages, "page")), "
+            + "\(count(loss.favorites, "favorite")) and \(count(loss.archived, "archived tab")). Its open windows close without asking. "
+            + "The sidebar organization is backed up first; browsing data cannot be recovered."
+        RecoverySheet.present(on: window, symbol: "trash", title: "Delete the Profile “\(profile.name)”?", body: body,
+                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Delete Profile", isDefault: false)],
+                              cancelIndex: 0) { [weak self] index in
+            guard index == 1 else { return }
+            DispatchQueue.main.async { [weak self] in self?.deleteProfile(id) }
+        }
+    }
+
+    private func deleteProfile(_ id: UUID) {
+        guard runtime.deleteProfile(id) else {
+            guard let window = root.window, window.attachedSheet == nil else { return }
+            RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The Profile couldn’t be deleted",
+                                  body: "Nothing was removed. Close any dialog in that Profile’s window and try again.",
+                                  buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
+            return
+        }
+        BlockingHost.shared.profiles?.removeProfile(id.uuidString)
+        render()
     }
 
     private func editProfile(creating: Bool) {
@@ -1566,9 +1603,9 @@ public final class NativeWorkspaceController: NSObject {
 class AdaptiveSidebarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        NSWorkspace.shared.notificationCenter.addObserver(self,
-            selector: #selector(displayOptionsChanged),
-            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        AppearanceWatcher.start()
+        NotificationCenter.default.addObserver(self, selector: #selector(displayOptionsChanged),
+                                               name: AppearanceWatcher.didChange, object: nil)
         // Selector observers are zeroing references on supported macOS versions.
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
@@ -1634,7 +1671,7 @@ private final class SidebarPageView: AdaptiveSidebarView {
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
-        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        let contrast = AppearanceWatcher.increaseContrast
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: tile ? 1.5 : 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
         if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
             fill.setFill()
@@ -1644,7 +1681,7 @@ private final class SidebarPageView: AdaptiveSidebarView {
         if tile {
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+            shadow.shadowColor = SidebarStyle.tileShadow
             shadow.shadowOffset = NSSize(width: 0, height: -1)
             shadow.shadowBlurRadius = 3
             shadow.set()
@@ -1653,7 +1690,7 @@ private final class SidebarPageView: AdaptiveSidebarView {
         }
         path.fill()
         if tile {
-            NSColor.white.withAlphaComponent(0.07).setStroke()
+            SidebarStyle.tileHairline.setStroke()
             path.lineWidth = 0.5
             path.stroke()
         }
@@ -1702,8 +1739,7 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let (top, bottom) = SidebarStyle.tint(accent, dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
-                                              highContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: AppearanceWatcher.increaseContrast)
         NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
     }
     var keyEquivalentsEnabled = true

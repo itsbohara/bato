@@ -8,6 +8,7 @@ struct SettingsHooks {
     let state: () -> BrowserState
     let blockingService: (String) -> BlockingService?
     let createProfile: () -> Void
+    let deleteProfile: (UUID) -> Void
     let renameCurrentProfile: () -> Void
     let importFromArc: () -> Void
     let openEssential: (BrowserEssential) -> Void
@@ -38,6 +39,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let contentHost = NSView()
     private var sidebarButtons: [SettingsPane: SettingsSidebarButton] = [:]
     private(set) var pane: SettingsPane = .profiles
+    private var history: [SettingsPane] = [.profiles]
+    private var historyIndex = 0
+    private let backButton = NSButton()
+    private let forwardButton = NSButton()
+    private let titleLabel = NSTextField(labelWithString: "")
 
     init(hooks: SettingsHooks) {
         self.hooks = hooks
@@ -54,15 +60,36 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(_ pane: SettingsPane? = nil) {
-        if let pane { self.pane = pane }
+        if let pane { navigate(to: pane) }
         reload()
         if !window.isVisible { window.center() }
         window.makeKeyAndOrderFront(nil)
     }
 
+    private func navigate(to target: SettingsPane) {
+        guard target != pane else { return }
+        history = Array(history.prefix(historyIndex + 1)) + [target]
+        historyIndex = history.count - 1
+        pane = target
+    }
+
+    @objc private func goBack() { step(-1) }
+    @objc private func goForward() { step(1) }
+
+    private func step(_ delta: Int) {
+        let next = historyIndex + delta
+        guard history.indices.contains(next) else { return }
+        historyIndex = next
+        pane = history[next]
+        reload()
+    }
+
     /// Rebuilds the visible pane from current organization, e.g. after a Profile was created.
     func reload() {
         for (candidate, button) in sidebarButtons { button.isSelected = candidate == pane }
+        titleLabel.stringValue = pane.title
+        backButton.isEnabled = historyIndex > 0
+        forwardButton.isEnabled = historyIndex < history.count - 1
         contentHost.subviews.forEach { $0.removeFromSuperview() }
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -73,7 +100,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
-        let column = NSStackView(views: [heading(pane.title)] + content(for: pane))
+        let column = NSStackView(views: content(for: pane))
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 20
@@ -87,7 +114,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             scroll.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 60),
+            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 76),
             column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 40),
             column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -40),
             column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
@@ -109,7 +136,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         sidebarStack.translatesAutoresizingMaskIntoConstraints = false
         for candidate in SettingsPane.allCases {
             let button = SettingsSidebarButton(title: candidate.title, symbol: candidate.symbolName) { [weak self] in
-                self?.pane = candidate
+                self?.navigate(to: candidate)
                 self?.reload()
             }
             sidebarButtons[candidate] = button
@@ -118,9 +145,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         rail.addSubview(sidebarStack)
         contentHost.translatesAutoresizingMaskIntoConstraints = false
+        let bar = titleBar()
         let root = NSView()
         root.addSubview(rail)
         root.addSubview(contentHost)
+        root.addSubview(bar)
         window.contentView = root
         NSLayoutConstraint.activate([
             rail.topAnchor.constraint(equalTo: root.topAnchor),
@@ -134,7 +163,35 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             contentHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             contentHost.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
             contentHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            bar.leadingAnchor.constraint(equalTo: rail.trailingAnchor, constant: 20),
         ])
+    }
+
+    /// Back/forward through visited panes plus the pane title, in the title bar row as in Dia.
+    private func titleBar() -> NSView {
+        func configure(_ button: NSButton, symbol: String, label: String, id: String, action: Selector) {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = action
+            button.setAccessibilityLabel(label)
+            button.setAccessibilityIdentifier(id)
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        }
+        configure(backButton, symbol: "chevron.left", label: "Back", id: "bato-settings-back", action: #selector(goBack))
+        configure(forwardButton, symbol: "chevron.right", label: "Forward", id: "bato-settings-forward", action: #selector(goForward))
+        let pair = SettingsNavigationPill(views: [backButton, forwardButton])
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.setAccessibilityIdentifier("bato-settings-title")
+        let bar = NSStackView(views: [pair, titleLabel])
+        bar.orientation = .horizontal
+        bar.spacing = 12
+        bar.alignment = .centerY
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        return bar
     }
 
     private func content(for pane: SettingsPane) -> [NSView] {
@@ -153,9 +210,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func profilesPane() -> [NSView] {
         let note = caption("Each Profile keeps its own history, downloads, logins, cookies and extensions.")
         let rows = SettingsProfileRow.rows(from: hooks.state()).map { row -> NSView in
-            let action: NSView? = row.isCurrent ? SettingsPillButton(title: "Rename…") { [weak self] in
-                self?.hooks.renameCurrentProfile()
-            } : nil
+            var actions: [NSView] = []
+            if row.isCurrent {
+                actions.append(SettingsPillButton(title: "Rename…") { [weak self] in self?.hooks.renameCurrentProfile() })
+            }
+            if row.id != hooks.state().launchProfileID {
+                let delete = SettingsPillButton(title: "Delete…") { [weak self] in self?.hooks.deleteProfile(row.id) }
+                delete.setAccessibilityIdentifier("bato-profile-delete")
+                actions.append(delete)
+            }
+            let action: NSView? = actions.isEmpty ? nil : actions.count == 1 ? actions[0] : NSStackView(views: actions)
             return SettingsRow(leading: ColorDot(hex: row.colorHex), title: row.name, detail: row.detail, trailing: action)
         }
         let create = SettingsPillButton(title: "Create Profile…") { [weak self] in self?.hooks.createProfile() }
@@ -167,7 +231,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
               let service = hooks.blockingService(profile.id.uuidString) else {
             return [caption("Content blocking starts with the browser engine and isn’t available yet."),
-                    caption("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
+                    sectionHeading("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
         }
         let toggle = NSSwitch()
         toggle.state = service.settings.enabled ? .on : .off
@@ -182,10 +246,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
                                    title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
                                    trailing: toggle, keeping: handler)
-        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
+        var views: [NSView] = [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
         views += sitePermissions(forProfile: profile.name)
         let exceptions = service.exceptions
-        views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
+        views.append(exceptions.isEmpty ? caption("No sites are excluded from blocking.") : sectionHeading("Sites excluded from blocking"))
         if !exceptions.isEmpty {
             views.append(SettingsGroup(rows: exceptions.map { host in
                 SettingsRow(leading: nil, title: host, detail: nil, trailing: SettingsPillButton(title: "Remove") { [weak self] in
@@ -236,16 +300,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                             self?.reload()
                         })
         }
-        if rows.count > 1 { views += [caption("Workspaces"), SettingsGroup(rows: rows)] }
+        if rows.count > 1 { views += [sectionHeading("Workspaces"), SettingsGroup(rows: rows)] }
         let count = state.archive.records(inProfile: profileID).count
         let open = SettingsRow(leading: nil, title: "Archived tabs",
                                detail: count == 0 ? "Nothing is archived yet." : "\(count) archived in this Profile.",
                                trailing: SettingsPillButton(title: "Open Archive…") { [weak self] in self?.hooks.openArchive() })
-        return views + [caption("Restore"), SettingsGroup(rows: [open])]
+        return views + [sectionHeading("Restore"), SettingsGroup(rows: [open])]
     }
 
     private func sitePermissions(forProfile name: String) -> [NSView] {
-        [caption("Site permissions"),
+        [sectionHeading("Site permissions"),
          sitePermissionsGroup(detail: "Camera, location, notifications and more, per site, for the \(name) Profile.")]
     }
 
@@ -313,15 +377,18 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                                               self?.reload()
                                           }))
         }
-        return [caption("General"), SettingsGroup(rows: [defaultBrowserRow()]),
-                caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
+        return [sectionHeading("General"), SettingsGroup(rows: [defaultBrowserRow()]),
+                sectionHeading("Browser pages"), SettingsGroup(rows: rows), sectionHeading("Backup"), SettingsGroup(rows: backupRows)]
     }
 
     // MARK: Pieces
 
-    private func heading(_ text: String) -> NSTextField {
+    /// Bold title above a card, as in Dia; explanatory sentences stay captions.
+    private func sectionHeading(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 26, weight: .semibold)
+        label.font = .systemFont(ofSize: 17, weight: .semibold)
+        label.setAccessibilityRole(.staticText)
+        label.setAccessibilityIdentifier("bato-settings-section-" + text.lowercased().replacingOccurrences(of: " ", with: "-"))
         return label
     }
 
@@ -400,9 +467,9 @@ private final class SettingsSidebarButton: NSControl {
 
     private func updateAppearance() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.cgColor : nil
+            layer?.backgroundColor = isSelected ? NSColor.selectedContentBackgroundColor.cgColor : nil
         }
-        let color: NSColor = isSelected ? .white : .labelColor
+        let color: NSColor = isSelected ? .alternateSelectedControlTextColor : .labelColor
         label.textColor = color
         icon.contentTintColor = color
         setAccessibilityValue(isSelected ? "selected" : nil)
@@ -436,15 +503,43 @@ private final class SettingsGroup: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         updateColors()
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }
 
+    @objc private func refresh() { updateColors() }
     override func viewDidChangeEffectiveAppearance() { updateColors() }
 
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+            layer?.backgroundColor = SidebarStyle.cardFill.cgColor
+            layer?.borderColor = SidebarStyle.cardStroke?.cgColor
+            layer?.borderWidth = SidebarStyle.cardStroke == nil ? 0 : 1
+        }
+    }
+}
+
+/// The back/forward pair: a rounded capsule that stays legible in both appearances.
+private final class SettingsNavigationPill: NSStackView {
+    override init(frame frameRect: NSRect) { super.init(frame: frameRect) }
+    convenience init(views: [NSView]) {
+        self.init(frame: .zero)
+        views.forEach(addArrangedSubview)
+        spacing = 0
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        updateColors()
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AppearanceWatcher.didChange, object: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used") }
+    @objc private func refresh() { updateColors() }
+    override func viewDidChangeEffectiveAppearance() { updateColors() }
+    private func updateColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = SidebarStyle.cardFill.cgColor
+            layer?.borderColor = NSColor.separatorColor.cgColor
+            layer?.borderWidth = 1
         }
     }
 }

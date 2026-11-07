@@ -10,6 +10,9 @@ final class DownloadsPopover: NSObject, NSPopoverDelegate {
     private let list = NSStackView()
     private let emptyLabel = NSTextField(labelWithString: "No downloads yet")
     private var profileKey = ""
+    private var listHeightLimit: NSLayoutConstraint?
+    /// Fixed rows of the popover around the list: header, spacing and insets.
+    private static let chromeHeight: CGFloat = 60
 
     var isShown: Bool { popover.isShown }
 
@@ -24,9 +27,34 @@ final class DownloadsPopover: NSObject, NSPopoverDelegate {
     func toggle(from button: NSView, profileKey: String) {
         if popover.isShown { popover.performClose(nil); return }
         self.profileKey = profileKey
+        let room = Self.room(around: button)
+        let list = SidebarStyle.downloadsPopoverMaxListHeight
+        listHeightLimit?.constant = max(80, min(list, room.height - Self.chromeHeight))
         reload()
         controller.markSeen(profileKey)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: room.edge)
+        fitToList()
+    }
+
+    /// The side of the button with more screen space, and how much of it there is, so the popover
+    /// is never cut off by the screen edge or the bottom of the window.
+    private static func room(around button: NSView) -> (edge: NSRectEdge, height: CGFloat) {
+        guard let window = button.window else { return (.maxY, SidebarStyle.downloadsPopoverMaxListHeight) }
+        let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
+        let below = frame.minY - visible.minY
+        let above = visible.maxY - frame.maxY
+        let visuallyBelow: NSRectEdge = button.isFlipped ? .maxY : .minY
+        let visuallyAbove: NSRectEdge = button.isFlipped ? .minY : .maxY
+        return below >= above ? (visuallyBelow, below) : (visuallyAbove, above)
+    }
+
+    /// NSPopover keeps the largest size it has had; refit so the popover shrinks with its list.
+    private func fitToList() {
+        guard let view = popover.contentViewController?.view else { return }
+        view.layoutSubtreeIfNeeded()
+        let size = NSSize(width: SidebarStyle.downloadsPopoverWidth, height: view.fittingSize.height)
+        if popover.contentSize != size { popover.contentSize = size }
     }
 
     func reload() {
@@ -39,6 +67,7 @@ final class DownloadsPopover: NSObject, NSPopoverDelegate {
             list.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
+        if popover.isShown { fitToList() }
     }
 
     func updateProfile(_ key: String) {
@@ -99,9 +128,11 @@ final class DownloadsPopover: NSObject, NSPopoverDelegate {
             content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             content.topAnchor.constraint(equalTo: view.topAnchor),
             content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            view.widthAnchor.constraint(equalToConstant: SidebarStyle.downloadsPopoverWidth),
-            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: SidebarStyle.downloadsPopoverMaxListHeight)
+            view.widthAnchor.constraint(equalToConstant: SidebarStyle.downloadsPopoverWidth)
         ])
+        let limit = scroll.heightAnchor.constraint(lessThanOrEqualToConstant: SidebarStyle.downloadsPopoverMaxListHeight)
+        limit.isActive = true
+        listHeightLimit = limit
         let listHeight = scroll.heightAnchor.constraint(equalTo: flipped.heightAnchor)
         listHeight.priority = .defaultHigh
         listHeight.isActive = true
@@ -125,8 +156,16 @@ private final class DownloadRow: NSView, NSDraggingSource {
     private var tracking: NSTrackingArea?
     private var hovered = false {
         didSet {
-            layer?.backgroundColor = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false)?.cgColor
+            refreshFill()
             actions.isHidden = !hovered && !item.state.isActive
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() { refreshFill() }
+
+    private func refreshFill() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false)?.cgColor
         }
     }
     private let actions = NSStackView()
