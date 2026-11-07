@@ -13,7 +13,7 @@ Written 2026-11-07 against main (d643668). Walks DESIGN.md "Proposed alpha accep
 | Zoom | unverified | Stock Chromium; no result doc | S to verify |
 | History | done | ESSENTIALS-POLISH-RESULTS.md, F1-RESULTS.md (per Profile, restores) | done |
 | Reopen closed temporary tabs | missing | No result doc or UI; Cmd-Shift-T behaviour with Bato rows unknown | M, Swift (closed-tab stack in BrowserState); no engine |
-| Downloads with destination/progress/failure | partial | Downloads page opens as a tracked row (F1-RESULTS.md); no download bubble/progress/destination check, "Show all" callers not exercised | M to verify and fix, maybe engine |
+| Downloads with destination/progress/failure | partial | Chromium bubble, progress, failure/Resume and destination work per Profile (MILESTONE2-RESULTS.md). User wants Dia/Arc-style downloads in the left sidebar instead of Chromium's top-right bubble | M, engine export for download events + Swift sidebar surface; suppress Chromium bubble |
 | File upload, file chooser | unverified | Not in any result doc | S to verify |
 | Printing / save page | unverified | Not in any result doc | S to verify |
 | Configurable search provider | partial | Session-local provider only (PROGRESS.md command bar row); Settings Privacy/Advanced panes exist | S-M, Swift persistence |
