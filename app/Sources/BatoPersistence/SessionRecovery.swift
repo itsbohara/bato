@@ -21,7 +21,8 @@ public enum LaunchStatus: Equatable, Sendable {
 /// Detects abnormal termination with a marker written at launch and removed on clean quit, and keeps
 /// the previous recovery snapshot until a later launch is confirmed.
 ///
-/// The recovery snapshot (`BackupStore.lastSessionID`) is replaced only by `confirmLaunch`. A launch that
+/// The session start is captured at launch into a pending slot; the recovery snapshot
+/// (`BackupStore.lastSessionID`) is replaced only when `confirmLaunch` promotes it. A launch that
 /// crashes before confirming never overwrites it, and nothing here relaunches or restores on its own, so a
 /// crashing launch cannot loop.
 public final class RecoveryCoordinator {
@@ -39,6 +40,7 @@ public final class RecoveryCoordinator {
     private let bootDate: () -> Date
     private let now: () -> Date
     private var marker: Marker?
+    private var capturedSessionStart = false
 
     public init(directory: URL, backups: BackupStore, processID: Int32 = getpid(),
                 isProcessAlive: @escaping (Int32) -> Bool = RecoveryCoordinator.processExists,
@@ -88,9 +90,20 @@ public final class RecoveryCoordinator {
         return status
     }
 
-    /// The launch worked: the recovery snapshot and today's daily backup now reflect this session's start.
-    /// Call only after any recovery offer is resolved, because this replaces the snapshot the offer refers to.
-    /// Every step is attempted; the first failure is returned.
+    /// Records the organization as this session found it. Call after it is loaded (and after any restore),
+    /// before the user can edit it. The copy only becomes the recovery snapshot at `confirmLaunch`.
+    @discardableResult
+    public func captureSessionStart(organization: Data, files: [String: Data]) -> BackupError? {
+        capturedSessionStart = false
+        do { try backups.capturePendingSession(organization: organization, files: files) }
+        catch { return (error as? BackupError) ?? .writeFailed }
+        capturedSessionStart = true
+        return nil
+    }
+
+    /// The launch worked: this session's start becomes the recovery snapshot, and today's daily backup is
+    /// taken from `organization`. Call only after any recovery offer is resolved, because this replaces the
+    /// snapshot the offer refers to. Every step is attempted; the first failure is returned.
     @discardableResult
     public func confirmLaunch(organization: Data?, files: [String: Data]) -> BackupError? {
         guard var current = marker else { return nil }
@@ -99,9 +112,11 @@ public final class RecoveryCoordinator {
         marker = current
         writeMarker(current)
         var failure: BackupError?
-        if let organization {
-            do { try backups.captureLastSession(organization: organization, files: files) }
+        if capturedSessionStart {
+            do { try backups.promotePendingSession() }
             catch { failure = (error as? BackupError) ?? .writeFailed }
+        }
+        if let organization {
             do { try backups.captureDaily(organization: organization, files: files) }
             catch { failure = failure ?? (error as? BackupError) ?? .writeFailed }
         }

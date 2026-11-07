@@ -107,15 +107,25 @@ final class RecoveryTests: XCTestCase {
             let backups = BackupStore(directory: directory)
             let good = coordinator(directory, pid: 10, backups: backups)
             _ = good.beginLaunch()
-            good.confirmLaunch(organization: bytes("session-1"), files: [:])
+            good.captureSessionStart(organization: bytes("session-1"), files: [:])
+            good.confirmLaunch(organization: bytes("edited-1"), files: [:])
 
-            for pid: Int32 in 11...13 { _ = coordinator(directory, pid: pid, backups: backups).beginLaunch() }
+            for pid: Int32 in 11...13 {
+                let crashing = coordinator(directory, pid: pid, backups: backups)
+                _ = crashing.beginLaunch()
+                crashing.captureSessionStart(organization: bytes("crashed-\(pid)"), files: [:])
+            }
             XCTAssertEqual(try backups.contents(of: BackupStore.lastSessionID).organization, bytes("session-1"))
 
             let recovered = coordinator(directory, pid: 14, backups: backups)
             _ = recovered.beginLaunch()
-            recovered.confirmLaunch(organization: bytes("session-2"), files: [:])
-            XCTAssertEqual(try backups.contents(of: BackupStore.lastSessionID).organization, bytes("session-2"))
+            recovered.captureSessionStart(organization: bytes("session-2"), files: [:])
+            XCTAssertEqual(try backups.contents(of: BackupStore.lastSessionID).organization, bytes("session-1"),
+                           "capturing at launch must not replace the snapshot")
+            recovered.confirmLaunch(organization: bytes("edited-2"), files: [:])
+            XCTAssertEqual(try backups.contents(of: BackupStore.lastSessionID).organization, bytes("session-2"),
+                           "the snapshot is the session start, not the state at confirmation")
+            XCTAssertFalse(backups.list().contains { $0.id == "pending-session" })
         }
     }
 

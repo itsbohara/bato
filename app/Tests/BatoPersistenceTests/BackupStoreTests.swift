@@ -151,6 +151,19 @@ final class BackupStoreTests: XCTestCase {
         }
     }
 
+    func testStagedRestoreCanBeSeenAndCancelled() throws {
+        try withDirectory { directory in
+            let backups = BackupStore(directory: directory, calendar: calendar, now: { self.day(0) })
+            XCTAssertNil(backups.stagedRestore())
+            try backups.captureLastSession(organization: data("{}"), files: [:])
+            try backups.stageRestore(BackupStore.lastSessionID)
+            XCTAssertEqual(backups.stagedRestore()?.id, BackupStore.lastSessionID)
+            backups.cancelStagedRestore()
+            XCTAssertNil(backups.stagedRestore())
+            XCTAssertNil(backups.takePendingRestore())
+        }
+    }
+
     func testIncompleteBackupWithoutManifestIsNotListed() throws {
         try withDirectory { directory in
             let broken = directory.appendingPathComponent("backups/daily-2026-01-01")

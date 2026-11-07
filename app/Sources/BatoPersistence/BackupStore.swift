@@ -43,6 +43,8 @@ public struct RestoreResult<State> {
 public final class BackupStore {
     public static let dailyRetention = 7
     public static let lastSessionID = "last-session"
+    /// Staging slot for the running session's start. Not a valid backup ID, so it is never listed or restorable.
+    static let pendingSessionID = "pending-session"
     static let preChangeNames = ["pre-import", "pre-migration", "pre-restore"]
 
     private struct Manifest: Codable {
@@ -75,6 +77,25 @@ public final class BackupStore {
     /// Replaces the previous last-session copy; a failure leaves the previous copy in place.
     public func captureLastSession(organization: Data, files: [String: Data]) throws {
         try write(id: Self.lastSessionID, organization: organization, files: files)
+    }
+
+    /// Records the running session's start without touching `last-session`, which a crashing launch must not replace.
+    public func capturePendingSession(organization: Data, files: [String: Data]) throws {
+        try write(id: Self.pendingSessionID, organization: organization, files: files)
+    }
+
+    /// Makes the pending session start the `last-session` copy. Returns false when none is pending.
+    @discardableResult
+    public func promotePendingSession() throws -> Bool {
+        let manager = FileManager.default
+        let pending = root.appendingPathComponent(Self.pendingSessionID, isDirectory: true)
+        guard manager.fileExists(atPath: pending.path) else { return false }
+        let destination = root.appendingPathComponent(Self.lastSessionID, isDirectory: true)
+        do {
+            if manager.fileExists(atPath: destination.path) { _ = try manager.replaceItemAt(destination, withItemAt: pending) }
+            else { try manager.moveItem(at: pending, to: destination) }
+        } catch { throw BackupError.writeFailed }
+        return true
     }
 
     /// Newest first.
@@ -145,6 +166,16 @@ public final class BackupStore {
         guard list().contains(where: { $0.id == id }) else { throw BackupError.unknownBackup }
         do { try Data(id.utf8).write(to: pendingRestoreURL, options: .atomic) }
         catch { throw BackupError.writeFailed }
+    }
+
+    /// The backup a staged restore will apply at the next launch, if it still exists.
+    public func stagedRestore() -> BackupInfo? {
+        guard let bytes = try? Data(contentsOf: pendingRestoreURL), let id = String(data: bytes, encoding: .utf8) else { return nil }
+        return list().first { $0.id == id }
+    }
+
+    public func cancelStagedRestore() {
+        try? FileManager.default.removeItem(at: pendingRestoreURL)
     }
 
     /// Consumes the staged request, so a failing restore cannot repeat on every launch.
