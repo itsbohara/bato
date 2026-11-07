@@ -37,12 +37,13 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         super.init(window: panel)
         let surface = CommandBarSurface()
         surface.wantsLayer = true
-        surface.layer?.cornerRadius = 16
+        surface.layer?.cornerRadius = SidebarStyle.commandBarRadius
+        surface.layer?.borderWidth = 0.5
         surface.layer?.masksToBounds = true
         panel.contentView = surface
         field.stringValue = query
         field.placeholderString = "Search or enter a URL"
-        field.font = .systemFont(ofSize: 20)
+        field.font = .systemFont(ofSize: 20, weight: .regular)
         field.controlSize = .large
         field.focusRingType = .none
         field.setAccessibilityLabel("Command bar search or address")
@@ -64,7 +65,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         table.dataSource = self
         table.delegate = self
         table.headerView = nil
-        table.rowHeight = 52
+        table.rowHeight = SidebarStyle.commandBarRowHeight
         table.backgroundColor = .clear
         table.selectionHighlightStyle = .regular
         table.allowsEmptySelection = false
@@ -185,6 +186,8 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         openButton.isEnabled = results.indices.contains(table.selectedRow)
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedRowView() }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard results.indices.contains(row) else { return nil }
         let result = results[row]
@@ -199,7 +202,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         image.contentTintColor = .secondaryLabelColor
         let title = NSTextField(labelWithString: result.title)
-        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.font = .systemFont(ofSize: 14)
         title.lineBreakMode = .byTruncatingTail
         let detail = NSTextField(labelWithString: result.subtitle)
         detail.font = .systemFont(ofSize: 11)
@@ -208,7 +211,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         let labels = NSStackView(views: [title, detail])
         labels.orientation = .vertical
         labels.alignment = .leading
-        labels.spacing = 3
+        labels.spacing = 1
         let rowView = NSStackView(views: [image, labels])
         rowView.spacing = 12
         rowView.translatesAutoresizingMaskIntoConstraints = false
@@ -279,7 +282,10 @@ private final class CommandBarTable: NSTableView {
 @MainActor
 private final class CommandBarSurface: NSView {
     override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() { layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
