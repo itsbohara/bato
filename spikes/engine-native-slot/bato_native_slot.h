@@ -168,6 +168,13 @@ CEF_EXPORT int bato_native_slot_download_snapshot_v1(void);
 // 6 keep a warned download, 7 discard a warned download (removes it and its partial file).
 // Returns 1 when accepted; 0 for an unknown id or Profile or an action invalid for the state.
 CEF_EXPORT int bato_native_slot_download_action_v1(const char* profile_key, const char* id, int action);
+
+// Closes every window of the Profile directory `profile_key` (a 36-character UUID directory name
+// under the user data dir) without beforeunload prompts, wipes its browsing data and removes its
+// directory (Chromium's profile deletion: immediately when the Profile can be released, otherwise
+// at the next launch). Refuses the launch Profile ("Default"), any other name and an unknown
+// Profile. Returns 1 when deletion was scheduled. UI thread only.
+CEF_EXPORT int bato_native_slot_delete_profile_v1(const char* profile_key);
 #ifdef __cplusplus
 }
 #endif

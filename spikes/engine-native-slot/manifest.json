@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "a113a9276c846d8e658b7d4a55fd6561e92329359492d38477bd28636c628f5e",
+  "patch_sha256": "010c8ace64204fc914301b756a91fb4ea0b199d5d899db3ae2dbd970ba0cd0b7",
   "files": [
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "ceedd4ecc45fad0ff18b7049e05fbcb36a3ea8db5b6f8d857f81f0c07116b090"
+      "patched_sha256": "f6c4c2415899b72c60c9664972d8bc14a453d5f62b62e580ea95d4724710850c"
     },
     {
       "root": "cef",
@@ -50,7 +50,7 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
       "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
-      "patched_sha256": "bca42784044beb3b673af06d490fc5c6f9f443923be2cac71536752db1866637"
+      "patched_sha256": "edb66da20d918070ff74067812dc247e019e3a5c64694cf7494088f0f9d07a42"
     },
     {
       "root": "chromium",
@@ -80,7 +80,7 @@
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "6ff1d1c4b11e206d996b2e8a029920e57c0eecfb1870f38409fe184f70a97230"
+      "patched_sha256": "837d595506a546042be7089325295f21c97067c90bffc883cc08f7936b59e10a"
     },
     {
       "root": "cef",
@@ -116,7 +116,7 @@
       "root": "chromium",
       "path": "chrome/browser/ui/cocoa/history_menu_cocoa_controller.mm",
       "original_sha256": "acf0243a129a043069b649fc27042a5e040b2281f50790a19e7e8ea50b621b10",
-      "patched_sha256": "732110c33c2b608f4c1354f3280a1c66bf86007b80b41805a62ae20a5c3d5a35"
+      "patched_sha256": "7b762eea1093289301e118ec16c2f77eda9517dbe8d044b539f458a5e3580e32"
     },
     {
       "root": "chromium",
