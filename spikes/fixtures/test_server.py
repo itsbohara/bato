@@ -30,6 +30,13 @@ class FixtureServerTests(unittest.TestCase):
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
                 self.assertGreater(len(response.read()), 20)
 
+    def test_blocking_fixture_paths_are_readable_from_the_fixture_page_only(self):
+        for path in ["/control/ok.json", "/ads/beacon.json"]:
+            with self.subTest(path=path), urlopen(self.base + path) as response:
+                self.assertEqual(response.headers["Access-Control-Allow-Origin"], "http://127.0.0.1:18765")
+        with urlopen(self.base + "/index.html") as response:
+            self.assertIsNone(response.headers["Access-Control-Allow-Origin"])
+
     def test_private_parent_and_directory_listing_unavailable(self):
         for path in ["/../server.py", "/%2e%2e/server.py", "/probe-extension/manifest.json", "/ads/"]:
             with self.subTest(path=path), self.assertRaises(HTTPError) as error:

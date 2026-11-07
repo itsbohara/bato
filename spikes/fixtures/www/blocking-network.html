@@ -30,7 +30,7 @@ function image(id, src, want) {
 }
 function xhr(id, url, want) {
   row(id, want); const r = new XMLHttpRequest();
-  r.onload = () => settle(id, r.status === 200); r.onerror = () => settle(id, false);
+  r.onload = () => settle(id, r.status === 200); r.onerror = () => settle(id, false); r.onabort = () => settle(id, false);
   r.open("GET", url); r.send();
 }
 function fetchUrl(id, url, want) {
@@ -60,7 +60,7 @@ function frame(id, src, want) {
 addEventListener("message", (e) => { if (e.data && e.data.mark) rows[e.data.mark] && (rows[e.data.mark].textContent = "executed"); });
 script("script-control", THIRD + "/control/ok.js", "allowed");
 script("script-tracker", THIRD + "/ads/tracker.js", "blocked");
-script("script-same-origin", SAME + "/ads/tracker.js", "allowed");
+script("script-same-origin", SAME + "/ads/same-origin.js", "allowed");
 script("script-allowed-tracker", THIRD + "/ads/allowed-tracker.js", "allowed");
 script("script-important", THIRD + "/ads/important-allowed-tracker.js", "blocked");
 script("script-domain-only", THIRD + "/ads/domain-only.js", "blocked");

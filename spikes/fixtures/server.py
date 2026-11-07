@@ -9,8 +9,16 @@ from socketserver import TCPServer
 ROOT = Path(__file__).resolve().parent / "www"
 
 
+# The blocking fixture page is served from 18765 and reads /control/ and /ads/ from a second
+# server (18766, "localhost"), so those paths must be readable cross-origin.
+CROSS_ORIGIN_PATHS = ("/control/", "/ads/")
+CROSS_ORIGIN_PAGE = "http://127.0.0.1:18765"
+
+
 class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
+        if self.path.startswith(CROSS_ORIGIN_PATHS):
+            self.send_header("Access-Control-Allow-Origin", CROSS_ORIGIN_PAGE)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
