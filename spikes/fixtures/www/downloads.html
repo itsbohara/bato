@@ -15,7 +15,26 @@
 <li><a id="slow" href="http://127.0.0.1:18768/slow.bin">Slow download (8 MB, about 15 s)</a></li>
 <li><a id="large" href="http://127.0.0.1:18768/large.bin">Large download (48 MB)</a></li>
 <li><a id="fail" href="http://127.0.0.1:18768/fail.bin">Failing download (cut after 1 MB)</a></li>
+<li><a id="slower" href="http://127.0.0.1:18768/slower.bin">Slower download (24 MB, about 45 s)</a></li>
+<li><a id="danger-command" href="http://127.0.0.1:18768/danger.command">Dangerous type: .command</a></li>
+<li><a id="danger-dmg" href="http://127.0.0.1:18768/danger.dmg">Dangerous type: .dmg</a></li>
+<li><a id="danger-jar" href="http://127.0.0.1:18768/danger.jar">Dangerous type: .jar</a></li>
+<li><a id="danger-exe" href="http://127.0.0.1:18768/danger.exe">Dangerous type: .exe</a></li>
+<li><a id="auto-exe" href="downloads.html?auto=danger.exe">Auto-start .exe without a click</a></li>
+<li><a id="auto-command" href="downloads.html?auto=danger.command">Auto-start .command without a click</a></li>
+<li><a id="auto-jar" href="downloads.html?auto=danger.jar">Auto-start .jar without a click</a></li>
 </ul>
 </main>
+<script>
+// A download that starts without a user gesture is what makes Chromium warn about dangerous file types.
+const auto = new URLSearchParams(location.search).get("auto");
+if (auto) setTimeout(() => {
+  const link = document.createElement("a");
+  link.href = "http://127.0.0.1:18768/" + auto;
+  link.download = "";
+  document.body.append(link);
+  link.click();
+}, 500);
+</script>
 </body>
 </html>
