@@ -27,6 +27,8 @@ public final class NativeWorkspaceController: NSObject {
     private let sidebarToggle = NSButton(frame: .zero)
     private var trafficLightClearanceWidth: NSLayoutConstraint?
     private let profileButton = NSButton(frame: .zero)
+    private var downloadsSidebar: DownloadsSidebar?
+    private var downloadsProfileKey: (UUID) -> String = { $0.uuidString }
     private let switcherButton = NSButton(frame: .zero)
     private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
@@ -152,6 +154,10 @@ public final class NativeWorkspaceController: NSObject {
     public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
     public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
     public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
+    public func duplicateSelection() { performWhenIdle({ runtime.duplicateSelectedEntry() }) }
+    public func togglePinSelection() { performWhenIdle({ runtime.togglePinSelectedEntry() }) }
+    public func closeOtherTemporaryTabs() { performWhenIdle({ runtime.closeOtherTemporaryTabs() }) }
+    public func closeTemporaryTabsBelowSelection() { performWhenIdle({ runtime.closeTemporaryTabsBelowSelection() }) }
 
     private func performWhenIdle(_ command: () -> Bool) {
         guard commandBar == nil, pageFinder == nil, root.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -183,8 +189,7 @@ public final class NativeWorkspaceController: NSObject {
     /// Workspace, brought to the front. Anything but a plain HTTP(S) address is refused.
     @discardableResult
     public func openExternalURL(_ url: URL) -> Bool {
-        guard canOpenBrowserPage, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
-              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
+        guard canOpenBrowserPage, Self.isExternalWebLink(url) else { return false }
         runtime.endPeek()
         let before = runtime.state
         let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
@@ -192,6 +197,11 @@ public final class NativeWorkspaceController: NSObject {
         root.window?.makeKeyAndOrderFront(nil)
         render()
         return true
+    }
+
+    public static func isExternalWebLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
+        return url.host?.isEmpty == false && url.user == nil && url.password == nil
     }
 
     private var canOpenBrowserPage: Bool {
@@ -412,7 +422,7 @@ public final class NativeWorkspaceController: NSObject {
         sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
         sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
         sidebarToggle.isHidden = requestSidebarToggle == nil
-        let trafficLightClearance = NSView()
+        let trafficLightClearance = WindowDragView()
         let clearanceWidth = trafficLightClearance.widthAnchor.constraint(equalToConstant: SidebarMetrics.trafficLightClearance)
         clearanceWidth.isActive = true
         self.trafficLightClearanceWidth = clearanceWidth
@@ -426,12 +436,14 @@ public final class NativeWorkspaceController: NSObject {
         switcherButton.lineBreakMode = .byTruncatingTail
         switcherButton.imagePosition = .imageLeading
         switcherButton.imageHugsTitle = true
-        switcherButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        switcherButton.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         switcherButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         switcherButton.setAccessibilityLabel("Current workspace")
         switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
         switcherButton.setAccessibilityIdentifier("bato-space-name")
-        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceActions])
+        let dragSpace = WindowDragView()
+        dragSpace.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let heading = NSStackView(views: [trafficLightClearance, switcherButton, dragSpace, sidebarToggle, workspaceActions])
         heading.orientation = .horizontal
         heading.alignment = .centerY
         heading.distribution = .fill
@@ -555,6 +567,18 @@ public final class NativeWorkspaceController: NSObject {
         scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
     }
 
+    /// Mounts the downloads button in the workspace footer row. `profileKey` maps a Profile to the key
+    /// the engine tags its downloads with.
+    public func attachDownloads(_ controller: DownloadsController, profileKey: @escaping (UUID) -> String = { $0.uuidString }) {
+        guard downloadsSidebar == nil, let row = workspacePager.superview as? NSStackView else { return }
+        let sidebar = DownloadsSidebar(controller: controller)
+        downloadsSidebar = sidebar
+        downloadsProfileKey = profileKey
+        row.insertArrangedSubview(sidebar.button, at: row.arrangedSubviews.count - 1)
+        controller.onChange = { [weak sidebar] in sidebar?.refresh() }
+        render()
+    }
+
     private func configureIcon(_ button: NSButton, symbol: String, label: String) {
         button.title = ""
         button.image = sidebarSymbol(symbol, size: 13)
@@ -658,6 +682,7 @@ public final class NativeWorkspaceController: NSObject {
         profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
         profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
         profileButton.setAccessibilityValue(currentProfile?.name ?? "")
+        downloadsSidebar?.setProfileKey(downloadsProfileKey(workspace.profileID))
         pageFinder?.refresh()
         let peek = runtime.peekSession.preview
         peekRow.isHidden = peek == nil
@@ -1625,6 +1650,12 @@ func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regul
     return image.withSymbolConfiguration(.init(pointSize: size, weight: weight)) ?? image
 }
 
+/// Empty space in the top row; the sidebar covers the window's own drag area.
+@MainActor
+private final class WindowDragView: NSView {
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+}
+
 @MainActor
 private final class SidebarEntries: NSStackView {
     // NSClipView uses the document's coordinate direction when its height is
@@ -1654,6 +1685,8 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     var copyLink: (() -> Bool)?
     var switchToWorkspace: ((Int) -> Bool)?
     override var isFlipped: Bool { true }
+    // Clicks on empty sidebar space reach this view, and the sidebar covers the window's own drag area.
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
     override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
