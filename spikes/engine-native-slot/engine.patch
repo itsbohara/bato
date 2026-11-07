@@ -1056,15 +1056,22 @@
          tabs::TabInterface::MaybeGetFromContents(source);
 --- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
-@@ -39,6 +39,7 @@
+@@ -39,7 +39,13 @@
 
  #if BUILDFLAG(ENABLE_CEF)
  #include "cef/libcef/browser/chrome/browser_delegate.h"
+-#endif
 +#include "cef/libcef/browser/chrome/browser_util.h"
- #endif
++#endif
++
++namespace {
++// Stock toolbar minimum height: 34 location bar + 2 x 6 interior margin.
++constexpr int kNativeSidebarTopRowHeight = 46;
++}  // namespace
 
  BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
-@@ -123,6 +124,7 @@
+     BrowserView& browser_view)
+@@ -123,6 +129,7 @@
      auto local_params = params.InLocalCoordinates(
          use_browser_bounds ? browser_bounds : params.visual_client_area);
  #if BUILDFLAG(IS_MAC)
@@ -1072,7 +1079,7 @@
      // Bato source-build experiment only. Keep Chrome's complete child layout
      // (toolbar, origin UI, extension anchors and split subtree) under its own
      // layout manager. This is not an AppKit hosting contract.
-@@ -133,8 +135,28 @@
+@@ -133,8 +140,46 @@
              BrowserWindowInterface::Type::TYPE_NORMAL &&
          (window_state == WindowState::kNormal ||
           window_state == WindowState::kMaximized)) {
@@ -1089,11 +1096,29 @@
 +      const int available_width = std::max(0, original_area.width() - 320);
 +      sidebar_width = std::min(sidebar_width, available_width);
 +      reserved_width = std::min(reserved_width, available_width);
-+      local_params.Inset(gfx::Insets::TLBR(44, reserved_width, 0, 0));
-+      // Use the same authoritative visual-client rectangle. Top margin avoids
-+      // frame-owned traffic lights; Chrome keeps all of its own child layout.
-+      native_slot_bounds = gfx::Rect(original_area.x(), original_area.y() + 44,
-+          sidebar_width, std::max(0, original_area.height() - 44));
++      // Once the native sidebar owns tabs there is no tab strip, so Chrome's
++      // toolbar takes the frame's top (caption) row beside the traffic lights.
++      // Reserving the sidebar width shrinks the leading exclusion to nothing,
++      // so the toolbar starts at the sidebar edge; with no reservation it keeps
++      // the exclusion and starts after the traffic lights. Windows without an
++      // attached sidebar keep the empty top margin and stock tab strip.
++      bool sidebar_owns_tabs = false;
++#if BUILDFLAG(ENABLE_CEF)
++      sidebar_owns_tabs = cef::NativeSidebarOwnsTabs(&browser_view_.get());
++#endif
++      const int top_row = sidebar_owns_tabs ? kNativeSidebarTopRowHeight : 44;
++      if (sidebar_owns_tabs) {
++        local_params.Inset(gfx::Insets::TLBR(0, reserved_width, 0, 0));
++        // The exclusion's height sets the toolbar row. Padding it to the
++        // toolbar's minimum keeps that row and the sidebar's top edge equal.
++        local_params.leading_exclusion.vertical_padding = std::max(
++            0.f, static_cast<float>(top_row) -
++                     local_params.leading_exclusion.content.height());
++      } else {
++        local_params.Inset(gfx::Insets::TLBR(top_row, reserved_width, 0, 0));
++      }
++      native_slot_bounds = gfx::Rect(original_area.x(), original_area.y() + top_row,
++          sidebar_width, std::max(0, original_area.height() - top_row));
 +    }
 +#if BUILDFLAG(ENABLE_CEF)
 +    if (auto* delegate = cef::BrowserForBWI(browser_view_->browser())->cef_delegate()) {
@@ -1202,7 +1227,7 @@
    const int active_index = browser_->GetTabStripModel()->active_index();
 
    std::optional<split_tabs::SplitTabId> split_tab_id =
-@@ -4933,7 +4981,20 @@
+@@ -4933,7 +4981,23 @@
 
  gfx::Size BrowserView::GetMinimumSize() const {
    auto* const layout = GetBrowserViewLayout();
@@ -1214,7 +1239,10 @@
 +      browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
 +      !IsFullscreen()) {
 +#if BUILDFLAG(ENABLE_CEF)
-+    minimum.Enlarge(cef::NativeSidebarWidth(const_cast<BrowserView*>(this), true), 44);
++    // The toolbar already occupies the top row once the sidebar owns tabs.
++    minimum.Enlarge(
++        cef::NativeSidebarWidth(const_cast<BrowserView*>(this), true),
++        cef::NativeSidebarOwnsTabs(this) ? 0 : 44);
 +#else
 +    minimum.Enlarge(260, 44);
 +#endif
@@ -1224,7 +1252,7 @@
  }
 
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5053,21 @@
+@@ -4992,6 +5056,21 @@
    }
 
    LayoutSuperclass<views::View>(this);
@@ -1246,7 +1274,7 @@
 
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5685,13 @@
+@@ -5609,6 +5688,13 @@
  }
 
  void BrowserView::PrepareFullscreen(bool fullscreen) {
