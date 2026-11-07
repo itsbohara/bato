@@ -51,3 +51,15 @@ Swift UI layer only; nothing built into the engine, no screenshot check yet. `sw
 | 8 | Workspace picker: dot pager (id `bato-workspace-picker` on the group, one labelled button per workspace, active dot larger) replaces the popup. Header lost the palette button, which frees about 30pt, so the name should no longer collapse to "..." at about 215pt | 33 | Name at 215pt; dots with 7+ workspaces |
 
 Not done: Profile-switcher popover (still NSMenu), translucency, Settings back/forward bar, animations.
+
+## Round 3
+
+Swift UI only; not built into the engine, not run in the real host. `swift test` log: `logs/polish3-swift-tests.log` (SSD).
+
+- **Root cause of P2 and P3 (same cause):** the Polish 2 test host had Increase Contrast on (`com.apple.universalaccess increaseContrast = 1`). That switches `SidebarStyle.tint` to its 8%/4% high-contrast wash (which is why even orange read as faint brown) and makes `SidebarPageView.draw` stroke the selected row with `labelColor` at 0.6 alpha, 1.5 pt (the light ring; tiles get the dimmer `separatorColor` ring). The ring is the intended Increase Contrast outline, not a layer border, focus ring or bezel. Retest with Increase Contrast off before judging either.
+- **P3 hardening:** selected rows no longer get the drop shadow or the 0.07 white hairline (tiles keep both); the only outline left is the Increase Contrast one.
+- **P2:** `SidebarStyle.vivid` lifts the stored colour to at least 0.6 saturation and 0.8 brightness (near-greys stay neutral) before blending; the Increase Contrast wash is now 30%/20% dark, 20%/12% light instead of 8%/4%.
+- **P1:** `CommandBarSelection.rowAfterRefresh` (BatoCore, unit-tested) keeps the id-based selection only when the query is unchanged; any edit selects the top row.
+- **P4:** `FaviconFallback.spec` (BatoCore, tested): IP, localhost or empty hosts take the first letter of the page title; hue is seeded from full URL plus title.
+- **P5:** Settings scroll view forced to `.overlay` scrollers; a legacy scroller took 16 pt from the clip view and narrowed the cards on long panes.
+- **P6:** left as is (bare `127.0.0.1:port` resolves to https; use `http://`).
