@@ -1,0 +1,18 @@
+# Swift batch 6 notes
+
+Swift and docs only. No engine build, no host run, not committed. Tests: `cd app && swift test`, log `/Volumes/Mahesh/personal/bato-build/logs/swift-batch6-tests.log` (208 Swift Testing tests plus XCTest, 0 failures). No Ardia code.
+
+## What changed
+
+1. **Search provider** persisted app-wide in `preferences.json` next to the organization (`BatoPersistence/AppPreferencesStore.swift`). Default DuckDuckGo; Google, Brave Search and Bing added. Unknown names fall back to the default; an unreadable file is set aside as `.corrupt`. Settings > General has the picker; the command bar footer picker writes the same store and Settings refreshes. Not included in backups.
+2. **Workspace delete.** `BrowserState.deleteWorkspace` (refuses a Profile's last workspace, selects the next sibling in the same Profile, drops the workspace's archive records), `PageRuntime.deleteWorkspace` (saves via `snapshotCommit`, the existing `pre-delete` snapshot that BackupStore lists, closes live pages without beforeunload, prunes closed-tab history). UI: workspace actions menu "Delete Workspace..." (disabled for the last workspace) opens a confirm sheet stating pages and archived tabs lost. The `pre-delete` slot is single-slot and shared with Profile delete.
+3. **Peek.** AX labels and help on Open as Tab and Close, group role on the Peek row, new `PageRuntimeError.peekAlreadyOpen` with the status line "A Peek is already open. Close it or open it as a tab first." Context-menu "Open in Peek": NOT done. No native slot export carries a link context menu (only `link_requested` from a trusted-gesture NEW_WINDOW open); it needs an engine hook that reports the link URL for a context menu item, then a Swift handler calling `openPeek(from:url:)`.
+4. **Notices and About.** Repo-root `NOTICES.md`; Settings > About shows the version (`CFBundleShortVersionString`, which packaging sets from `VERSION`, with build number; falls back to a bundled `VERSION` resource, then "development") and "View Notices", which opens `Resources/NOTICES.md` if present, else the GitHub page. Packaging should copy `NOTICES.md` and `spikes/cef-baseline/CEF-LICENSE.txt` into the bundle Resources (not done here; packaging is the other agent's).
+
+## Real-host checks needed
+
+- Settings now has General (first) and About (last) rails; default pane is still Profiles. Check rail layout and pane history.
+- General: pick Google, close Settings, Cmd-T and type a query: result row says "Search Google" and Open lands on google.com/search. Quit, relaunch: provider kept. Change it from the command bar footer with Settings open: Settings picker follows.
+- Delete Workspace: in a Profile with two workspaces, with live pages in the one being deleted, Delete: pages close, selection moves to the sibling, row gone from switcher/pager, `organization.snapshot.pre-delete.json` (or the BackupStore pre-delete entry in Settings > Advanced > Restore from backup) holds the old document. Restore it and confirm the workspace returns. The menu item is disabled for a Profile's only workspace. Delete the active workspace and a non-active one (from another window of the same Profile).
+- Peek: with VoiceOver or the AX tree, `bato-peek-promote` is "Open Peek as tab", `bato-peek-close` is "Close Peek", the row is group "Peek". Shift-click a second link while a Peek is open: the sidebar status line shows the already-open message (engine may swallow the second click before Swift sees it; if so the message cannot appear and that is expected).
+- About: version reads 0.1.0 plus build number in the packaged app; View Notices opens the GitHub page until NOTICES.md is bundled.

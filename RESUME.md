@@ -2,7 +2,11 @@
 
 Updated 2026-11-07. Read AGENTS.md and PROGRESS.md. This is the active handoff; historical detail is in milestone reports and Git history.
 
-## Newest checkpoint (packaging, milestone 5)
+## Newest checkpoint (milestone 6, daily-use packaging)
+
+2026-11-07, uncommitted: packaged app defaults now point at `~/Library/Application Support/Bato/{State,Profiles}` with the real keychain ("Chromium Safe Storage"); guard `BatoProfileStorageAllowed` in `cefsimple_mac.mm` allows that path only without `--use-mock-keychain` and the SSD test namespace only with it. Window titles stripped of " - Chromium" (NSWindow level), dev "Bato Quit application" item removed, NOTICES.md bundled, `run_bato.py` needs `--real`. Renderer crash shows Chromium's sad tab with Reload and keeps the sidebar entry; engine-crash recovery sheet re-verified. NEVER launch the real location from an agent; first-launch steps are in spikes/engine-native-slot/MILESTONE6-RESULTS.md. Wrappers launch-m6-v1..v5, receipts logs/m6-v*-exit.json (latest clean v5).
+
+## Previous checkpoint (packaging, milestone 5)
 
 2026-11-07, uncommitted: `python3 spikes/engine-build/package_app.py` builds `SSD/dist/Bato.app` (`com.itsbohara.bato`, ad-hoc signed, placeholder icon, VERSION file) from the Debug component build; `run_bato.py` opens it. Client changes: workspace mode adds `--no-default-browser-check` and disables Chromium IPH promos; packaged app reads `BatoDefaultArguments` from Info.plist when no `--cache-path`/`--bato-workspace-state` is given; `MenuBranding` renames Chromium menu items to Bato. Alpha state paths stay under SSD runtime (`alpha-state`, `profiles/alpha-v1`), guard and mock keychain unchanged. NEVER run `open -a dist/Bato.app` without explicit test `--state/--profile` (use run_bato.py). Wrappers launch-pkg-v1..v6 used; latest exit receipt logs/pkg-v3-exit.json. See spikes/engine-native-slot/PACKAGING-RESULTS.md.
 
