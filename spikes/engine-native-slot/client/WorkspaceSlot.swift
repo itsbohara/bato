@@ -417,8 +417,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
                pageItems: { [weak self] in self?.blockingMenuItems() ?? [] })
             workspaceHost.router = router
         } catch {
-            let message = NSTextField(wrappingLabelWithString:
-                "Organization unavailable. Its existing file has been left intact. Close Bato and check the file before reopening.")
+            let message = NSTextField(wrappingLabelWithString: NativeWorkspaceController.unavailableMessage(for: error))
             message.frame = NSRect(x: 14, y: 24, width: 232, height: 130)
             root.addSubview(message)
         }
@@ -586,6 +585,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     if let next = workspaceSlots.values.first {
         workspaceHost.mount(next)
     } else {
+        workspaceHost.controller?.prepareForQuit()
         workspaceHost.router?.restore()
     }
 }

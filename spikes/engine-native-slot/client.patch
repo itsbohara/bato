@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,55 @@
+@@ -2313,6 +2317,58 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -110,6 +110,8 @@
 +      "tests/cefsimple/bato/BatoCore/BrowserState.swift",
 +      "tests/cefsimple/bato/BatoCore/CommandBar.swift",
 +      "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
++      "tests/cefsimple/bato/BatoPersistence/BackupStore.swift",
++      "tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift",
 +      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
@@ -133,6 +135,7 @@
 +      "tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -151,7 +154,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2389,19 @@
+@@ -2336,12 +2392,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -1583,14 +1586,14 @@
 +              '-I', str(modules)]
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift']),
-+                           ('BatoPersistence', ['OrganizationStore.swift']),
++                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
 +                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
-+                                              'SettingsWindowController.swift', 'SidebarStyle.swift'])]:
++                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -2188,8 +2191,7 @@
 +               pageItems: { [weak self] in self?.blockingMenuItems() ?? [] })
 +            workspaceHost.router = router
 +        } catch {
-+            let message = NSTextField(wrappingLabelWithString:
-+                "Organization unavailable. Its existing file has been left intact. Close Bato and check the file before reopening.")
++            let message = NSTextField(wrappingLabelWithString: NativeWorkspaceController.unavailableMessage(for: error))
 +            message.frame = NSRect(x: 14, y: 24, width: 232, height: 130)
 +            root.addSubview(message)
 +        }
@@ -2357,6 +2359,7 @@
 +    if let next = workspaceSlots.values.first {
 +        workspaceHost.mount(next)
 +    } else {
++        workspaceHost.controller?.prepareForQuit()
 +        workspaceHost.router?.restore()
 +    }
 +}
@@ -4474,7 +4477,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,290 @@
 +import Foundation
 +import Darwin
 +
@@ -4490,6 +4493,7 @@
 +        case fileOperationFailed
 +        case snapshotUnavailable
 +        case snapshotStale
++        case migrationFailed
 +
 +        public var errorDescription: String? {
 +            switch self {
@@ -4501,6 +4505,7 @@
 +            case .fileOperationFailed: "Organization could not be read or saved."
 +            case .snapshotUnavailable: "No saved snapshot is available to restore."
 +            case .snapshotStale: "Organization changed after this snapshot, so it can no longer be restored."
++            case .migrationFailed: "Organization could not be upgraded. The previous document and its pre-migration snapshot were kept."
 +            }
 +        }
 +    }
@@ -4612,6 +4617,28 @@
 +            knownBytes = saved
 +            return restored
 +        }
++    }
++
++    public static var preMigrationSnapshotName: String { "pre-migration" }
++
++    /// Upgrades the loaded document in one step, keeping the previous one as the pre-migration snapshot.
++    /// If `transform` or the save fails, the committed document is untouched.
++    public func migrate(_ transform: (State) throws -> State) throws -> State {
++        guard loaded else { throw StoreError.loadRequired }
++        guard let knownBytes else { throw StoreError.snapshotUnavailable }
++        let current: State
++        do { current = try JSONDecoder().decode(State.self, from: knownBytes) }
++        catch { throw StoreError.corruptState }
++        let migrated: State
++        do { migrated = try transform(current) }
++        catch { throw StoreError.migrationFailed }
++        _ = try saveWithSnapshot(migrated, named: Self.preMigrationSnapshotName)
++        return migrated
++    }
++
++    /// The committed document's bytes, read under the store lock so a backup never sees a half-written save.
++    public func committedDocument() throws -> Data? {
++        try withLock { try readDocument() }
 +    }
 +
 +    private func snapshotURL(_ name: String) -> URL {
@@ -4743,7 +4770,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,768 @@
 +import Foundation
 +import BatoCore
 +
@@ -4953,6 +4980,20 @@
 +              saved.activeWorkspaceID == state.activeWorkspaceID,
 +              saved.currentWorkspace.activeEntryID == state.currentWorkspace.activeEntryID,
 +              saved.currentSplit?.id == state.currentSplit?.id else {
++            lastError = .invalidCommand
++            return false
++        }
++        state = saved
++        lastError = nil
++        onStateChange?(saved)
++        return true
++    }
++
++    /// Replaces organization with a restored backup the caller has already saved. Unlike
++    /// `adoptSavedOrganization` it may change the selection, so it is only allowed while no page is live.
++    @discardableResult
++    public func adoptRestoredOrganization(_ saved: BrowserState) -> Bool {
++        guard livePages.isEmpty, peekSession.preview == nil, (try? saved.validate()) != nil else {
 +            lastError = .invalidCommand
 +            return false
 +        }
@@ -5620,7 +5661,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2154 @@
+@@ -0,0 +1,2186 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -5666,6 +5707,7 @@
 +    private var profileEditor: ProfileEditor?
 +    private var pageFinder: PageFinder?
 +    private let organizationStore: OrganizationStore<BrowserState>
++    private let recovery: RecoveryController
 +    private var arcImport: ArcImportController?
 +    private var settingsWindow: SettingsWindowController?
 +    private var commandBar: CommandBarController?
@@ -5683,8 +5725,13 @@
 +    public init(directory: URL, handlesKeyEquivalents: Bool = true,
 +                makeEngine: (UUID) throws -> any PageEngine) throws {
 +        let store = OrganizationStore<BrowserState>(directory: directory, validate: { try $0.validate() })
++        let recovery = RecoveryController(directory: directory, store: store)
++        recovery.beginLaunch()
 +        let state: BrowserState
-+        if let restored = try store.load() {
++        let loaded = try store.load()
++        if let staged = recovery.applyPendingRestore() {
++            state = staged
++        } else if let restored = loaded {
 +            state = restored
 +        } else {
 +            state = BrowserState.initial()
@@ -5692,6 +5739,7 @@
 +        }
 +        let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
 +        organizationStore = store
++        self.recovery = recovery
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
 +        let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
 +        sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
@@ -5712,8 +5760,25 @@
 +            // Let the sheet finish detaching before the engine is asked to select or close.
 +            DispatchQueue.main.async { MainActor.assumeIsolated { self?.runtime.retryAbandonedPreviews() } }
 +        }
++        guard let window = root.window, case .abnormal = recovery.launchStatus else { return finishStart() }
++        recovery.presentLaunchOffer(on: window, canAdopt: { [weak self] in self?.runtime.livePages.isEmpty == true },
++                                    adopt: { [weak self] in self?.runtime.adoptRestoredOrganization($0) ?? false },
++                                    completion: { [weak self] in self?.finishStart() })
++    }
++
++    private func finishStart() {
 +        _ = runtime.start()
 +        render()
++        recovery.confirmLaunchSoon()
++        if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
++    }
++
++    /// Marks this session as ended cleanly; the next launch then offers no recovery.
++    public func prepareForQuit() { recovery.prepareForQuit() }
++
++    /// What to show instead of the sidebar when organization can't be opened.
++    public static func unavailableMessage(for error: Error) -> String {
++        RecoveryController.unavailableMessage(for: error)
 +    }
 +
 +    public func receive(_ event: PageEvent) {
@@ -5765,7 +5830,8 @@
 +            createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
 +            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
 +            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
-+            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } }))
++            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
++            restoreFromBackup: { [weak self] in self?.fromBrowserWindow { $0.restoreFromBackup() } }))
 +        settingsWindow = window
 +        window.show(pane)
 +    }
@@ -6856,6 +6922,13 @@
 +        }
 +        arcImport = flow
 +        flow.begin()
++    }
++
++    private func restoreFromBackup() {
++        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, arcImport == nil,
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        requestNativeFocus?()
++        recovery.presentRestorePicker(on: window)
 +    }
 +
 +    private func findPage() {
@@ -9562,7 +9635,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingProfiles.swift
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,78 @@
 +import Foundation
 +
 +/// Blocking for every Profile of one browser process.
@@ -9608,6 +9681,11 @@
 +        }
 +    }
 +
++    /// Re-reads every Profile's settings file after a backup restore replaced them.
++    public func reloadSettings() {
++        for service in lock.withLock({ Array(services.values) }) { service.reloadSettings() }
++    }
++
 +    public var listStatus: [String: ListStatus] { get async { await updater.status() } }
 +
 +    /// Checks lists now and then every `interval`; lists checked more recently are skipped.
@@ -9638,7 +9716,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingService.swift
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,93 @@
 +import Foundation
 +
 +/// One Profile's blocking state: settings and exceptions, per-page counts and list updates.
@@ -9672,6 +9750,8 @@
 +    public static func directory(stateDirectory: URL, profileKey: String = "default") -> URL {
 +        BlockingProfiles.rootDirectory(stateDirectory: stateDirectory).appendingPathComponent(profileKey)
 +    }
++
++    public func reloadSettings() { store.reload() }
 +
 +    public var settings: BlockingSettings { store.current() }
 +    public var exceptions: [String] { settings.exceptions }
@@ -9809,7 +9889,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingSettingsStore.swift
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,74 @@
 +import Foundation
 +
 +/// Reads and atomically writes `blocking-settings.json` in a Profile's blocking directory.
@@ -9838,6 +9918,14 @@
 +
 +    public func current() -> BlockingSettings {
 +        lock.withLock { cachedOrLoad() }
++    }
++
++    /// Drops the in-memory copy so the next read sees a file replaced on disk, e.g. by a backup restore.
++    public func reload() {
++        lock.withLock {
++            cached = nil
++            recovered = false
++        }
 +    }
 +
 +    @discardableResult
@@ -10314,7 +10402,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,447 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10328,6 +10416,7 @@
 +    let renameCurrentProfile: () -> Void
 +    let importFromArc: () -> Void
 +    let openEssential: (BrowserEssential) -> Void
++    let restoreFromBackup: () -> Void
 +}
 +
 +/// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -10520,7 +10609,10 @@
 +            SettingsRow(leading: nil, title: essential.title, detail: detail,
 +                        trailing: SettingsPillButton(title: "Open") { [weak self] in self?.hooks.openEssential(essential) })
 +        }
-+        return [caption("Browser pages"), SettingsGroup(rows: rows)]
++        let backup = SettingsRow(leading: nil, title: "Backups",
++                                 detail: "Restore your organization and blocking settings from a daily or pre-import copy.",
++                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in self?.hooks.restoreFromBackup() })
++        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: [backup])]
 +    }
 +
 +    // MARK: Pieces
@@ -10845,5 +10937,601 @@
 +        guard selectionHighlightStyle != .none else { return }
 +        NSColor.labelColor.withAlphaComponent(0.12).setFill()
 +        NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 12, yRadius: 12).fill()
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoPersistence/BackupStore.swift
+@@ -0,0 +1,243 @@
++import Foundation
++import Darwin
++
++public enum BackupError: Error, LocalizedError, Equatable {
++    case unknownBackup
++    case unsafePath
++    case unreadable
++    case writeFailed
++
++    public var errorDescription: String? {
++        switch self {
++        case .unknownBackup: "That backup no longer exists."
++        case .unsafePath: "The backup contains a file outside Bato’s storage."
++        case .unreadable: "The backup could not be read."
++        case .writeFailed: "The backup could not be written. Check free disk space."
++        }
++    }
++}
++
++public struct BackupInfo: Equatable, Identifiable, Sendable {
++    public enum Kind: Equatable, Sendable { case daily, lastSession, preImport, preMigration, preRestore }
++    public let id: String
++    public let kind: Kind
++    public let createdAt: Date
++}
++
++public struct BackupContents: Equatable, Sendable {
++    public let organization: Data
++    /// Settings kept beside the organization, keyed by path relative to the state directory.
++    public let files: [String: Data]
++}
++
++public struct RestoreResult<State> {
++    public let state: State
++    public let failedFiles: [String]
++}
++
++/// Rolling copies of organization and Bato settings. Engine data (cookies, credentials) is never included.
++///
++/// `last-session` and `daily-<day>` copies live in `<state>/backups`. The pre-import, pre-migration and
++/// pre-restore copies are the single-slot snapshots `OrganizationStore.saveWithSnapshot` already writes
++/// beside the document; this type lists and prunes them instead of making a second copy.
++public final class BackupStore {
++    public static let dailyRetention = 7
++    public static let lastSessionID = "last-session"
++    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore"]
++
++    private struct Manifest: Codable {
++        var schema = 1
++        var createdAt: Date
++    }
++
++    private let directory: URL
++    private let calendar: Calendar
++    private let now: () -> Date
++
++    public init(directory: URL, calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
++        self.directory = directory
++        self.calendar = calendar
++        self.now = now
++    }
++
++    private var root: URL { directory.appendingPathComponent("backups", isDirectory: true) }
++    private var pendingRestoreURL: URL { directory.appendingPathComponent("recovery-pending-restore.json") }
++
++    /// Writes today's copy unless one exists. Returns whether a copy was written.
++    @discardableResult
++    public func captureDaily(organization: Data, files: [String: Data]) throws -> Bool {
++        let id = dailyID(for: now())
++        guard !FileManager.default.fileExists(atPath: root.appendingPathComponent(id).path) else { return false }
++        try write(id: id, organization: organization, files: files)
++        return true
++    }
++
++    /// Replaces the previous last-session copy; a failure leaves the previous copy in place.
++    public func captureLastSession(organization: Data, files: [String: Data]) throws {
++        try write(id: Self.lastSessionID, organization: organization, files: files)
++    }
++
++    /// Newest first.
++    public func list() -> [BackupInfo] {
++        var found: [BackupInfo] = []
++        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
++        for name in names where Self.isDirectoryBackupID(name) {
++            guard let manifest = readManifest(name) else { continue }
++            found.append(BackupInfo(id: name, kind: name == Self.lastSessionID ? .lastSession : .daily,
++                                    createdAt: manifest.createdAt))
++        }
++        for name in Self.preChangeNames {
++            guard let modified = modificationDate(snapshotURL(name)) else { continue }
++            let kind: BackupInfo.Kind = name == "pre-import" ? .preImport : name == "pre-migration" ? .preMigration : .preRestore
++            found.append(BackupInfo(id: name, kind: kind, createdAt: modified))
++        }
++        return found.sorted { $0.createdAt > $1.createdAt }
++    }
++
++    public func contents(of id: String) throws -> BackupContents {
++        if Self.preChangeNames.contains(id) {
++            return BackupContents(organization: try readRegular(snapshotURL(id)), files: [:])
++        }
++        guard Self.isDirectoryBackupID(id), readManifest(id) != nil else { throw BackupError.unknownBackup }
++        let base = root.appendingPathComponent(id, isDirectory: true)
++        let organization = try readRegular(base.appendingPathComponent("organization.json"))
++        var files: [String: Data] = [:]
++        let filesRoot = base.appendingPathComponent("files", isDirectory: true).resolvingSymlinksInPath()
++        if let enumerator = FileManager.default.enumerator(at: filesRoot, includingPropertiesForKeys: [.isRegularFileKey]) {
++            for case let url as URL in enumerator {
++                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
++                let relative = String(url.resolvingSymlinksInPath().path.dropFirst(filesRoot.path.count + 1))
++                files[relative] = try readRegular(url)
++            }
++        }
++        return BackupContents(organization: organization, files: files)
++    }
++
++    /// Keeps the newest `dailyRetention` daily copies and only the newest pre-change snapshot.
++    public func prune() {
++        let backups = list()
++        for stale in backups.filter({ $0.kind == .daily }).dropFirst(Self.dailyRetention) {
++            try? FileManager.default.removeItem(at: root.appendingPathComponent(stale.id))
++        }
++        for stale in backups.filter({ [.preImport, .preMigration, .preRestore].contains($0.kind) }).dropFirst() {
++            try? FileManager.default.removeItem(at: snapshotURL(stale.id))
++        }
++    }
++
++    /// Replaces the organization with a backup and restores its settings files. The previous document
++    /// stays as the `pre-restore` snapshot; an invalid or unreadable backup changes nothing.
++    public func restore<State: Codable>(_ id: String, into store: OrganizationStore<State>) throws -> RestoreResult<State> {
++        let backup = try contents(of: id)
++        let restored: State
++        do { restored = try JSONDecoder().decode(State.self, from: backup.organization) }
++        catch { throw OrganizationStore<State>.StoreError.corruptState }
++        _ = try store.saveWithSnapshot(restored, named: "pre-restore")
++        var failed: [String] = []
++        for (relative, bytes) in backup.files {
++            do { try writeSettingsFile(bytes, relativePath: relative) }
++            catch { failed.append(relative) }
++        }
++        return RestoreResult(state: restored, failedFiles: failed.sorted())
++    }
++
++    /// Asks the next launch to restore `id` before anything reads the organization.
++    public func stageRestore(_ id: String) throws {
++        guard list().contains(where: { $0.id == id }) else { throw BackupError.unknownBackup }
++        do { try Data(id.utf8).write(to: pendingRestoreURL, options: .atomic) }
++        catch { throw BackupError.writeFailed }
++    }
++
++    /// Consumes the staged request, so a failing restore cannot repeat on every launch.
++    public func takePendingRestore() -> String? {
++        defer { try? FileManager.default.removeItem(at: pendingRestoreURL) }
++        guard let bytes = try? Data(contentsOf: pendingRestoreURL), let id = String(data: bytes, encoding: .utf8),
++              Self.preChangeNames.contains(id) || Self.isDirectoryBackupID(id) else { return nil }
++        return id
++    }
++
++    // MARK: Files
++
++    static func isDirectoryBackupID(_ id: String) -> Bool {
++        if id == lastSessionID { return true }
++        let parts = id.split(separator: "-", omittingEmptySubsequences: false)
++        return parts.count == 4 && parts[0] == "daily" && parts[1].count == 4 && parts[2].count == 2 && parts[3].count == 2
++            && parts.dropFirst().allSatisfy { $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
++    }
++
++    private func dailyID(for date: Date) -> String {
++        let parts = calendar.dateComponents([.year, .month, .day], from: date)
++        return String(format: "daily-%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
++    }
++
++    private func snapshotURL(_ name: String) -> URL {
++        directory.appendingPathComponent("organization.snapshot.\(name).json")
++    }
++
++    private func readManifest(_ id: String) -> Manifest? {
++        guard let bytes = try? readRegular(root.appendingPathComponent(id).appendingPathComponent("manifest.json")) else { return nil }
++        let decoder = JSONDecoder()
++        decoder.dateDecodingStrategy = .iso8601
++        return try? decoder.decode(Manifest.self, from: bytes)
++    }
++
++    private func modificationDate(_ url: URL) -> Date? {
++        var info = stat()
++        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
++        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
++    }
++
++    private func readRegular(_ url: URL) throws -> Data {
++        var info = stat()
++        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
++              let bytes = try? Data(contentsOf: url) else { throw BackupError.unreadable }
++        return bytes
++    }
++
++    /// Settings paths come from a backup, so they must stay inside the state directory and never follow a link.
++    private func writeSettingsFile(_ bytes: Data, relativePath: String) throws {
++        let target = try Self.safeURL(relativePath, under: directory)
++        var info = stat()
++        if lstat(target.path, &info) == 0, info.st_mode & S_IFMT != S_IFREG { throw BackupError.unsafePath }
++        do {
++            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
++            try bytes.write(to: target, options: .atomic)
++        } catch { throw BackupError.writeFailed }
++    }
++
++    static func safeURL(_ relativePath: String, under base: URL) throws -> URL {
++        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
++        let allowed = parts.allSatisfy { part in
++            !part.isEmpty && part != "." && part != ".." && part.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }
++        }
++        guard allowed, !parts.isEmpty else { throw BackupError.unsafePath }
++        return parts.reduce(base) { $0.appendingPathComponent(String($1)) }
++    }
++
++    private func write(id: String, organization: Data, files: [String: Data]) throws {
++        let manager = FileManager.default
++        let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
++        defer { try? manager.removeItem(at: staging) }
++        do {
++            try manager.createDirectory(at: staging, withIntermediateDirectories: true,
++                                        attributes: [.posixPermissions: 0o700])
++            try organization.write(to: staging.appendingPathComponent("organization.json"))
++            for (relative, bytes) in files {
++                let target = try Self.safeURL(relative, under: staging.appendingPathComponent("files", isDirectory: true))
++                try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
++                try bytes.write(to: target)
++            }
++            let encoder = JSONEncoder()
++            encoder.dateEncodingStrategy = .iso8601
++            // The manifest goes last: a copy without one is incomplete and never listed.
++            try encoder.encode(Manifest(createdAt: now())).write(to: staging.appendingPathComponent("manifest.json"))
++            let destination = root.appendingPathComponent(id, isDirectory: true)
++            if manager.fileExists(atPath: destination.path) {
++                _ = try manager.replaceItemAt(destination, withItemAt: staging)
++            } else {
++                try manager.moveItem(at: staging, to: destination)
++            }
++        } catch let error as BackupError {
++            throw error
++        } catch { throw BackupError.writeFailed }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift
+@@ -0,0 +1,138 @@
++import Foundation
++import Darwin
++
++public struct AbnormalTermination: Equatable, Sendable {
++    /// When the session that did not quit cleanly started.
++    public let previousStart: Date
++    /// False when that session never reached `confirmLaunch`, so the launch itself may be what fails.
++    public let previousLaunchConfirmed: Bool
++    /// Consecutive abnormal terminations without a confirmed launch between them, at least 1.
++    public let consecutiveFailures: Int
++    public var isRepeating: Bool { consecutiveFailures >= 2 }
++}
++
++public enum LaunchStatus: Equatable, Sendable {
++    case clean
++    case abnormal(AbnormalTermination)
++    /// Another live Bato process owns the marker, so this launch neither judges nor claims it.
++    case concurrent
++}
++
++/// Detects abnormal termination with a marker written at launch and removed on clean quit, and keeps
++/// the previous recovery snapshot until a later launch is confirmed.
++///
++/// The recovery snapshot (`BackupStore.lastSessionID`) is replaced only by `confirmLaunch`. A launch that
++/// crashes before confirming never overwrites it, and nothing here relaunches or restores on its own, so a
++/// crashing launch cannot loop.
++public final class RecoveryCoordinator {
++    private struct Marker: Codable {
++        var processID: Int32
++        var startedAt: Date
++        var confirmed: Bool
++        var failures: Int
++    }
++
++    private let markerURL: URL
++    private let backups: BackupStore
++    private let processID: Int32
++    private let isProcessAlive: (Int32) -> Bool
++    private let bootDate: () -> Date
++    private let now: () -> Date
++    private var marker: Marker?
++
++    public init(directory: URL, backups: BackupStore, processID: Int32 = getpid(),
++                isProcessAlive: @escaping (Int32) -> Bool = RecoveryCoordinator.processExists,
++                bootDate: @escaping () -> Date = RecoveryCoordinator.systemBootDate,
++                now: @escaping () -> Date = Date.init) {
++        markerURL = directory.appendingPathComponent("session.marker")
++        self.backups = backups
++        self.processID = processID
++        self.isProcessAlive = isProcessAlive
++        self.bootDate = bootDate
++        self.now = now
++    }
++
++    public static func processExists(_ pid: Int32) -> Bool {
++        kill(pid, 0) == 0 || errno == EPERM
++    }
++
++    public static func systemBootDate() -> Date {
++        var boot = timeval()
++        var size = MemoryLayout<timeval>.size
++        guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 else { return .distantPast }
++        return Date(timeIntervalSince1970: TimeInterval(boot.tv_sec))
++    }
++
++    /// Call once per launch, before the organization is read. An unreadable marker counts as abnormal.
++    public func beginLaunch() -> LaunchStatus {
++        let previous = readMarker()
++        var status = LaunchStatus.clean
++        var failures = 0
++        switch previous {
++        case .absent: break
++        case .present(let old):
++            // A recycled PID from before the last boot cannot be a live Bato.
++            if old.processID != processID, old.startedAt >= bootDate(), isProcessAlive(old.processID) { return .concurrent }
++            failures = old.confirmed ? 1 : old.failures + 1
++            status = .abnormal(AbnormalTermination(previousStart: old.startedAt, previousLaunchConfirmed: old.confirmed,
++                                                   consecutiveFailures: failures))
++        case .unreadable:
++            failures = 1
++            status = .abnormal(AbnormalTermination(previousStart: .distantPast, previousLaunchConfirmed: false,
++                                                   consecutiveFailures: 1))
++        }
++        let current = Marker(processID: processID, startedAt: now(), confirmed: false, failures: failures)
++        marker = current
++        // A marker that cannot be written only loses detection for this session.
++        writeMarker(current)
++        return status
++    }
++
++    /// The launch worked: the recovery snapshot and today's daily backup now reflect this session's start.
++    /// Call only after any recovery offer is resolved, because this replaces the snapshot the offer refers to.
++    /// Every step is attempted; the first failure is returned.
++    @discardableResult
++    public func confirmLaunch(organization: Data?, files: [String: Data]) -> BackupError? {
++        guard var current = marker else { return nil }
++        current.confirmed = true
++        current.failures = 0
++        marker = current
++        writeMarker(current)
++        var failure: BackupError?
++        if let organization {
++            do { try backups.captureLastSession(organization: organization, files: files) }
++            catch { failure = (error as? BackupError) ?? .writeFailed }
++            do { try backups.captureDaily(organization: organization, files: files) }
++            catch { failure = failure ?? (error as? BackupError) ?? .writeFailed }
++        }
++        backups.prune()
++        return failure
++    }
++
++    /// Clean quit. Idempotent, and leaves another process's marker alone.
++    public func endCleanly() {
++        guard let current = marker, current.processID == processID else { return }
++        try? FileManager.default.removeItem(at: markerURL)
++        marker = nil
++    }
++
++    private enum MarkerRead { case absent, present(Marker), unreadable }
++
++    private func readMarker() -> MarkerRead {
++        var info = stat()
++        guard lstat(markerURL.path, &info) == 0 else { return .absent }
++        guard info.st_mode & S_IFMT == S_IFREG, let bytes = try? Data(contentsOf: markerURL) else { return .unreadable }
++        let decoder = JSONDecoder()
++        decoder.dateDecodingStrategy = .iso8601
++        guard let decoded = try? decoder.decode(Marker.self, from: bytes) else { return .unreadable }
++        return .present(decoded)
++    }
++
++    private func writeMarker(_ marker: Marker) {
++        let encoder = JSONEncoder()
++        encoder.dateEncodingStrategy = .iso8601
++        guard let bytes = try? encoder.encode(marker) else { return }
++        try? FileManager.default.createDirectory(at: markerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
++        try? bytes.write(to: markerURL, options: .atomic)
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift
+@@ -0,0 +1,206 @@
++import AppKit
++import BatoBlocking
++import BatoCore
++import BatoPersistence
++
++/// Launch recovery and backups for the workspace: abnormal-termination detection, the recovery offer,
++/// rolling backups and restore. Organization and per-Profile blocking settings are covered; engine data is not.
++@MainActor
++final class RecoveryController {
++    static let confirmationDelay: TimeInterval = 10
++
++    private let directory: URL
++    private let store: OrganizationStore<BrowserState>
++    private let backups: BackupStore
++    private let coordinator: RecoveryCoordinator
++    private(set) var launchStatus: LaunchStatus = .clean
++    /// Set when a restore staged from Settings could not be applied at launch.
++    private(set) var startupNotice: String?
++
++    init(directory: URL, store: OrganizationStore<BrowserState>) {
++        self.directory = directory
++        self.store = store
++        backups = BackupStore(directory: directory)
++        coordinator = RecoveryCoordinator(directory: directory, backups: backups)
++        NotificationCenter.default.addObserver(
++            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
++            MainActor.assumeIsolated { self?.prepareForQuit() }
++        }
++    }
++
++    /// Call before the organization is read, so a crash while loading is detected next launch.
++    func beginLaunch() { launchStatus = coordinator.beginLaunch() }
++
++    /// Applies a restore staged from Settings. Call right after `store.load` and before blocking reads its files.
++    func applyPendingRestore() -> BrowserState? {
++        guard let id = backups.takePendingRestore() else { return nil }
++        do {
++            let result = try backups.restore(id, into: store)
++            BlockingHost.shared.profiles?.reloadSettings()
++            if !result.failedFiles.isEmpty {
++                startupNotice = "Organization was restored, but \(result.failedFiles.count) blocking settings file(s) could not be."
++            }
++            return result.state
++        } catch {
++            startupNotice = "The backup could not be restored: \(Self.reason(error)) Your current organization was not changed."
++            return nil
++        }
++    }
++
++    func prepareForQuit() { coordinator.endCleanly() }
++
++    /// Marks the launch successful after `confirmationDelay` and refreshes the recovery snapshot and daily backup.
++    func confirmLaunchSoon() {
++        DispatchQueue.main.asyncAfter(deadline: .now() + Self.confirmationDelay) { [weak self] in
++            MainActor.assumeIsolated { self?.confirmLaunch() }
++        }
++    }
++
++    private func confirmLaunch() {
++        let organization = try? store.committedDocument()
++        if let error = coordinator.confirmLaunch(organization: organization, files: settingsFiles()) { report(error) }
++    }
++
++    private func report(_ error: BackupError) {
++        NSLog("Bato: backup could not be written (%@)", String(describing: error))
++    }
++
++    // MARK: Launch offer
++
++    /// Offers last-session recovery. `canAdopt` and `adopt` hand a restored organization to the runtime, which must
++    /// not have a live page yet; `completion` runs once the sheet is resolved, whatever the choice.
++    func presentLaunchOffer(on window: NSWindow, canAdopt: @escaping () -> Bool,
++                            adopt: @escaping (BrowserState) -> Bool, completion: @escaping () -> Void) {
++        guard case .abnormal(let crash) = launchStatus else { return completion() }
++        let snapshot = backups.list().first { $0.kind == .lastSession }
++        let alert = NSAlert()
++        alert.messageText = "Bato didn’t quit properly last time"
++        var text = "Your sidebar was saved after your last change, so nothing is lost."
++        if crash.isRepeating {
++            text += " This has now happened \(crash.consecutiveFailures) times in a row; a page that opens at launch may be the cause."
++        }
++        if let snapshot {
++            text += " You can also go back to how it was when that session started, \(Self.format(snapshot.createdAt))."
++        }
++        alert.informativeText = text
++        alert.addButton(withTitle: "Keep Current")
++        if snapshot != nil { alert.addButton(withTitle: "Restore Session Start") }
++        alert.beginSheetModal(for: window) { [weak self] response in
++            guard let self else { return }
++            if snapshot != nil, response == .alertSecondButtonReturn {
++                self.restoreSessionStart(on: window, canAdopt: canAdopt, adopt: adopt, completion: completion)
++            } else {
++                completion()
++            }
++        }
++    }
++
++    private func restoreSessionStart(on window: NSWindow, canAdopt: () -> Bool, adopt: (BrowserState) -> Bool,
++                                     completion: @escaping () -> Void) {
++        guard canAdopt() else {
++            return showFailure("A page is already open, so the session can’t be swapped now. Use Settings, Advanced, Restore from backup.",
++                               on: window, completion: completion)
++        }
++        do {
++            let result = try backups.restore(BackupStore.lastSessionID, into: store)
++            BlockingHost.shared.profiles?.reloadSettings()
++            if adopt(result.state) { completion() }
++            else { showFailure("The session was restored on disk. Quit and reopen Bato to use it.", on: window, completion: completion) }
++        } catch {
++            showFailure("The session couldn’t be restored: \(Self.reason(error)) Your current organization was not changed.",
++                        on: window, completion: completion)
++        }
++    }
++
++    // MARK: Restore from Settings
++
++    /// Lets the user pick a backup and stages it for the next launch: live pages are bound to the current
++    /// organization, so it is replaced before anything is loaded.
++    func presentRestorePicker(on window: NSWindow) {
++        let available = backups.list()
++        guard !available.isEmpty else {
++            return showFailure("There are no backups yet. Bato keeps one daily copy and refreshes it while you use the browser.",
++                               on: window, completion: {})
++        }
++        let alert = NSAlert()
++        alert.messageText = "Restore from backup"
++        alert.informativeText = "Backups cover your sidebar organization and blocking settings, not passwords, cookies or open pages. The restore happens the next time Bato opens, and what you have now is kept as “Before last restore”."
++        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26))
++        picker.addItems(withTitles: available.map(Self.title))
++        picker.setAccessibilityIdentifier("bato-restore-backup-picker")
++        alert.accessoryView = picker
++        alert.addButton(withTitle: "Restore on Next Launch")
++        alert.addButton(withTitle: "Cancel")
++        alert.beginSheetModal(for: window) { [weak self] response in
++            guard let self, response == .alertFirstButtonReturn else { return }
++            self.stage(available[picker.indexOfSelectedItem], on: window)
++        }
++    }
++
++    private func stage(_ backup: BackupInfo, on window: NSWindow) {
++        do { try backups.stageRestore(backup.id) }
++        catch { return showFailure("The restore couldn’t be scheduled: \(Self.reason(error))", on: window, completion: {}) }
++        let alert = NSAlert()
++        alert.messageText = "Quit Bato to finish restoring"
++        alert.informativeText = "“\(Self.title(backup))” will replace your organization the next time Bato opens."
++        alert.addButton(withTitle: "Quit Bato")
++        alert.addButton(withTitle: "Later")
++        alert.beginSheetModal(for: window) { response in
++            if response == .alertFirstButtonReturn { NSApp.terminate(nil) }
++        }
++    }
++
++    func showNoticeIfNeeded(on window: NSWindow) {
++        guard let notice = startupNotice else { return }
++        startupNotice = nil
++        showFailure(notice, on: window, completion: {})
++    }
++
++    // MARK: Pieces
++
++    private func showFailure(_ text: String, on window: NSWindow, completion: @escaping () -> Void) {
++        let alert = NSAlert()
++        alert.messageText = "Backup problem"
++        alert.informativeText = text
++        alert.addButton(withTitle: "OK")
++        alert.beginSheetModal(for: window) { _ in completion() }
++    }
++
++    /// Blocking settings only: a Profile's other blocking files (lists, counters) are rebuilt by the host.
++    private func settingsFiles() -> [String: Data] {
++        let root = BlockingProfiles.rootDirectory(stateDirectory: directory)
++        var files: [String: Data] = [:]
++        for key in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] where BlockingProfiles.isValidKey(key) {
++            let name = BlockingSettingsStore.fileName
++            if let bytes = try? Data(contentsOf: root.appendingPathComponent(key).appendingPathComponent(name)) {
++                files["blocking/\(key)/\(name)"] = bytes
++            }
++        }
++        return files
++    }
++
++    private static func title(_ backup: BackupInfo) -> String {
++        let when = format(backup.createdAt)
++        switch backup.kind {
++        case .daily: return "Daily backup, \(when)"
++        case .lastSession: return "Start of last session, \(when)"
++        case .preImport: return "Before last import, \(when)"
++        case .preMigration: return "Before last upgrade, \(when)"
++        case .preRestore: return "Before last restore, \(when)"
++        }
++    }
++
++    private static func format(_ date: Date) -> String {
++        date.formatted(date: .abbreviated, time: .shortened)
++    }
++
++    /// Shown in place of the sidebar when organization can't be opened. The file is never modified.
++    nonisolated static func unavailableMessage(for error: Error) -> String {
++        let reason = (error as? LocalizedError)?.errorDescription ?? "The organization file could not be opened."
++        return "\(reason) Nothing was changed. Quit Bato, then copy a file from the backups folder next to organization.json over it, or ask for help with the version of Bato you use."
++    }
++
++    private static func reason(_ error: Error) -> String {
++        (error as? LocalizedError)?.errorDescription ?? "An unexpected error occurred."
 +    }
 +}
