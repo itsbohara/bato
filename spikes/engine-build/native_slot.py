@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -125,6 +126,15 @@ def apply(root, layers):
         raise RuntimeError('Native slot final hash verification failed')
 
 
+def bundle_blocking_library(output):
+    """The Rust filter library is built by cargo, not GN; the host looks for it in the app's Frameworks."""
+    library = engine.DEFAULT_ROOT / 'cargo-target/release/libbato_adblock_ffi.dylib'
+    if not library.is_file():
+        print('libbato_adblock_ffi.dylib not built; blocking stays inactive', file=sys.stderr)
+        return
+    shutil.copy2(library, output / 'cefsimple.app/Contents/Frameworks' / library.name)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('check', 'patch', 'build', 'artifacts'))
@@ -159,6 +169,7 @@ def main():
                 if args.execute:
                     engine.guarded_run(command, cwd, engine.environment(root),
                                        root / 'logs/build.log', root, engine.LOCK['reserve_bytes'])
+                    bundle_blocking_library(output)
             else:
                 runtime.require_build(root)
                 _, images = runtime.artifact_images(output)

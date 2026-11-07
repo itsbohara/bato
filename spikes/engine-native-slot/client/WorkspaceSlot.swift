@@ -2,6 +2,7 @@ import AppKit
 import BatoCore
 import BatoRuntime
 import BatoBrowserUI
+import BatoBlocking
 
 private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
 private typealias CommandID = @convention(c) (Int32) -> Int32
@@ -235,6 +236,7 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     var controller: NativeWorkspaceController?
     var engine: WorkspaceEngine?
     var menuRouter: WorkspaceKeyRouter?
+    private var blockingControls: BlockingControls?
     private var width: Int32 = 260
     private var mode: Int32 = 1
     private var pointerMonitor: Any?
@@ -282,7 +284,8 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
                 controller.promotePeek()
                 return true
             }, editAddress: { [weak controller] in controller?.editAddress() ?? false },
-               copyLink: { [weak controller] in controller?.copyCurrentLink() ?? false })
+               copyLink: { [weak controller] in controller?.copyCurrentLink() ?? false },
+               pageItems: { [weak self] in self?.blockingMenuItems() ?? [] })
             menuRouter = router
             root.onAttach = { [weak self, weak controller, weak router] in
                 self?.installPointerMonitor()
@@ -295,6 +298,23 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
             message.frame = NSRect(x: 14, y: 24, width: 232, height: 130)
             root.addSubview(message)
         }
+    }
+    /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
+    private func blockingMenuItems() -> [NSMenuItem] {
+        guard let service = BlockingHost.shared.service else { return [] }
+        let controls = BlockingControls(service: service, activePage: { [weak self] in
+            guard let self, let controller = self.controller, let engine = self.engine,
+                  let entryID = controller.runtime.state.currentWorkspace.activeEntryID,
+                  let url = controller.runtime.state.visibleEntries.first(where: { $0.id == entryID })?.lastURL,
+                  let id = engine.pages.first(where: { $0.value.entryID == entryID })?.key else { return nil }
+            return BlockingControls.ActivePage(url: url, browserID: id)
+        }, reload: { [weak self] id in
+            guard let self, let page = self.engine?.pages[id],
+                  let url = self.controller?.runtime.state.visibleEntries.first(where: { $0.id == page.entryID })?.lastURL else { return }
+            _ = self.engine?.perform(.load(url), on: page)
+        })
+        blockingControls = controls
+        return controls.menuItems()
     }
     private var canInteract: Bool {
         guard NSApp.isActive, let window = root.window else { return false }
@@ -441,15 +461,17 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
     private let promotePeek: () -> Bool
     private let editAddress: () -> Bool
     private let copyLink: () -> Bool
+    private let pageItems: () -> [NSMenuItem]
     private var sidebarMenuItem: NSMenuItem?
     private var peekMenuItem: NSMenuItem?
     private var pageMenuItem: NSMenuItem?
     init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
          dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
-         editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool) {
+         editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool,
+         pageItems: @escaping () -> [NSMenuItem]) {
         self.token = token; self.root = root; self.toggle = toggle
         self.dismissPeek = dismissPeek; self.promotePeek = promotePeek
-        self.editAddress = editAddress; self.copyLink = copyLink
+        self.editAddress = editAddress; self.copyLink = copyLink; self.pageItems = pageItems
         super.init()
     }
     @objc private func toggleFromMenu() { _ = toggle() }
@@ -486,6 +508,9 @@ private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CC
             copyItem.target = self
             copyItem.keyEquivalentModifierMask = [.command, .shift]
             menu.addItem(copyItem)
+            let extra = pageItems()
+            if !extra.isEmpty { menu.addItem(.separator()) }
+            extra.forEach(menu.addItem)
             item.submenu = menu
             mainMenu.addItem(item)
             pageMenuItem = item
