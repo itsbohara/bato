@@ -5,7 +5,7 @@
 <p>Serve a second host first: <code>python3 spikes/fixtures/server.py --port 18766</code>. Open this page at <code>http://127.0.0.1:18765/blocking-network.html</code>; third-party requests go to <code>http://localhost:18766</code>. List: <code>blocking/bato-fixture-list.txt</code>.</p>
 <p>Each row is a harmless request. Expected with the list active: rows marked <b>blocked</b> fail, rows marked <b>allowed</b> succeed.</p>
 <table id="results"><thead><tr><th>Check</th><th>Expected</th><th>Result</th></tr></thead><tbody></tbody></table>
-<div id="bato-css-probe">css probe</div><div class="bato-fixture-ad">Cosmetic target (hidden only when cosmetic filtering exists).</div>
+<div id="bato-css-probe">css probe</div><div class="bato-fixture-ad">Cosmetic target (hidden only when cosmetic filtering exists).</div><div class="bato-generic-ad">Generic cosmetic target (class rule from the list).</div><div class="bato-late-ad" id="late">Added after load.</div><script>setTimeout(function(){var d=document.createElement("div");d.className="bato-generic-ad";d.textContent="Generic target added after load";document.body.appendChild(d);},800);</script>
 <div id="frames"></div></main>
 <script>
 const THIRD = "http://localhost:18766", SAME = location.origin;
