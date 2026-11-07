@@ -5,7 +5,7 @@ import BatoCore
 /// its sheet lifecycle. No page or network work happens while the user types.
 @MainActor
 final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
-    private let field = NSSearchField(string: "")
+    private let field = CommandBarSearchField(string: "")
     private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private var provider: CommandBarSearchProvider
     private let providerChanged: (CommandBarSearchProvider) -> Void
@@ -316,5 +316,28 @@ private final class CommandBarSurface: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
+    }
+}
+
+/// The search glyph is drawn inside the cell; without a bezel the text rect starts under it, so typed text
+/// would overlap the magnifier.
+private final class CommandBarSearchField: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { ClearanceSearchFieldCell.self }
+        set {}
+    }
+}
+
+private final class ClearanceSearchFieldCell: NSSearchFieldCell {
+    private static let glyphGap: CGFloat = 8
+
+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+        var text = super.searchTextRect(forBounds: rect)
+        let clearance = searchButtonRect(forBounds: rect).maxX + Self.glyphGap
+        if text.minX < clearance {
+            text.size.width -= clearance - text.minX
+            text.origin.x = clearance
+        }
+        return text
     }
 }

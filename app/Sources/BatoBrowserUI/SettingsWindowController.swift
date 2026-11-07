@@ -11,7 +11,7 @@ struct SettingsHooks {
     let renameCurrentProfile: () -> Void
     let importFromArc: () -> Void
     let openEssential: (BrowserEssential) -> Void
-    let restoreFromBackup: () -> Void
+    let recovery: RecoveryController
 }
 
 /// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -206,8 +206,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         let backup = SettingsRow(leading: nil, title: "Backups",
                                  detail: "Restore your organization and blocking settings from a daily or pre-import copy.",
-                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in self?.hooks.restoreFromBackup() })
-        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: [backup])]
+                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in
+                                     guard let self else { return }
+                                     hooks.recovery.presentRestorePicker(on: window) { [weak self] in self?.reload() }
+                                 })
+        var backupRows = [backup]
+        if let staged = hooks.recovery.stagedRestoreTitle {
+            backupRows.append(SettingsRow(leading: nil, title: "Restore staged",
+                                          detail: "“\(staged)” will replace your organization the next time Bato opens.",
+                                          trailing: SettingsPillButton(title: "Cancel staged restore") { [weak self] in
+                                              self?.hooks.recovery.cancelStagedRestore()
+                                              self?.reload()
+                                          }))
+        }
+        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
     }
 
     // MARK: Pieces

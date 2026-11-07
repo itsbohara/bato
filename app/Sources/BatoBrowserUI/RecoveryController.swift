@@ -49,6 +49,18 @@ final class RecoveryController {
 
     func prepareForQuit() { coordinator.endCleanly() }
 
+    /// Records the organization this session starts with. Call once the launch offer is resolved and before
+    /// pages open; it becomes the recovery snapshot only after the launch is confirmed.
+    func captureSessionStart() {
+        guard let organization = try? store.committedDocument() else { return }
+        if let error = coordinator.captureSessionStart(organization: organization, files: settingsFiles()) { report(error) }
+    }
+
+    /// Title of the restore waiting for the next launch, for Settings.
+    var stagedRestoreTitle: String? { backups.stagedRestore().map(Self.title) }
+
+    func cancelStagedRestore() { backups.cancelStagedRestore() }
+
     /// Marks the launch successful after `confirmationDelay` and refreshes the recovery snapshot and daily backup.
     func confirmLaunchSoon() {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.confirmationDelay) { [weak self] in
@@ -73,21 +85,19 @@ final class RecoveryController {
                             adopt: @escaping (BrowserState) -> Bool, completion: @escaping () -> Void) {
         guard case .abnormal(let crash) = launchStatus else { return completion() }
         let snapshot = backups.list().first { $0.kind == .lastSession }
-        let alert = NSAlert()
-        alert.messageText = "Bato didn’t quit properly last time"
         var text = "Your sidebar was saved after your last change, so nothing is lost."
         if crash.isRepeating {
             text += " This has now happened \(crash.consecutiveFailures) times in a row; a page that opens at launch may be the cause."
         }
         if let snapshot {
-            text += " You can also go back to how it was when that session started, \(Self.format(snapshot.createdAt))."
+            text += " You can also go back to how it was when your last full session began, \(Self.format(snapshot.createdAt))."
         }
-        alert.informativeText = text
-        alert.addButton(withTitle: "Keep Current")
-        if snapshot != nil { alert.addButton(withTitle: "Restore Session Start") }
-        alert.beginSheetModal(for: window) { [weak self] response in
+        var buttons = [RecoverySheet.Button(title: "Keep Current", isDefault: true)]
+        if snapshot != nil { buttons.append(.init(title: "Restore Session", isDefault: false)) }
+        RecoverySheet.present(on: window, symbol: "arrow.counterclockwise.circle", title: "Bato didn’t quit properly last time",
+                              body: text, buttons: buttons, cancelIndex: 0) { [weak self] choice in
             guard let self else { return }
-            if snapshot != nil, response == .alertSecondButtonReturn {
+            if snapshot != nil, choice == 1 {
                 self.restoreSessionStart(on: window, canAdopt: canAdopt, adopt: adopt, completion: completion)
             } else {
                 completion()
@@ -115,38 +125,36 @@ final class RecoveryController {
     // MARK: Restore from Settings
 
     /// Lets the user pick a backup and stages it for the next launch: live pages are bound to the current
-    /// organization, so it is replaced before anything is loaded.
-    func presentRestorePicker(on window: NSWindow) {
+    /// organization, so it is replaced before anything is loaded. `didChange` runs when a restore is staged.
+    func presentRestorePicker(on window: NSWindow, didChange: @escaping () -> Void = {}) {
         let available = backups.list()
         guard !available.isEmpty else {
             return showFailure("There are no backups yet. Bato keeps one daily copy and refreshes it while you use the browser.",
                                on: window, completion: {})
         }
-        let alert = NSAlert()
-        alert.messageText = "Restore from backup"
-        alert.informativeText = "Backups cover your sidebar organization and blocking settings, not passwords, cookies or open pages. The restore happens the next time Bato opens, and what you have now is kept as “Before last restore”."
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26))
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: RecoverySheet.contentWidth, height: 26))
         picker.addItems(withTitles: available.map(Self.title))
         picker.setAccessibilityIdentifier("bato-restore-backup-picker")
-        alert.accessoryView = picker
-        alert.addButton(withTitle: "Restore on Next Launch")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn else { return }
-            self.stage(available[picker.indexOfSelectedItem], on: window)
+        RecoverySheet.present(
+            on: window, symbol: "clock.arrow.circlepath", title: "Restore from backup",
+            body: "Backups cover your sidebar organization and blocking settings, not passwords, cookies or open pages. The restore happens the next time Bato opens, and what you have now is kept as “Before last restore”.",
+            accessory: picker,
+            buttons: [.init(title: "Cancel", isDefault: false), .init(title: "Restore on Relaunch", isDefault: true)],
+            cancelIndex: 0) { [weak self] choice in
+            guard let self, choice == 1 else { return }
+            self.stage(available[picker.indexOfSelectedItem], on: window, didChange: didChange)
         }
     }
 
-    private func stage(_ backup: BackupInfo, on window: NSWindow) {
+    private func stage(_ backup: BackupInfo, on window: NSWindow, didChange: @escaping () -> Void) {
         do { try backups.stageRestore(backup.id) }
         catch { return showFailure("The restore couldn’t be scheduled: \(Self.reason(error))", on: window, completion: {}) }
-        let alert = NSAlert()
-        alert.messageText = "Quit Bato to finish restoring"
-        alert.informativeText = "“\(Self.title(backup))” will replace your organization the next time Bato opens."
-        alert.addButton(withTitle: "Quit Bato")
-        alert.addButton(withTitle: "Later")
-        alert.beginSheetModal(for: window) { response in
-            if response == .alertFirstButtonReturn { NSApp.terminate(nil) }
+        didChange()
+        RecoverySheet.present(on: window, symbol: "arrow.triangle.2.circlepath", title: "Quit Bato to finish restoring",
+                              body: "“\(Self.title(backup))” will replace your organization the next time Bato opens.",
+                              buttons: [.init(title: "Later", isDefault: false), .init(title: "Quit Bato", isDefault: true)],
+                              cancelIndex: 0) { choice in
+            if choice == 1 { NSApp.terminate(nil) }
         }
     }
 
@@ -159,11 +167,8 @@ final class RecoveryController {
     // MARK: Pieces
 
     private func showFailure(_ text: String, on window: NSWindow, completion: @escaping () -> Void) {
-        let alert = NSAlert()
-        alert.messageText = "Backup problem"
-        alert.informativeText = text
-        alert.addButton(withTitle: "OK")
-        alert.beginSheetModal(for: window) { _ in completion() }
+        RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "Backup problem", body: text,
+                              buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in completion() }
     }
 
     /// Blocking settings only: a Profile's other blocking files (lists, counters) are rebuilt by the host.
@@ -203,4 +208,107 @@ final class RecoveryController {
     private static func reason(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? "An unexpected error occurred."
     }
+}
+
+/// A compact card sheet for recovery and restore: optional icon, title, body, optional accessory and
+/// side-by-side buttons, about 320 pt wide.
+@MainActor
+final class RecoverySheet: NSObject {
+    struct Button {
+        let title: String
+        let isDefault: Bool
+    }
+
+    static let cardWidth: CGFloat = 320
+    static let inset: CGFloat = 16
+    static let contentWidth = cardWidth - inset * 2
+
+    private let panel: SheetPanel
+    private let completion: (Int) -> Void
+    private weak var parent: NSWindow?
+
+    static func present(on parent: NSWindow, symbol: String?, title: String, body: String, accessory: NSView? = nil,
+                        buttons: [Button], cancelIndex: Int, completion: @escaping (Int) -> Void) {
+        let sheet = RecoverySheet(parent: parent, symbol: symbol, title: title, body: body, accessory: accessory,
+                                  buttons: buttons, cancelIndex: cancelIndex, completion: completion)
+        parent.beginSheet(sheet.panel) { _ in _ = sheet }
+    }
+
+    private init(parent: NSWindow, symbol: String?, title: String, body: String, accessory: NSView?,
+                 buttons: [Button], cancelIndex: Int, completion: @escaping (Int) -> Void) {
+        self.parent = parent
+        self.completion = completion
+        panel = SheetPanel(contentRect: NSRect(x: 0, y: 0, width: Self.cardWidth, height: 200),
+                           styleMask: [.titled], backing: .buffered, defer: false)
+        super.init()
+        panel.isReleasedWhenClosed = false
+        panel.cancelIndex = cancelIndex
+        panel.onCancel = { [weak self] index in self?.finish(index) }
+
+        var views: [NSView] = []
+        if let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+            let icon = NSImageView(image: image)
+            icon.symbolConfiguration = .init(pointSize: 26, weight: .regular)
+            icon.contentTintColor = .secondaryLabelColor
+            views.append(icon)
+        }
+        let heading = NSTextField(wrappingLabelWithString: title)
+        heading.font = .systemFont(ofSize: 15, weight: .bold)
+        heading.preferredMaxLayoutWidth = Self.contentWidth
+        heading.setAccessibilityIdentifier("bato-recovery-title")
+        let message = NSTextField(wrappingLabelWithString: body)
+        message.font = .systemFont(ofSize: 13)
+        message.textColor = .secondaryLabelColor
+        message.preferredMaxLayoutWidth = Self.contentWidth
+        message.setAccessibilityIdentifier("bato-recovery-body")
+        views += [heading, message]
+        if let accessory { views.append(accessory) }
+
+        let row = NSStackView(views: buttons.enumerated().map { index, spec in
+            let button = NSButton(title: spec.title, target: self, action: #selector(buttonPressed(_:)))
+            button.tag = index
+            button.bezelStyle = .rounded
+            button.controlSize = .large
+            button.setAccessibilityIdentifier("bato-recovery-button-\(index)")
+            if spec.isDefault { button.keyEquivalent = "\r" }
+            return button
+        })
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = 8
+        views.append(row)
+
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        if let last = views.dropLast().last { stack.setCustomSpacing(16, after: last) }
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(stack)
+        if let content = panel.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.inset),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.inset),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.inset),
+                row.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            ])
+            if let accessory { accessory.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        }
+        SidebarStyle.fitSheet(panel, to: stack, horizontalInset: Self.inset, verticalInset: Self.inset)
+        panel.defaultButtonCell = row.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.keyEquivalent == "\r" }?.cell as? NSButtonCell
+    }
+
+    @objc private func buttonPressed(_ sender: NSButton) { finish(sender.tag) }
+
+    private func finish(_ index: Int) {
+        parent?.endSheet(panel)
+        completion(index)
+    }
+}
+
+private final class SheetPanel: NSWindow {
+    var cancelIndex = 0
+    var onCancel: ((Int) -> Void)?
+
+    override func cancelOperation(_ sender: Any?) { onCancel?(cancelIndex) }
 }

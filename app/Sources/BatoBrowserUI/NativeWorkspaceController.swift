@@ -103,6 +103,7 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private func finishStart() {
+        recovery.captureSessionStart()
         _ = runtime.start()
         render()
         recovery.confirmLaunchSoon()
@@ -147,6 +148,16 @@ public final class NativeWorkspaceController: NSObject {
     /// Opens native navigation, organization search and browser commands.
     public func newTab() { showCommandBar() }
 
+    /// Browser chords that would otherwise act on Chromium's tab strip or history: they follow the sidebar.
+    public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
+    public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
+    public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
+
+    private func performWhenIdle(_ command: () -> Bool) {
+        guard commandBar == nil, pageFinder == nil, root.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        perform(command)
+    }
+
     /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
     public func openEssential(_ essential: BrowserEssential) {
         guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
@@ -167,7 +178,7 @@ public final class NativeWorkspaceController: NSObject {
             renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
             importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
             openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
-            restoreFromBackup: { [weak self] in self?.fromBrowserWindow { $0.restoreFromBackup() } }))
+            recovery: recovery))
         settingsWindow = window
         window.show(pane)
     }
@@ -1258,13 +1269,6 @@ public final class NativeWorkspaceController: NSObject {
         }
         arcImport = flow
         flow.begin()
-    }
-
-    private func restoreFromBackup() {
-        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, arcImport == nil,
-              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
-        requestNativeFocus?()
-        recovery.presentRestorePicker(on: window)
     }
 
     private func findPage() {
