@@ -1170,6 +1170,8 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB")) command = 1;
   if (command_id == cef_id_for_command_id_name("IDC_CLOSE_TAB")) command = 2;
   if (command_id == cef_id_for_command_id_name("IDC_DEV_TOOLS_INSPECT") && IsCopyUrlChord()) command = 4;
+  // Not reached through Chrome's command controller: the engine offers these three from
+  // chrome::ShowHistory/ShowDownloads/ShowSettings, which every menu and key route ends in.
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
   if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
