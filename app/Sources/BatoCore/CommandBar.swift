@@ -7,19 +7,24 @@ public enum CommandBarDestination: Equatable, Sendable {
     case invalid(String)
 }
 
-/// Provider selection is owned by the UI; DuckDuckGo is the alpha default.
-public enum CommandBarSearchProvider: String, CaseIterable, Sendable {
-    case duckDuckGo, google
+/// The chosen provider is persisted app-wide by `AppPreferencesStore`; DuckDuckGo is the default.
+public enum CommandBarSearchProvider: String, CaseIterable, Codable, Sendable {
+    case duckDuckGo, google, brave, bing
+    public static let `default`: CommandBarSearchProvider = .duckDuckGo
     public var title: String {
         switch self {
         case .duckDuckGo: "DuckDuckGo"
         case .google: "Google"
+        case .brave: "Brave Search"
+        case .bing: "Bing"
         }
     }
     public var endpoint: URL {
         switch self {
         case .duckDuckGo: URL(string: "https://duckduckgo.com/")!
         case .google: URL(string: "https://www.google.com/search")!
+        case .brave: URL(string: "https://search.brave.com/search")!
+        case .bing: URL(string: "https://www.bing.com/search")!
         }
     }
 }

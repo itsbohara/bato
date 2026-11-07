@@ -75,6 +75,8 @@ public struct ClosedTabStack: Equatable, Sendable {
     }
     public var isEmpty: Bool { tabs.isEmpty }
 
+    public mutating func removeTabs(inWorkspace id: UUID) { tabs.removeAll { $0.workspaceID == id } }
+
     public mutating func push(_ tab: ClosedTab) {
         tabs.append(tab)
         if tabs.count > Self.capacity { tabs.removeFirst(tabs.count - Self.capacity) }
@@ -282,6 +284,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
     case missingProfile
     case duplicateProfileName
     case launchProfileProtected
+    case lastWorkspaceInProfile
     case missingWorkspace
     case invalidEntryOwnership
     case invalidSavedURL
@@ -301,6 +304,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
         case .missingProfile: "The workspace's Profile could not be found."
         case .duplicateProfileName: "Another Profile already has that name."
         case .launchProfileProtected: "The Profile Bato started with cannot be deleted."
+        case .lastWorkspaceInProfile: "A Profile keeps at least one workspace."
         case .missingWorkspace: "The selected workspace could not be found."
         case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
         case .invalidSavedURL: "The saved page destination is invalid."
@@ -588,6 +592,41 @@ public struct BrowserState: Codable, Equatable, Sendable {
                     throw BrowserStateError.missingWorkspace
                 }
                 draft.activeWorkspaceID = next.id
+            }
+        }
+    }
+
+    public struct WorkspaceLoss: Equatable, Sendable {
+        public let pages: Int
+        public let archived: Int
+    }
+
+    public func lossOfDeleting(workspace id: UUID) -> WorkspaceLoss? {
+        guard let workspace = workspaces.first(where: { $0.id == id }) else { return nil }
+        return WorkspaceLoss(pages: workspace.pins.count + workspace.tabs.count,
+                             archived: archive.records.filter { $0.workspaceID == id }.count)
+    }
+
+    /// A Profile always keeps one workspace, so the last one in each Profile is never offered for deletion.
+    public func canDeleteWorkspace(_ id: UUID) -> Bool {
+        guard let workspace = workspaces.first(where: { $0.id == id }) else { return false }
+        return workspaces.filter { $0.profileID == workspace.profileID }.count > 1
+    }
+
+    /// Selection moves to the nearest remaining workspace of the same Profile when the current one goes away.
+    public mutating func deleteWorkspace(_ id: UUID) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            let profileID = draft.workspaces[index].profileID
+            guard draft.canDeleteWorkspace(id) else { throw BrowserStateError.lastWorkspaceInProfile }
+            let siblings = draft.workspaces.enumerated().filter { $0.element.profileID == profileID && $0.element.id != id }
+            draft.workspaces.remove(at: index)
+            draft.archive.records.removeAll { $0.workspaceID == id }
+            if draft.activeWorkspaceID == id {
+                let nearest = siblings.first { $0.offset > index } ?? siblings.last
+                draft.activeWorkspaceID = nearest!.element.id
             }
         }
     }

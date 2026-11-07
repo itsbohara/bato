@@ -29,4 +29,15 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertTrue(ShortcutCatalog.rows.contains(ShortcutRow(title: "History", keys: "⌘Y")))
         XCTAssertTrue(ShortcutCatalog.rows.contains(ShortcutRow(title: "Downloads", keys: "⇧⌘J")))
     }
+
+    func testAboutVersionPrefersBundleThenVersionFileThenDevelopment() {
+        XCTAssertEqual(AboutInfo(bundleVersion: "0.2.0", bundleBuild: "170", versionFileText: "0.1.0\n").displayVersion, "0.2.0 (170)")
+        XCTAssertEqual(AboutInfo(bundleVersion: " ", bundleBuild: nil, versionFileText: "0.1.0\n").displayVersion, "0.1.0")
+        XCTAssertEqual(AboutInfo(bundleVersion: nil, bundleBuild: nil, versionFileText: nil).displayVersion, "development")
+    }
+
+    func testSettingsPanesIncludeGeneralAndAbout() {
+        XCTAssertEqual(SettingsPane.allCases.first, .general)
+        XCTAssertEqual(SettingsPane.allCases.last, .about)
+    }
 }

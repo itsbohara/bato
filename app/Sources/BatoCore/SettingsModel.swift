@@ -1,27 +1,31 @@
 import Foundation
 
 public enum SettingsPane: String, CaseIterable, Sendable {
-    case profiles, privacy, archive, importData, shortcuts, advanced
+    case general, profiles, privacy, archive, importData, shortcuts, advanced, about
 
     public var title: String {
         switch self {
+        case .general: "General"
         case .profiles: "Profiles"
         case .privacy: "Privacy"
         case .archive: "Archive"
         case .importData: "Import"
         case .shortcuts: "Shortcuts"
         case .advanced: "Advanced"
+        case .about: "About"
         }
     }
 
     public var symbolName: String {
         switch self {
+        case .general: "magnifyingglass"
         case .profiles: "person.crop.circle"
         case .privacy: "hand.raised"
         case .archive: "archivebox"
         case .importData: "square.and.arrow.down"
         case .shortcuts: "keyboard"
         case .advanced: "gearshape.2"
+        case .about: "info.circle"
         }
     }
 }
@@ -66,4 +70,25 @@ public enum ShortcutCatalog {
         ShortcutRow(title: "Downloads", keys: "⇧⌘J"),
         ShortcutRow(title: "Settings", keys: "⌘,"),
     ]
+}
+
+public struct AboutInfo: Equatable, Sendable {
+    public static let developmentVersion = "development"
+    public static let noticesURL = URL(string: "https://github.com/itsbohara/bato/blob/main/NOTICES.md")!
+
+    public let version: String
+    public let build: String?
+
+    /// The packaged app carries the repo's `VERSION` file as its bundle version; a bare VERSION file is the
+    /// fallback for unpackaged runs. Blank values count as missing.
+    public init(bundleVersion: String?, bundleBuild: String?, versionFileText: String?) {
+        func clean(_ text: String?) -> String? {
+            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+        version = clean(bundleVersion) ?? clean(versionFileText) ?? Self.developmentVersion
+        build = clean(bundleBuild)
+    }
+
+    public var displayVersion: String { build.map { "\(version) (\($0))" } ?? version }
 }
