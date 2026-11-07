@@ -713,10 +713,10 @@ final class BrowserStateTests: XCTestCase {
         let state = BrowserState.initial()
         let data = try JSONEncoder().encode(state)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        json["version"] = 3
+        json["version"] = 4
         let future = try JSONDecoder().decode(BrowserState.self, from: JSONSerialization.data(withJSONObject: json))
         XCTAssertThrowsError(try future.validate()) { error in
-            XCTAssertEqual(error as? BrowserStateError, .unsupportedVersion(3))
+            XCTAssertEqual(error as? BrowserStateError, .unsupportedVersion(4))
         }
         var invalid = state
         invalid.workspaces[0].activeEntryID = UUID()

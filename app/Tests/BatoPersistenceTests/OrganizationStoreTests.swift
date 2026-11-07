@@ -211,4 +211,29 @@ final class OrganizationStoreTests: XCTestCase {
             XCTAssertThrowsError(try reader.load()) { XCTAssertEqual($0 as? OrganizationStore<BrowserState>.StoreError, .invalidState) }
         }
     }
+
+    func testArchivePersistsAsVersionThreeWhileUnusedDocumentsKeepTheirBytes() throws {
+        try withDirectory { directory in
+            var state = BrowserState.initial()
+            let writer = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            XCTAssertNil(try writer.load())
+            try writer.save(state)
+            let document = directory.appendingPathComponent("organization.json")
+            let original = try Data(contentsOf: document)
+            XCTAssertFalse(String(decoding: original, as: UTF8.self).contains("archive"))
+            let reader = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            var loaded = try XCTUnwrap(try reader.load())
+            try reader.save(loaded)
+            XCTAssertEqual(try Data(contentsOf: document), original)
+
+            let tab = try loaded.addTab(url: URL(string: "https://example.invalid/a")!, title: "A")
+            try loaded.archiveTab(tab, at: Date(timeIntervalSinceReferenceDate: 1))
+            try reader.save(loaded)
+            let again = try XCTUnwrap(try OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }.load())
+            XCTAssertEqual(again.version, 3)
+            XCTAssertEqual(again, loaded)
+            state = again
+            XCTAssertEqual(state.archive.records.map(\.title), ["A"])
+        }
+    }
 }

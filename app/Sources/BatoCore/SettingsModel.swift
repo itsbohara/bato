@@ -1,12 +1,13 @@
 import Foundation
 
 public enum SettingsPane: String, CaseIterable, Sendable {
-    case profiles, privacy, importData, shortcuts, advanced
+    case profiles, privacy, archive, importData, shortcuts, advanced
 
     public var title: String {
         switch self {
         case .profiles: "Profiles"
         case .privacy: "Privacy"
+        case .archive: "Archive"
         case .importData: "Import"
         case .shortcuts: "Shortcuts"
         case .advanced: "Advanced"
@@ -17,6 +18,7 @@ public enum SettingsPane: String, CaseIterable, Sendable {
         switch self {
         case .profiles: "person.crop.circle"
         case .privacy: "hand.raised"
+        case .archive: "archivebox"
         case .importData: "square.and.arrow.down"
         case .shortcuts: "keyboard"
         case .advanced: "gearshape.2"

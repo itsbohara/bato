@@ -22,13 +22,17 @@ public struct PageEntry: Identifiable, Codable, Equatable, Sendable {
     public var savedURL: URL?
     public var lastURL: URL
     public var kind: EntryKind
+    /// When a temporary tab was last known to be in use; set only while its workspace archives idle tabs.
+    public var lastActiveAt: Date?
 
-    public init(id: UUID = UUID(), title: String, savedURL: URL? = nil, lastURL: URL, kind: EntryKind) {
+    public init(id: UUID = UUID(), title: String, savedURL: URL? = nil, lastURL: URL, kind: EntryKind,
+                lastActiveAt: Date? = nil) {
         self.id = id
         self.title = title
         self.savedURL = savedURL
         self.lastURL = lastURL
         self.kind = kind
+        self.lastActiveAt = lastActiveAt
     }
 }
 
@@ -156,8 +160,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var activeEntryID: UUID?
     public var splits: [PageSplit]
     public var activeSplitID: UUID?
+    /// Overrides the global archive period for this workspace.
+    public var archivePeriod: ArchivePeriod?
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil) {
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil) {
         self.id = id
         self.profileID = profileID
         self.name = name
@@ -168,6 +174,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.activeEntryID = activeEntryID
         self.splits = splits
         self.activeSplitID = activeSplitID
+        self.archivePeriod = archivePeriod
     }
 
     public func folder(containingPin id: UUID) -> PageFolder? {
@@ -220,7 +227,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID
+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod
     }
 
     public init(from decoder: any Decoder) throws {
@@ -235,6 +242,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         splits = try values.decodeIfPresent([PageSplit].self, forKey: .splits) ?? []
         activeSplitID = try values.decodeIfPresent(UUID.self, forKey: .activeSplitID)
         activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
+        archivePeriod = try values.decodeIfPresent(ArchivePeriod.self, forKey: .archivePeriod)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -250,6 +258,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         if !splits.isEmpty { try values.encode(splits, forKey: .splits) }
         try values.encodeIfPresent(activeSplitID, forKey: .activeSplitID)
         try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
+        try values.encodeIfPresent(archivePeriod, forKey: .archivePeriod)
     }
 }
 
@@ -297,6 +306,32 @@ public struct BrowserState: Codable, Equatable, Sendable {
     public var profiles: [BrowserProfile]
     public var workspaces: [Workspace]
     public var activeWorkspaceID: UUID
+    public var archive = ArchiveState()
+
+    /// Version 3 added the archive. Documents that never use it keep their version and bytes.
+    public static let archiveVersion = 3
+
+    private enum CodingKeys: String, CodingKey {
+        case version, profiles, workspaces, activeWorkspaceID, archive
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        profiles = try values.decode([BrowserProfile].self, forKey: .profiles)
+        workspaces = try values.decode([Workspace].self, forKey: .workspaces)
+        activeWorkspaceID = try values.decode(UUID.self, forKey: .activeWorkspaceID)
+        archive = try values.decodeIfPresent(ArchiveState.self, forKey: .archive) ?? ArchiveState()
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(version, forKey: .version)
+        try values.encode(profiles, forKey: .profiles)
+        try values.encode(workspaces, forKey: .workspaces)
+        try values.encode(activeWorkspaceID, forKey: .activeWorkspaceID)
+        if !archive.isDefault { try values.encode(archive, forKey: .archive) }
+    }
 
     /// Folders are at most this many levels deep, so indentation fits the 220-point minimum sidebar.
     public static let maxFolderDepth = 4
@@ -370,7 +405,13 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        guard version == 1 || version == 2 else { throw BrowserStateError.unsupportedVersion(version) }
+        guard (1...Self.archiveVersion).contains(version) else { throw BrowserStateError.unsupportedVersion(version) }
+        if version < Self.archiveVersion {
+            let usesArchive = !archive.isDefault || workspaces.contains {
+                $0.archivePeriod != nil || $0.tabs.contains { $0.lastActiveAt != nil }
+            }
+            guard !usesArchive else { throw BrowserStateError.unsupportedVersion(version) }
+        }
         var identities = Set<UUID>()
         func claim(_ id: UUID) throws {
             guard identities.insert(id).inserted else { throw BrowserStateError.duplicateIdentity }
@@ -447,6 +488,11 @@ public struct BrowserState: Codable, Equatable, Sendable {
                     throw BrowserStateError.invalidSelection
                 }
             }
+        }
+        for record in archive.records {
+            try claim(record.id)
+            guard profileIDs.contains(record.profileID) else { throw BrowserStateError.missingProfile }
+            try Self.validateURL(record.url)
         }
         guard workspaces.contains(where: { $0.id == activeWorkspaceID }) else {
             throw BrowserStateError.missingWorkspace
@@ -1129,6 +1175,10 @@ public struct BrowserState: Codable, Equatable, Sendable {
             workspaces[index].activeEntryID = nil
         }
     }
+
+    mutating func removeTemporaryTab(_ id: UUID) { removeEntry(id) }
+
+    mutating func selectTabInPlace(_ id: UUID) { selectEntryInPlace(id) }
 
     private mutating func removeEntry(_ id: UUID) {
         removeSplits(containing: id)
