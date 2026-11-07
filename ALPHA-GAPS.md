@@ -55,7 +55,7 @@ Written 2026-11-07 against main (d643668). Walks DESIGN.md "Proposed alpha accep
 | Profile delete | missing | PROFILE-SWITCHER-NOTES.md: no engine data-destroy export; launch Profile must be undeletable; workspace delete also absent | M-L, engine (context/data destroy export) |
 | Pin/Favorite title, copies wording (D5/D6) | done | PER-PROFILE-NOTES.md, perprofile-v2 | done |
 | Chromium security updates ownership | missing | DESIGN.md gate 3 | L, process decision |
-| Signing, notarization, packaging, updates | missing | PROGRESS Distribution row; production Keychain vs mock keychain unresolved (TASK.md) | L; Sparkle-style updater plus Chromium refresh cadence |
+| Signing, notarization, packaging, updates | partial (local packaging done) | PROGRESS Distribution row; spikes/engine-native-slot/PACKAGING-RESULTS.md (local ad-hoc Bato.app, icon, promos); production Keychain vs mock keychain unresolved (TASK.md), Developer ID/notarization/updates open | L; Sparkle-style updater plus Chromium refresh cadence |
 | Licenses/notices | partial | CEF-LICENSE.txt in spikes; no shipped notices bundle | S |
 
 ## Recommended next three milestones (by daily-use value)

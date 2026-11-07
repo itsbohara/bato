@@ -2,7 +2,11 @@
 
 Updated 2026-11-07. Read AGENTS.md and PROGRESS.md. This is the active handoff; historical detail is in milestone reports and Git history.
 
-## Newest checkpoint (milestone 4)
+## Newest checkpoint (packaging, milestone 5)
+
+2026-11-07, uncommitted: `python3 spikes/engine-build/package_app.py` builds `SSD/dist/Bato.app` (`com.itsbohara.bato`, ad-hoc signed, placeholder icon, VERSION file) from the Debug component build; `run_bato.py` opens it. Client changes: workspace mode adds `--no-default-browser-check` and disables Chromium IPH promos; packaged app reads `BatoDefaultArguments` from Info.plist when no `--cache-path`/`--bato-workspace-state` is given; `MenuBranding` renames Chromium menu items to Bato. Alpha state paths stay under SSD runtime (`alpha-state`, `profiles/alpha-v1`), guard and mock keychain unchanged. NEVER run `open -a dist/Bato.app` without explicit test `--state/--profile` (use run_bato.py). Wrappers launch-pkg-v1..v6 used; latest exit receipt logs/pkg-v3-exit.json. See spikes/engine-native-slot/PACKAGING-RESULTS.md.
+
+## Previous checkpoint (milestone 4)
 
 2026-11-07, uncommitted: Profile delete (engine `bato_native_slot_delete_profile_v1`, Settings > Profiles Delete with confirm sheet and pre-delete snapshot; launch Profile protected), fullscreen sidebar reveal (edge hover and Cmd-S), History > Recently Closed mapped to Bato's closed-tab stack, cosmetic filtering (adblock hide selectors and generic class/id rules injected per frame; no scriptlets), split pointer divider confirmed working with a slow physical drag, downloads popover refit and placement. Light-mode agent's AppearanceWatcher/SwitcherPopover registered. See spikes/engine-native-slot/MILESTONE4-RESULTS.md. Wrappers/log names used: launch-m4-v1..v4 (state runtime/m4-state-v1..v4). Latest clean exit receipt: logs/m4-v4-exit.json (m4-v3 crashed, exit -6, fixed). Engine ABI now has `bato_native_slot_delete_profile_v1`; the adblock dylib needs `cargo build --release` before `native_slot.py build` copies it.
 
