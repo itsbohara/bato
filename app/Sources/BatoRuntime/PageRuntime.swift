@@ -192,6 +192,23 @@ public final class PageRuntime {
         }
     }
 
+    /// Adopts organization the caller has already saved. It must keep the current selection:
+    /// organization imports and restores add or remove other workspaces, never the visible page.
+    @discardableResult
+    public func adoptSavedOrganization(_ saved: BrowserState) -> Bool {
+        guard (try? saved.validate()) != nil,
+              saved.activeWorkspaceID == state.activeWorkspaceID,
+              saved.currentWorkspace.activeEntryID == state.currentWorkspace.activeEntryID,
+              saved.currentSplit?.id == state.currentSplit?.id else {
+            lastError = .invalidCommand
+            return false
+        }
+        state = saved
+        lastError = nil
+        onStateChange?(saved)
+        return true
+    }
+
     /// A metadata edit must not refocus or recreate the current engine page.
     @discardableResult
     public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {

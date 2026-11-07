@@ -61,6 +61,30 @@ struct PageRuntimeTests {
         #expect(engine.closes.isEmpty)
     }
 
+    @Test func adoptingSavedOrganizationKeepsSelectionAndRejectsSelectionChanges() throws {
+        var state = BrowserState.initial()
+        _ = try state.addTab(url: start, title: "Page")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { commits.append($0) })
+        #expect(runtime.start())
+        let selections = engine.selections
+        var saved = state
+        let otherProfile = try saved.addProfile(name: "Imported")
+        _ = try saved.addWorkspace(name: "Imported space", profileID: otherProfile)
+        var published: BrowserState?
+        runtime.onStateChange = { published = $0 }
+        #expect(runtime.adoptSavedOrganization(saved))
+        #expect(runtime.state == saved)
+        #expect(published == saved)
+        #expect(commits.isEmpty)
+        #expect(engine.selections == selections)
+        var moved = saved
+        try moved.activateWorkspace(moved.workspaces[1].id)
+        #expect(!runtime.adoptSavedOrganization(moved))
+        #expect(runtime.state == saved)
+    }
+
     @Test func folderMetadataCommitsBeforePublishingAndNeverTouchesEngine() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: start, title: "Pin")
