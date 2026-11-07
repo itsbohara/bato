@@ -12,6 +12,8 @@ enum SidebarStyle {
     static let commandBarRadius: CGFloat = 22
     static let commandBarRowHeight: CGFloat = 48
     static let commandBarSize = NSSize(width: 680, height: 470)
+    static let downloadsPopoverWidth: CGFloat = 320
+    static let downloadsPopoverMaxListHeight: CGFloat = 360
 
     static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
         if selected { return NSColor.labelColor.withAlphaComponent(0.16) }
