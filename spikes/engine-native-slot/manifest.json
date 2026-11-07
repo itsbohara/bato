@@ -2,37 +2,37 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "2f0ad93c75e842706d6fd6a8ad1b480b84f951343abcdc15b5918c511737a1c7",
+  "patch_sha256": "5fc41fb05a07493ef644f51b6bb4ec8321739b1603df3f4d8d68cf44df6ef2a9",
   "files": [
     {
       "root": "cef",
       "path": "libcef/browser/chrome/browser_delegate.h",
       "original_sha256": "fae8eebf5064f7b41e979bf854d4e1b8e66192ff7ca5d26aad0c63fe47fa57ce",
-      "patched_sha256": "7caa547ea1404f800ba69e46b62312b8f86797cb663c29622e5905a45483709e"
+      "patched_sha256": "f092786358cc46213b72733d14e47478214e079d17726c4fc4c2b1ac0ed5c9b2"
     },
     {
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_browser_delegate.h",
       "original_sha256": "1d9bc1913309dd3f19b582b1dd0066ab8c12d910f0673db63f6a3d78b411c1b2",
-      "patched_sha256": "15b73e63d83c172abe56c00b462c37b63da5539fba82dbb743d84aac59c840f0"
+      "patched_sha256": "b6e6ab58c5d0e4ef44ec263e7e142d7a6a54ec86e660885ac3fd7cdcea4b66c5"
     },
     {
       "root": "cef",
       "path": "libcef/browser/chrome/browser_util.h",
       "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
-      "patched_sha256": "5df4e448c0acd5757d513bf8eb2e95b2979ada20cf7d1d2286bd0f546817b957"
+      "patched_sha256": "8a4283e336814dbc17ba27cf4e010a4bf6cf983e4d8f165ca57ac67b28d20280"
     },
     {
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_browser_delegate.cc",
       "original_sha256": "5dec5cd77127a497b9bc3b9f29726966afa6bb0d36513b0a7f0b1baee0f14410",
-      "patched_sha256": "6f3020eba59828a36d9104ae2253ed71fc389b9aaf152eaaea9124923e161204"
+      "patched_sha256": "a6e6abebaa8efb3118440b3b3b285c13156c716608e8d77d0eebfb1af5bc547e"
     },
     {
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "9bc67dc742e7046bde8f16d0db8352aeba04400c469c6abe3c8b2e3871c9d089"
+      "patched_sha256": "fbcedc364bcbece1f9e9ca7815c5111e9f43f07d0f9cbe9c8a374c3570409a64"
     },
     {
       "root": "cef",
@@ -50,13 +50,13 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
       "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
-      "patched_sha256": "cc96bc615e810bddac9b1ff6ef5279354924b658dd0acb9b5d35cc7c45ebd785"
+      "patched_sha256": "bca42784044beb3b673af06d490fc5c6f9f443923be2cac71536752db1866637"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "1ad762dede0369d7b9bf3645901885a507dede25512c3807e3d127292f402299"
+      "patched_sha256": "d723e2702102dabb1e100ecb20e588b40979355acd7b98d3ed0500e45976adc0"
     },
     {
       "root": "chromium",
@@ -92,7 +92,7 @@
       "root": "chromium",
       "path": "chrome/browser/ui/browser_commands.cc",
       "original_sha256": "de20f2ef2252b2511e0a5a50dac1341e462b0be91beb6bc666dac515c603f10a",
-      "patched_sha256": "373793f5648d6f9b6e1dc288a5823db8a7b45a347a83f10b9db39a30dc2377ac"
+      "patched_sha256": "1110c70817946cc3684776fc6b67023c381a97ae8972d35728a43eba3a19143a"
     },
     {
       "root": "chromium",
@@ -105,6 +105,24 @@
       "path": "chrome/browser/ui/browser_actions.cc",
       "original_sha256": "597653c4ecd1805050afb6bb3efc8a2f9ec86423d01529952f0b54878c6039d0",
       "patched_sha256": "135ce1329ba50bb938d10a175ba905d95e9b2c4b33e5fb8125bdf044c186d902"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/browser_tabstrip.cc",
+      "original_sha256": "f902e3f1d1e7f496aa8617f2170d3ca4b86076d732724dee5d2cd3327e1ecdb4",
+      "patched_sha256": "ac250483acf65969c06526d7a2c644ded5d02451025c7baf6404284fb366bf3a"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/cocoa/history_menu_cocoa_controller.mm",
+      "original_sha256": "acf0243a129a043069b649fc27042a5e040b2281f50790a19e7e8ea50b621b10",
+      "patched_sha256": "732110c33c2b608f4c1354f3280a1c66bf86007b80b41805a62ae20a5c3d5a35"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/frame/immersive_mode_controller_mac.mm",
+      "original_sha256": "505ada676906417a12e9da25ae6fcfbc17dd839ece49f03da7df411471c4b86b",
+      "patched_sha256": "2e85689e40014af93397eb6f89d440bf081eb70b97db350e1dcef2d284fc91bd"
     }
   ]
 }
