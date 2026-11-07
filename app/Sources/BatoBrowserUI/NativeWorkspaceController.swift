@@ -160,12 +160,44 @@ public final class NativeWorkspaceController: NSObject {
 
     /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
     public func openEssential(_ essential: BrowserEssential) {
-        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
-              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard canOpenBrowserPage else { return }
         runtime.endPeek()
         requestNativeFocus?()
         _ = runtime.openEssential(essential)
         render()
+    }
+
+    /// Chromium's site settings for the selected page, as a tab of the current Profile. Reached from
+    /// Chromium's page-info "Site settings" link, which would otherwise open a tab Bato doesn't track.
+    public func openSiteSettings() {
+        guard canOpenBrowserPage else { return }
+        let state = runtime.state
+        let page = state.visibleEntries.first { $0.id == state.currentWorkspace.activeEntryID }?.lastURL
+        runtime.endPeek()
+        requestNativeFocus?()
+        _ = runtime.openSiteSettings(for: page)
+        render()
+    }
+
+    /// A web link handed over by macOS (Bato as the default browser) opens as a tab of the current
+    /// Workspace, brought to the front. Anything but a plain HTTP(S) address is refused.
+    @discardableResult
+    public func openExternalURL(_ url: URL) -> Bool {
+        guard canOpenBrowserPage, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
+        runtime.endPeek()
+        let before = runtime.state
+        let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
+        guard opened || runtime.state != before else { return false }
+        root.window?.makeKeyAndOrderFront(nil)
+        render()
+        return true
+    }
+
+    private var canOpenBrowserPage: Bool {
+        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
+        return true
     }
 
     /// Opens Bato's own Settings window. It is not tied to a browser window, so it never blocks one.
@@ -178,6 +210,7 @@ public final class NativeWorkspaceController: NSObject {
             renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
             importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
             openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
+            defaultBrowser: .system(),
             recovery: recovery))
         settingsWindow = window
         window.show(pane)

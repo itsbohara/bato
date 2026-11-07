@@ -11,7 +11,19 @@ struct SettingsHooks {
     let renameCurrentProfile: () -> Void
     let importFromArc: () -> Void
     let openEssential: (BrowserEssential) -> Void
+    let defaultBrowser: DefaultBrowser
     let recovery: RecoveryController
+}
+
+extension DefaultBrowser {
+    /// Bato as the running application, checked against what Launch Services hands web links to.
+    static func system(appURL: URL = Bundle.main.bundleURL) -> DefaultBrowser {
+        DefaultBrowser(appURL: appURL, handler: { scheme in
+            URL(string: "\(scheme)://example.com").flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+        }, assign: { scheme in
+            try await NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenURLsWithScheme: scheme)
+        })
+    }
 }
 
 /// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -150,7 +162,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let state = hooks.state()
         guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
               let service = hooks.blockingService(profile.id.uuidString) else {
-            return [caption("Content blocking starts with the browser engine and isn’t available yet.")]
+            return [caption("Content blocking starts with the browser engine and isn’t available yet."),
+                    caption("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
         }
         let toggle = NSSwitch()
         toggle.state = service.settings.enabled ? .on : .off
@@ -166,6 +179,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                                    title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
                                    trailing: toggle, keeping: handler)
         var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking])]
+        views += sitePermissions(forProfile: profile.name)
         let exceptions = service.exceptions
         views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
         if !exceptions.isEmpty {
@@ -177,6 +191,19 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             }))
         }
         return views
+    }
+
+    private func sitePermissions(forProfile name: String) -> [NSView] {
+        [caption("Site permissions"),
+         sitePermissionsGroup(detail: "Camera, location, notifications and more, per site, for the \(name) Profile.")]
+    }
+
+    private func sitePermissionsGroup(detail: String) -> NSView {
+        SettingsGroup(rows: [SettingsRow(leading: SymbolTile(symbol: "checkmark.shield.fill", color: .systemBlue),
+                                         title: "Site permissions", detail: detail,
+                                         trailing: SettingsPillButton(title: "Manage…") { [weak self] in
+                                             self?.hooks.openEssential(.sitePermissions)
+                                         })])
     }
 
     private func importPane() -> [NSView] {
@@ -192,6 +219,22 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         [SettingsGroup(rows: ShortcutCatalog.rows.map { shortcut in
             SettingsRow(leading: nil, title: shortcut.title, detail: nil, trailing: keyLabel(shortcut.keys))
         })]
+    }
+
+    private func defaultBrowserRow() -> NSView {
+        let browser = hooks.defaultBrowser
+        if browser.status == .isDefault {
+            return SettingsRow(leading: nil, title: "Default browser", detail: "Bato opens links from other apps.",
+                               trailing: nil)
+        }
+        return SettingsRow(leading: nil, title: "Default browser",
+                           detail: "Bato isn’t your default browser. macOS asks you to confirm the change.",
+                           trailing: SettingsPillButton(title: "Make Bato Default") { [weak self] in
+                               Task { @MainActor in
+                                   try? await browser.makeDefault()
+                                   self?.reload()
+                               }
+                           })
     }
 
     private func advancedPane() -> [NSView] {
@@ -219,7 +262,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                                               self?.reload()
                                           }))
         }
-        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
+        return [caption("General"), SettingsGroup(rows: [defaultBrowserRow()]),
+                caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
     }
 
     // MARK: Pieces
