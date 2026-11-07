@@ -1,26 +1,35 @@
 import Foundation
 
-/// One Profile's blocking state: settings, per-page counts and list updates.
+/// One Profile's blocking state: settings and exceptions, per-page counts and list updates.
+/// Profiles created by `BlockingProfiles` share one list updater and one counters object.
 public final class BlockingService: @unchecked Sendable {
     public static let defaultUpdateInterval: TimeInterval = 24 * 60 * 60
 
     public let directory: URL
-    public let counters = BlockedCounters()
+    public let counters: BlockedCounters
     private let store: BlockingSettingsStore
     private let updater: FilterListUpdater
     private let lock = NSLock()
     private var updateTask: Task<Void, Never>?
 
-    public init(directory: URL, sources: [FilterListSource] = FilterListSource.defaults,
-                fetcher: FilterListFetching = URLSessionListFetcher()) {
+    init(directory: URL, updater: FilterListUpdater, counters: BlockedCounters) {
         self.directory = directory
+        self.counters = counters
+        self.updater = updater
         store = BlockingSettingsStore(directory: directory)
-        updater = FilterListUpdater(directory: directory, sources: sources, fetcher: fetcher)
     }
 
-    /// `<state>/blocking/<profileKey>`. The engine has one bound Profile today, keyed `default`.
+    /// A standalone service that downloads its own lists into `directory/lists`.
+    public convenience init(directory: URL, sources: [FilterListSource] = FilterListSource.defaults,
+                            fetcher: FilterListFetching = URLSessionListFetcher()) {
+        self.init(directory: directory,
+                  updater: FilterListUpdater(directory: directory, sources: sources, fetcher: fetcher),
+                  counters: BlockedCounters())
+    }
+
+    /// `<state>/blocking/<profileKey>`: the Profile's settings and exceptions.
     public static func directory(stateDirectory: URL, profileKey: String = "default") -> URL {
-        stateDirectory.appendingPathComponent("blocking").appendingPathComponent(profileKey)
+        BlockingProfiles.rootDirectory(stateDirectory: stateDirectory).appendingPathComponent(profileKey)
     }
 
     public var settings: BlockingSettings { store.current() }
