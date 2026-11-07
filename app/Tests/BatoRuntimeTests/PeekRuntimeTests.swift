@@ -332,4 +332,14 @@ struct PeekRuntimeTests {
         #expect(engine.presented.count == 1)
         #expect(runtime.peekSession.preview == nil)
     }
+
+    @Test func secondPeekIsRefusedWithADistinctError() throws {
+        let (runtime, engine, parent) = try make()
+        #expect(runtime.openPeek(url: target))
+        #expect(!runtime.openPeek(from: parent, url: start))
+        #expect(runtime.lastError == .peekAlreadyOpen)
+        #expect(!runtime.openPeek(url: start))
+        #expect(runtime.lastError == .peekAlreadyOpen)
+        #expect(engine.presented.count == 1)
+    }
 }

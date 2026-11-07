@@ -97,6 +97,7 @@ public enum PageRuntimeError: Error, Equatable {
     case creationRejected
     case saveFailed
     case invalidCommand
+    case peekAlreadyOpen
 }
 
 /// Coordinates committed organization with an engine, without serializing engine
@@ -296,6 +297,47 @@ public final class PageRuntime {
         pagesWithUncommittedNavigation = pagesWithUncommittedNavigation.filter { $0.key.profileID != id }
         closedTabs.removeValue(forKey: id)
         pendingArchive = pendingArchive.filter { entry, _ in state.visibleEntries.contains { $0.id == entry } }
+        lastError = nil
+        onStateChange?(state)
+        if wasCurrent { _ = showSelection() }
+        return true
+    }
+
+    /// Deletes a workspace and closes its live pages. Like Profile delete, the previous document is kept as a
+    /// snapshot first. Closing the pages is not confirmed: before-unload dialogs are not offered.
+    @discardableResult
+    public func deleteWorkspace(_ id: UUID) -> Bool {
+        guard let doomed = state.workspaces.first(where: { $0.id == id }), state.canDeleteWorkspace(id) else {
+            lastError = .invalidCommand
+            return false
+        }
+        var candidate = state
+        do { try candidate.deleteWorkspace(id); try candidate.validate() } catch {
+            lastError = .invalidCommand
+            return false
+        }
+        guard engine.supportsProfile(candidate.currentWorkspace.profileID) else {
+            lastError = .unsupportedProfile
+            return false
+        }
+        let entryIDs = Set((doomed.pins + doomed.tabs).map(\.id))
+        let wasCurrent = state.activeWorkspaceID == id
+        do {
+            try (snapshotCommit ?? commit)(candidate)
+        } catch {
+            lastError = .saveFailed
+            return false
+        }
+        state = candidate
+        tearDownPeek()
+        for entry in entryIDs {
+            guard let page = livePages.removeValue(forKey: entry) else { continue }
+            pendingClose.remove(page)
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
+            engine.requestClose(page)
+        }
+        closedTabs[doomed.profileID]?.removeTabs(inWorkspace: id)
+        pendingArchive = pendingArchive.filter { !entryIDs.contains($0.key) }
         lastError = nil
         onStateChange?(state)
         if wasCurrent { _ = showSelection() }
@@ -608,6 +650,10 @@ public final class PageRuntime {
     /// Previews the destination above the current live page without touching organization.
     @discardableResult
     public func openPeek(url: URL) -> Bool {
+        guard peekSession.preview == nil else {
+            lastError = .peekAlreadyOpen
+            return false
+        }
         guard canOpenPeek, let parentID = state.currentWorkspace.activeEntryID, let parent = livePages[parentID] else {
             lastError = .invalidCommand
             return false
@@ -630,6 +676,10 @@ public final class PageRuntime {
     /// Revalidates the parent and destination: the page state may have changed since a link trigger fired.
     @discardableResult
     public func openPeek(from parent: LivePage, url: URL) -> Bool {
+        guard peekSession.preview == nil else {
+            lastError = .peekAlreadyOpen
+            return false
+        }
         guard canOpenPeek(from: parent, url: url) else {
             lastError = .invalidCommand
             return false
