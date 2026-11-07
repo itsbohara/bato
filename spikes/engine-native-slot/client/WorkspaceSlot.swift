@@ -777,6 +777,28 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 }
 
 
+/// Chromium builds its menu titles from its own product name ("Quit Chromium"); the app is Bato.
+/// Titles are rewritten when the shortcuts install and again whenever a menu opens, because
+/// Chromium refreshes some items as menus open.
+@MainActor private enum MenuBranding {
+    private static var observer: NSObjectProtocol?
+
+    static func install() {
+        apply(to: NSApp.mainMenu)
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { apply(to: NSApp.mainMenu) }
+        }
+    }
+
+    private static func apply(to menu: NSMenu?) {
+        for item in menu?.items ?? [] {
+            if item.title.contains("Chromium") { item.title = item.title.replacingOccurrences(of: "Chromium", with: "Bato") }
+            apply(to: item.submenu)
+        }
+    }
+}
+
 /// Route physical T/W before Chromium's page-focused key-equivalent path.
 /// Leave Chromium's menu items intact for untracked tabs and menu commands.
 @MainActor private final class WorkspaceKeyRouter: NSObject {
@@ -851,6 +873,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             mainMenu.addItem(item)
             pageMenuItem = item
         }
+        MenuBranding.install()
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
                 // AppKit delivers local event monitors on the main thread.

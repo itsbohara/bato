@@ -2,13 +2,13 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "0a22d50133948cf409e050f15050fedc042f2124c665c768f9520f7050d0ab1e",
+  "patch_sha256": "bcedcfbc78ffa946a7f22d1a92f9b8bc44813408dbe388b872c1d62d891a866b",
   "files": [
     {
       "root": "cef",
       "path": "tests/cefsimple/cefsimple_mac.mm",
       "original_sha256": "bae6c935e237922a603172bb397241a92eb8e09dd184932c235369c2566b22a8",
-      "patched_sha256": "825324737af4590ece419c60c3d466e4d28089b32868d1740b5b8bf62ff5d5ed"
+      "patched_sha256": "8e82dc0526ff9714c9ee427d6925784560407241cd3ae770c94f77ddb7240411"
     },
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "8d8496c2b4b4dcc28cf7530838f3c366af50386954807b2abde66228b4acf0fe"
+      "patched_sha256": "4167f44ab71433a67e1bbb352db5603b6ab4351b11afd3d058979e7e157d5f2e"
     },
     {
       "root": "cef",

@@ -17,10 +17,62 @@
  #include "tests/cefsimple/simple_handler.h"
 
  // Receives notifications from the application.
-@@ -169,6 +173,48 @@
-     return 1;
-   }
+@@ -160,6 +164,49 @@
+ }
+ @end
 
++// In-product-help promos that Chromium would show a fresh Profile ("Make Chromium faster" is
++// IPH_HighEfficiencyMode). Workspace mode disables them so the browser stays quiet. A promo that
++// a later Chromium adds shows until its feature name is listed here; dropped names are ignored.
++static const char* const kSuppressedPromoFeatures[] = {
++    "IPH_BatterySaverMode", "IPH_CompanionSidePanel", "IPH_CompanionSidePanelRegionSearch",
++    "IPH_ContextualTasksEphemeralToolbarButton", "IPH_CriticalActionAppMenu",
++    "IPH_CriticalActionFilterChip", "IPH_DesktopRealboxContextualSearchFeature",
++    "IPH_DiscardRing", "IPH_DownloadEsbPromo", "IPH_ExplicitBrowserSigninPreferenceRemembered",
++    "IPH_HistorySearch", "IPH_FocusHelpBubbleScreenReaderPromo", "IPH_GMCCastStartStop",
++    "IPH_GMCLocalMediaCasting", "IPH_GMCSaveVideoFrame",
++    "IPH_GlicTrustFirstOnboardingShortcutSnoozePromo", "IPH_HighEfficiencyMode",
++    "IPH_PasswordsSavePrimingPromo", "IPH_PasswordsSaveRecoveryPromo",
++    "IPH_PasswordsManagementBubbleAfterSave", "IPH_PasswordsManagementBubbleDuringSignin",
++    "IPH_PasswordsWebAppProfileSwitch", "IPH_PasswordSharingFeature",
++    "IPH_PdfGlicSummarizeFeature", "IPH_PdfInkSignatures", "IPH_PdfSearchifyFeature",
++    "IPH_PdfTextAnnotations", "IPH_PerformanceInterventionDialogFeature",
++    "IPH_PriceInsightsPageActionIconLabelFeature", "IPH_PriceTrackingEmailConsentFeature",
++    "IPH_PriceTrackingPageActionIconLabelFeature", "IPH_ReadingModeKeyboardShortcut",
++    "IPH_ReadingModeLineFocus", "IPH_ReadingModePageActionLabel",
++    "IPH_ReadingModePresentationMode", "IPH_ReadingModeSidePanel",
++    "IPH_ShoppingCollectionFeature", "IPH_SideBySidePinnableFeature",
++    "IPH_SideBySideTabSwitchFeature", "IPH_SplitViewHorizontalIndirectAccessFeature",
++    "IPH_VerticalTabsExpandOnHoverFeature", "IPH_VerticalTabstripTutorialFeature",
++    "IPH_SidePanelGenericPinnableFeature", "IPH_SidePanelLensOverlayPinnableFeature",
++    "IPH_SidePanelLensOverlayPinnableFollowupFeature",
++    "IPH_SidePanelContextualTasksPinnableFeature", "IPH_PwaQuietNotification",
++    "IPH_TabGroupsSaveV2Intro", "IPH_TabGroupsSaveV2CloseGroup", "IPH_TabSearchComboButton",
++    "IPH_ProfileSwitch", "IPH_PriceTrackingInSidePanel", "IPH_BookmarkBarSimplified",
++    "IPH_AutoDarkOptOut", "IPH_AutoDarkUserEducationMessage",
++    "IPH_AutoDarkUserEducationMessageOptIn", "IPH_ExtensionsManageToolbar",
++    "IPH_ExtensionsManageAppMenu", "IPH_WhatsNew", "IPH_WhatsNewUpdated",
++    "IPH_AutofillBnplAffirmOrZipSuggestion", "IPH_AutofillBnplAffirmZipOrKlarnaSuggestion",
++    "IPH_AutofillCardInfoRetrievalSuggestion", "IPH_AutofillCreditCardBenefit",
++    "IPH_AutofillDisabledVirtualCardSuggestion", "IPH_AutofillDownstreamCardAwareness",
++    "IPH_AutofillExternalAccountProfileSuggestion", "IPH_AutofillHomeWorkProfileSuggestion",
++    "IPH_AutofillAccountNameEmailSuggestion", "IPH_AutofillAiValuables",
++    "IPH_AutofillVirtualCardCVCSuggestion", "IPH_AutofillVirtualCardSuggestion",
++    "IPH_AutofillEnableLoyaltyCards", "IPH_AutofillOmniboxPaymentChip",
++    "IPH_AutofillWalletDirectOffers", "IPH_DesktopPWAsLinkCapturingLaunch",
++    "IPH_DesktopPWAsLinkCapturingLaunchAppInTab", "IPH_SignInBenefitsNewSignin",
++    "IPH_SupervisedUserProfileSignin",
++};
++
+ // Entry point function for the browser process.
+ int main(int argc, char* argv[]) {
+   // Load the CEF framework library at runtime instead of linking directly
+@@ -167,6 +214,68 @@
+   CefScopedLibraryLoader library_loader;
+   if (!library_loader.LoadInMain()) {
+     return 1;
++  }
++
 +  // Workspace mode pins what Chrome would otherwise choose or enable for itself:
 +  // - Chrome opens the Profile named by Local State's last_used and CEF's global request
 +  //   context follows it, but the Bato launch Profile must always be the Default directory.
@@ -32,6 +84,7 @@
 +  std::vector<char*> pinned_args;
 +  {
 +    bool workspace_mode = false;
++    bool explicit_profile = false;
 +    bool has_disabled_features = false;
 +    std::string disabled_features;
 +    static const std::string kDisableSwitch = "--disable-features=";
@@ -40,6 +93,7 @@
 +      if (argument == "--bato-workspace-state" || argument.rfind("--bato-workspace-state=", 0) == 0) {
 +        workspace_mode = true;
 +      }
++      if (argument.rfind("--cache-path", 0) == 0) explicit_profile = true;
 +      if (argument.rfind("--profile-directory", 0) == 0) {
 +        fprintf(stderr, "Bato workspace mode pins its launch Profile; --profile-directory is refused\n");
 +        return 1;
@@ -51,9 +105,27 @@
 +      }
 +      pinned_strings.push_back(std::move(argument));
 +    }
++    if (!workspace_mode && !explicit_profile) {
++      // The packaged app starts without flags (Finder, Dock, LaunchServices); its Info.plist
++      // carries the same switches a test launch passes explicitly. A launch that names its own
++      // Profile never gets the packaged state directory added to it.
++      @autoreleasepool {
++        NSArray* defaults = [NSBundle.mainBundle objectForInfoDictionaryKey:@"BatoDefaultArguments"];
++        if ([defaults isKindOfClass:NSArray.class]) {
++          for (id argument in defaults) {
++            if (![argument isKindOfClass:NSString.class]) continue;
++            std::string value = [argument UTF8String];
++            if (value.rfind("--bato-workspace-state=", 0) == 0) workspace_mode = true;
++            pinned_strings.push_back(std::move(value));
++          }
++        }
++      }
++    }
 +    if (workspace_mode) {
 +      pinned_strings.push_back("--profile-directory=Default");
++      pinned_strings.push_back("--no-default-browser-check");
 +      disabled_features += (disabled_features.empty() ? "" : ",") + std::string("OmniboxEverywhere");
++      for (const char* feature : kSuppressedPromoFeatures) disabled_features += std::string(",") + feature;
 +      has_disabled_features = true;
 +    }
 +    if (has_disabled_features) pinned_strings.push_back(kDisableSwitch + disabled_features);
@@ -61,12 +133,10 @@
 +    pinned_args.push_back(nullptr);
 +    argc = static_cast<int>(pinned_args.size()) - 1;
 +    argv = pinned_args.data();
-+  }
-+
-   // Provide CEF with command-line arguments.
-   CefMainArgs main_args(argc, argv);
+   }
 
-@@ -220,6 +266,15 @@
+   // Provide CEF with command-line arguments.
+@@ -220,6 +329,15 @@
      // CEF has initialized.
      CefRefPtr<SimpleApp> app(new SimpleApp);
 
@@ -1962,7 +2032,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1104 @@
+@@ -0,0 +1,1127 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2742,6 +2812,28 @@
 +}
 +
 +
++/// Chromium builds its menu titles from its own product name ("Quit Chromium"); the app is Bato.
++/// Titles are rewritten when the shortcuts install and again whenever a menu opens, because
++/// Chromium refreshes some items as menus open.
++@MainActor private enum MenuBranding {
++    private static var observer: NSObjectProtocol?
++
++    static func install() {
++        apply(to: NSApp.mainMenu)
++        guard observer == nil else { return }
++        observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { _ in
++            MainActor.assumeIsolated { apply(to: NSApp.mainMenu) }
++        }
++    }
++
++    private static func apply(to menu: NSMenu?) {
++        for item in menu?.items ?? [] {
++            if item.title.contains("Chromium") { item.title = item.title.replacingOccurrences(of: "Chromium", with: "Bato") }
++            apply(to: item.submenu)
++        }
++    }
++}
++
 +/// Route physical T/W before Chromium's page-focused key-equivalent path.
 +/// Leave Chromium's menu items intact for untracked tabs and menu commands.
 +@MainActor private final class WorkspaceKeyRouter: NSObject {
@@ -2816,6 +2908,7 @@
 +            mainMenu.addItem(item)
 +            pageMenuItem = item
 +        }
++        MenuBranding.install()
 +        if keyMonitor == nil {
 +            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
 +                // AppKit delivers local event monitors on the main thread.
