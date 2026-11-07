@@ -32,28 +32,52 @@ enum SidebarStyle {
         return NSColor(hue: hue, saturation: boosted, brightness: max(brightness, 0.8), alpha: alpha)
     }
 
-    /// Top and bottom of the sidebar gradient. The workspace colour dominates, as in Dia; the system
-    /// background only keeps the result from going neon. Increase Contrast keeps a lighter wash so text
-    /// stays legible, but still clearly coloured.
-    static func tint(_ accent: NSColor, dark: Bool, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
-        let base = NSColor.windowBackgroundColor
-        let hue = vivid(accent)
-        if highContrast {
-            return (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
-                    base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
-        }
-        let body = dark ? (hue.blended(withFraction: 0.35, of: .black) ?? hue) : hue
-        let top = base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base
-        let bottom = base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base
-        return (top, bottom)
+    /// Dark-mode body colour: bright picks (yellow, white) would otherwise turn the sidebar light grey
+    /// under white text, so brightness is capped before the blend.
+    private static func darkened(_ color: NSColor) -> NSColor {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return color }
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        let capped = NSColor(hue: hue, saturation: saturation, brightness: min(brightness, 0.6), alpha: alpha)
+        return capped.blended(withFraction: 0.35, of: .black) ?? capped
     }
+
+    /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
+    /// Dia; the system background only keeps the result from going neon. Increase Contrast keeps a
+    /// lighter wash so text stays legible, but still clearly coloured. Resolved under `appearance`, so
+    /// the result is correct whichever appearance the caller happens to be drawing in.
+    static func tint(_ accent: NSColor, appearance: NSAppearance, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
+        var result: (top: NSColor, bottom: NSColor)?
+        appearance.performAsCurrentDrawingAppearance {
+            let dark = appearance.isDark
+            let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
+            let hue = vivid(accent)
+            if highContrast {
+                result = (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
+                          base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
+                return
+            }
+            let body = dark ? darkened(hue) : hue
+            result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
+                      base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
+        }
+        return result ?? (.windowBackgroundColor, .windowBackgroundColor)
+    }
+
+    /// Soft lift under favorite tiles: a heavy black shadow reads as dirt on a pale light-mode tint.
+    static let tileShadow = NSColor(name: nil) { $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.black.withAlphaComponent(0.14) }
+    /// Tile edge: white only shows on dark; light mode needs a dark hairline.
+    static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
+    /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.
+    static let cardFill = NSColor.labelColor.withAlphaComponent(0.06)
+    static var cardStroke: NSColor? { AppearanceWatcher.increaseContrast ? NSColor.separatorColor : nil }
 
     /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
     /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.
     @MainActor
     static func letterIcon(for title: String, url: URL, size: CGFloat) -> NSImage {
         let spec = FaviconFallback.spec(title: title, url: url)
-        let color = NSColor(hue: spec.hue, saturation: 0.5, brightness: 0.62, alpha: 1)
+        let color = NSColor(hue: spec.hue, saturation: 0.55, brightness: 0.52, alpha: 1)
         let letter = spec.letter
         return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             color.setFill()

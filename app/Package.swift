@@ -25,6 +25,7 @@ let package = Package(
         .testTarget(name: "BatoRuntimeTests", dependencies: ["BatoRuntime", "BatoCore"]),
         .testTarget(name: "BatoBlockingTests", dependencies: ["BatoBlocking"]),
         .testTarget(name: "BatoImportTests", dependencies: ["BatoImport", "BatoCore", "BatoPersistence"]),
+        .testTarget(name: "BatoBrowserUITests", dependencies: ["BatoBrowserUI"]),
         .testTarget(name: "BatoShellTests", dependencies: ["BatoShell"]),
     ]
 )
