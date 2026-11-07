@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,58 @@
+@@ -2313,6 +2317,59 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -132,6 +132,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/ArcImportController.swift",
 +      "tests/cefsimple/bato/BatoCore/Essentials.swift",
 +      "tests/cefsimple/bato/BatoCore/SettingsModel.swift",
++      "tests/cefsimple/bato/BatoCore/DefaultBrowser.swift",
 +      "tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
@@ -154,7 +155,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2392,19 @@
+@@ -2336,12 +2393,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -177,9 +178,10 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1360 @@
+@@ -0,0 +1,1378 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
++#include <cctype>
 +#include <cstdio>
 +#include <cmath>
 +#include <map>
@@ -329,6 +331,16 @@
 +      parts.username.length == 0 && parts.password.length == 0;
 +}
 +
++// Settings' site-permission subtree: "/content" and the pages below it, mirroring BrowserEssential.
++bool IsSiteSettingsPath(const std::string& path) {
++  if (path == "/content") return true;
++  if (path.rfind("/content/", 0) != 0) return false;
++  for (char c : path.substr(9)) {
++    if (!isalnum(static_cast<unsigned char>(c)) && c != '/') return false;
++  }
++  return true;
++}
++
 +// Page creation also accepts the exact Chromium pages Bato offers as browser essentials.
 +// Navigation, Peek and icon requests keep the web-only rule.
 +bool ValidCreateDestination(const char* utf8_url) {
@@ -339,9 +351,13 @@
 +  const auto scheme = CefString(&parts.scheme).ToString();
 +  const auto host = CefString(&parts.host).ToString();
 +  const auto path = CefString(&parts.path).ToString();
-+  return scheme == "chrome" && (host == "history" || host == "downloads" || host == "settings") &&
-+      (path.empty() || path == "/") && parts.username.length == 0 && parts.password.length == 0 &&
-+      parts.query.length == 0;
++  if (scheme != "chrome" || parts.username.length != 0 || parts.password.length != 0) return false;
++  const auto query = CefString(&parts.query).ToString();
++  if (host == "settings" && IsSiteSettingsPath(path)) {
++    return query.empty() || (query.rfind("site=", 0) == 0 && query.find('&') == std::string::npos);
++  }
++  return (host == "history" || host == "downloads" || host == "settings") &&
++      (path.empty() || path == "/") && query.empty();
 +}
 +
 +bool SameWindow(CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
@@ -1355,6 +1371,9 @@
 +  if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
 +  if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
 +  if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
++  // Not a Chromium command: the engine's chrome_pages.cc offers this id for page info's
++  // "Site settings" link and content-settings sub-pages (kBatoCommandShowSiteSettings).
++  if (command_id == 1000001) command = 30;
 +  // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
 +  // Chrome's restore service, window creation and tab selection must not act on them.
 +  // New Window opens the command bar because each Profile has exactly one window.
@@ -1602,7 +1621,7 @@
 +              '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
 +              '-I', str(modules)]
 +    objects = []
-+    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift']),
++    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -1788,7 +1807,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,914 @@
+@@ -0,0 +1,949 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2191,6 +2210,7 @@
 +            root.addSubview(controller.root, positioned: .below, relativeTo: nil)
 +            root.needsLayout = true
 +            workspaceHost.mounted = self
++            ExternalURLRouter.install()
 +            let router = WorkspaceKeyRouter(token: token, root: root,
 +                                            toggle: { workspaceHost.mounted?.toggle() ?? false },
 +                                            dismissPeek: { [weak controller] in
@@ -2389,6 +2409,39 @@
 +        url: url.map { String(cString: $0) } ?? "", title: title.map { String(cString: $0) } ?? "")
 +}
 +
++/// Chromium's application delegate opens links that macOS hands the app (Bato as the default browser)
++/// as a tab in its own tab strip, which Bato does not track. Web links go to the Bato workspace
++/// instead; anything else, and any link before the workspace exists, keeps Chromium's behaviour.
++@MainActor private enum ExternalURLRouter {
++    private static var installed = false
++
++    static func install() {
++        guard !installed, let delegate = NSApp.delegate else { return }
++        let selector = NSSelectorFromString("application:openURLs:")
++        guard let method = class_getInstanceMethod(type(of: delegate), selector) else {
++            fputs("{\"event\":\"external-url-routing-unavailable\"}\n", stderr)
++            return
++        }
++        installed = true
++        let chromium = method_getImplementation(method)
++        let route: @convention(block) (AnyObject, AnyObject, NSArray) -> Void = { object, application, urls in
++            let links = urls.compactMap { $0 as? URL }
++            if MainActor.assumeIsolated({ open(links) }) { return }
++            typealias Original = @convention(c) (AnyObject, Selector, AnyObject, NSArray) -> Void
++            unsafeBitCast(chromium, to: Original.self)(object, selector, application, urls)
++        }
++        method_setImplementation(method, imp_implementationWithBlock(route))
++        fputs("{\"event\":\"external-url-routing-installed\"}\n", stderr)
++    }
++
++    private static func open(_ urls: [URL]) -> Bool {
++        guard let controller = workspaceHost.controller, !urls.isEmpty else { return false }
++        let opened = urls.filter { controller.openExternalURL($0) }.count
++        fputs("{\"event\":\"external-url-routed\",\"requested\":\(urls.count),\"opened\":\(opened)}\n", stderr)
++        return opened == urls.count
++    }
++}
++
 +@_cdecl("BatoSwiftWorkspaceCommand")
 +@MainActor public func workspaceCommand(_ token: UInt64, _ command: Int32, _ browserID: Int32) {
 +    precondition(Thread.isMainThread)
@@ -2400,6 +2453,7 @@
 +    if command == 6 { controller.openEssential(.downloads) }
 +    if command == 7 { controller.showSettings() }
 +    if command == 8 { controller.reopenClosedTab() }
++    if command == 30 { controller.openSiteSettings() }
 +    if command == 9 { controller.selectAdjacentPage(step: 1) }
 +    if command == 10 { controller.selectAdjacentPage(step: -1) }
 +    if (21...29).contains(command) { controller.selectPage(shortcut: Int(command) - 20) }
@@ -2738,7 +2792,7 @@
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  #include "include/wrapper/cef_closure_task.h"
-@@ -33,12 +48,475 @@
+@@ -33,12 +48,507 @@
               .ToString();
  }
 
@@ -3155,6 +3209,38 @@
 +  CefPostTask(TID_FILE_USER_VISIBLE, base::BindOnce(&RefreshBlocking));
 +}
 +
++// A navigation to a scheme the engine cannot load (mailto:, tel:, an app's own scheme) fails
++// unless the client allows the OS handoff. Allowing it makes Chromium run its own external
++// protocol flow: its per-Profile allow/deny memory and the "Open ...?" confirmation dialog.
++bool IsExternalProtocolRequest(CefRefPtr<CefRequest> request) {
++  CefURLParts parts;
++  if (!CefParseURL(request->GetURL(), parts)) {
++    return false;
++  }
++  static const char* const kEngineSchemes[] = {
++      "http",  "https", "ws",    "wss",         "ftp",          "file",
++      "data",  "blob",  "about", "filesystem",  "chrome",       "chrome-untrusted",
++      "chrome-extension", "chrome-search", "chrome-error", "devtools", "view-source",
++      "javascript"};
++  const std::string scheme = CefString(&parts.scheme).ToString();
++  return !scheme.empty() &&
++         std::find(std::begin(kEngineSchemes), std::end(kEngineSchemes), scheme) ==
++             std::end(kEngineSchemes);
++}
++
++class ExternalProtocolHandler : public CefResourceRequestHandler {
++ public:
++  void OnProtocolExecution(CefRefPtr<CefBrowser> browser,
++                           CefRefPtr<CefFrame> frame,
++                           CefRefPtr<CefRequest> request,
++                           bool& allow_os_execution) override {
++    allow_os_execution = true;
++  }
++
++ private:
++  IMPLEMENT_REFCOUNTING(ExternalProtocolHandler);
++};
++
 +class BlockingResourceHandler : public CefResourceRequestHandler {
 + public:
 +  BlockingResourceHandler(std::shared_ptr<ProfileBlocking> profile,
@@ -3214,7 +3300,7 @@
  }
 
  SimpleHandler::~SimpleHandler() {
-@@ -59,6 +537,7 @@
+@@ -59,6 +569,7 @@
      int command_id,
      cef_window_open_disposition_t disposition) {
    CEF_REQUIRE_UI_THREAD();
@@ -3222,7 +3308,7 @@
    if (!NativeQuitExperimentEnabled() ||
        command_id != cef_id_for_command_id_name("IDC_EXIT")) {
      return false;
-@@ -90,6 +569,7 @@
+@@ -90,6 +601,7 @@
      bool& active;
      ~ScopedRequestReset() { active = false; }
    } reset{quit_request_in_progress_};
@@ -3230,7 +3316,7 @@
    const int command = cef_id_for_command_id_name("IDC_EXIT");
    for (const auto& browser : browser_list_) {
      auto host = browser->GetHost();
-@@ -103,9 +583,17 @@
+@@ -103,9 +615,17 @@
    fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
  }
 
@@ -3248,7 +3334,7 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -117,6 +605,12 @@
+@@ -117,6 +637,12 @@
      // Set the title of the window using platform APIs.
      PlatformTitleChange(browser, title);
    }
@@ -3261,7 +3347,7 @@
  }
 
  void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-@@ -133,6 +627,7 @@
+@@ -133,6 +659,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -3269,7 +3355,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +648,7 @@
+@@ -153,6 +680,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -3277,7 +3363,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -173,8 +669,62 @@
+@@ -173,8 +701,65 @@
      if (NativeQuitExperimentEnabled()) {
        fprintf(stderr, "{\"event\":\"sample-quit-message-loop-requested\"}\n");
      }
@@ -3307,6 +3393,9 @@
 +    bool is_download,
 +    const CefString& request_initiator,
 +    bool& disable_default_handling) {
++  if (is_navigation && IsExternalProtocolRequest(request)) {
++    return new ExternalProtocolHandler();
++  }
 +  if (!g_blocking) {
 +    return nullptr;
 +  }
@@ -5814,7 +5903,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2190 @@
+@@ -0,0 +1,2223 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -5977,12 +6066,44 @@
 +
 +    /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
 +    public func openEssential(_ essential: BrowserEssential) {
-+        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
-+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        guard canOpenBrowserPage else { return }
 +        runtime.endPeek()
 +        requestNativeFocus?()
 +        _ = runtime.openEssential(essential)
 +        render()
++    }
++
++    /// Chromium's site settings for the selected page, as a tab of the current Profile. Reached from
++    /// Chromium's page-info "Site settings" link, which would otherwise open a tab Bato doesn't track.
++    public func openSiteSettings() {
++        guard canOpenBrowserPage else { return }
++        let state = runtime.state
++        let page = state.visibleEntries.first { $0.id == state.currentWorkspace.activeEntryID }?.lastURL
++        runtime.endPeek()
++        requestNativeFocus?()
++        _ = runtime.openSiteSettings(for: page)
++        render()
++    }
++
++    /// A web link handed over by macOS (Bato as the default browser) opens as a tab of the current
++    /// Workspace, brought to the front. Anything but a plain HTTP(S) address is refused.
++    @discardableResult
++    public func openExternalURL(_ url: URL) -> Bool {
++        guard canOpenBrowserPage, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
++              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
++        runtime.endPeek()
++        let before = runtime.state
++        let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
++        guard opened || runtime.state != before else { return false }
++        root.window?.makeKeyAndOrderFront(nil)
++        render()
++        return true
++    }
++
++    private var canOpenBrowserPage: Bool {
++        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
++        return true
 +    }
 +
 +    /// Opens Bato's own Settings window. It is not tied to a browser window, so it never blocks one.
@@ -5995,6 +6116,7 @@
 +            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
 +            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
 +            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
++            defaultBrowser: .system(),
 +            recovery: recovery))
 +        settingsWindow = window
 +        window.show(pane)
@@ -8180,15 +8302,16 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,326 @@
 +import AppKit
 +import BatoCore
 +
 +/// A native modal surface: Chromium retains ownership of the parent window and
 +/// its sheet lifecycle. No page or network work happens while the user types.
 +@MainActor
-+final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
-+    private let field = CommandBarSearchField(string: "")
++final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
++    private let field = NSTextField(string: "")
++    private let glyph = NSImageView()
 +    private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
 +    private var provider: CommandBarSearchProvider
 +    private let providerChanged: (CommandBarSearchProvider) -> Void
@@ -8235,8 +8358,11 @@
 +        field.setAccessibilityLabel("Command bar search or address")
 +        field.setAccessibilityIdentifier("bato-command-bar-input")
 +        field.delegate = self
-+        field.sendsSearchStringImmediately = true
 +        field.cell?.sendsActionOnEndEditing = false
++        glyph.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
++        glyph.symbolConfiguration = .init(pointSize: 17, weight: .regular)
++        glyph.contentTintColor = .secondaryLabelColor
++        glyph.setContentHuggingPriority(.required, for: .horizontal)
 +        providerPicker.addItems(withTitles: CommandBarSearchProvider.allCases.map(\.title))
 +        if let index = CommandBarSearchProvider.allCases.firstIndex(of: provider) { providerPicker.selectItem(at: index) }
 +        providerPicker.target = self
@@ -8247,7 +8373,9 @@
 +        providerPicker.isBordered = false
 +        providerPicker.controlSize = .small
 +        providerPicker.font = .systemFont(ofSize: 12)
-+        let inputRow = NSStackView(views: [field])
++        let inputRow = NSStackView(views: [glyph, field])
++        inputRow.spacing = 10
++        inputRow.alignment = .centerY
 +        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        table.dataSource = self
 +        table.delegate = self
@@ -8462,7 +8590,7 @@
 +
 +@MainActor
 +private final class CommandBarPanel: NSPanel {
-+    weak var searchField: NSSearchField?
++    weak var searchField: NSTextField?
 +    private var focusedOnFirstKey = false
 +    override var canBecomeKey: Bool { true }
 +    /// A sheet becomes key after beginSheet returns, which can reset the first responder set
@@ -8499,29 +8627,6 @@
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
-+    }
-+}
-+
-+/// The search glyph is drawn inside the cell; without a bezel the text rect starts under it, so typed text
-+/// would overlap the magnifier.
-+private final class CommandBarSearchField: NSSearchField {
-+    override class var cellClass: AnyClass? {
-+        get { ClearanceSearchFieldCell.self }
-+        set {}
-+    }
-+}
-+
-+private final class ClearanceSearchFieldCell: NSSearchFieldCell {
-+    private static let glyphGap: CGFloat = 8
-+
-+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
-+        var text = super.searchTextRect(forBounds: rect)
-+        let clearance = searchButtonRect(forBounds: rect).maxX + Self.glyphGap
-+        if text.minX < clearance {
-+            text.size.width -= clearance - text.minX
-+            text.origin.x = clearance
-+        }
-+        return text
 +    }
 +}
 --- /dev/null
@@ -10451,20 +10556,21 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/Essentials.swift
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,76 @@
 +import Foundation
 +
 +/// Browser pages that Chromium already provides. Bato opens them as ordinary organized tabs
 +/// in the current Profile, so history and downloads stay per Profile and a repeat shortcut
 +/// returns to the tab it opened.
 +public enum BrowserEssential: String, CaseIterable, Sendable {
-+    case history, downloads, chromiumSettings
++    case history, downloads, chromiumSettings, sitePermissions
 +
 +    public var url: URL {
 +        switch self {
 +        case .history: URL(string: "chrome://history/")!
 +        case .downloads: URL(string: "chrome://downloads/")!
 +        case .chromiumSettings: URL(string: "chrome://settings/")!
++        case .sitePermissions: URL(string: "chrome://settings/content")!
 +        }
 +    }
 +
@@ -10473,18 +10579,51 @@
 +        case .history: "History"
 +        case .downloads: "Downloads"
 +        case .chromiumSettings: "Browser Settings"
++        case .sitePermissions: "Site Settings"
 +        }
 +    }
 +
-+    /// The only non-web destinations Bato will save in organization or hand to the engine.
++    /// The only non-web destinations Bato will save in organization or hand to the engine. Settings is
++    /// the one page that can be browsed further: its site-permission subtree, so a page's site settings
++    /// and the all-sites list are rows too, with at most a `site` origin in the query.
 +    public static func accepts(_ url: URL) -> Bool {
 +        guard url.scheme?.lowercased() == "chrome", url.user == nil, url.password == nil,
-+              url.query == nil, url.fragment == nil, let host = url.host?.lowercased() else { return false }
-+        return allCases.contains { $0.url.host == host } && (url.path.isEmpty || url.path == "/")
++              url.fragment == nil, let host = url.host?.lowercased(),
++              allCases.contains(where: { $0.url.host == host }) else { return false }
++        if host == "settings", isSiteSettingsPath(url.path) {
++            return url.query == nil || (url.path == "/content/siteDetails" && siteOrigin(inQuery: url) != nil)
++        }
++        return url.query == nil && (url.path.isEmpty || url.path == "/")
 +    }
 +
 +    public static func matching(_ url: URL) -> BrowserEssential? {
-+        accepts(url) ? allCases.first { $0.url.host == url.host?.lowercased() } : nil
++        guard accepts(url) else { return nil }
++        if url.host?.lowercased() == "settings", isSiteSettingsPath(url.path) { return .sitePermissions }
++        return allCases.first { $0.url.host == url.host?.lowercased() && $0 != .sitePermissions }
++    }
++
++    /// Chromium's per-site page for the page's origin, or the all-sites list when the page has no web origin.
++    public static func siteSettingsURL(for page: URL?) -> URL {
++        guard let page, let scheme = page.scheme?.lowercased(), ["http", "https"].contains(scheme),
++              let host = page.host, !host.isEmpty else { return sitePermissions.url }
++        let origin = "\(scheme)://\(host)" + (page.port.map { ":\($0)" } ?? "")
++        let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
++        let encoded = origin.addingPercentEncoding(withAllowedCharacters: unreserved) ?? origin
++        return URL(string: "chrome://settings/content/siteDetails?site=\(encoded)") ?? sitePermissions.url
++    }
++
++    private static func isSiteSettingsPath(_ path: String) -> Bool {
++        path == "/content" || path.hasPrefix("/content/") && path.dropFirst("/content/".count)
++            .allSatisfy { $0.isLetter || $0.isNumber || $0 == "/" }
++    }
++
++    private static func siteOrigin(inQuery url: URL) -> URL? {
++        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems, items.count == 1,
++              items[0].name == "site", let value = items[0].value, let origin = URL(string: value),
++              ["http", "https"].contains(origin.scheme?.lowercased() ?? ""), origin.host?.isEmpty == false,
++              origin.user == nil, origin.password == nil, origin.query == nil, origin.fragment == nil,
++              origin.path.isEmpty else { return nil }
++        return origin
 +    }
 +}
 +
@@ -10566,7 +10705,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,22 @@
 +import BatoCore
 +import Foundation
 +
@@ -10579,10 +10718,19 @@
 +        if let existing = state.openEssentialEntry(essential) { return selectEntry(existing.id) }
 +        return addTab(url: essential.url, title: essential.title)
 +    }
++
++    /// Opens Chromium's site settings for the page, in a tab of the current Workspace. A repeat for
++    /// the same site returns to that tab.
++    @discardableResult
++    public func openSiteSettings(for page: URL?) -> Bool {
++        let url = BrowserEssential.siteSettingsURL(for: page)
++        if let existing = state.visibleEntries.first(where: { $0.lastURL == url }) { return selectEntry(existing.id) }
++        return addTab(url: url, title: BrowserEssential.sitePermissions.title)
++    }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,503 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10596,7 +10744,19 @@
 +    let renameCurrentProfile: () -> Void
 +    let importFromArc: () -> Void
 +    let openEssential: (BrowserEssential) -> Void
++    let defaultBrowser: DefaultBrowser
 +    let recovery: RecoveryController
++}
++
++extension DefaultBrowser {
++    /// Bato as the running application, checked against what Launch Services hands web links to.
++    static func system(appURL: URL = Bundle.main.bundleURL) -> DefaultBrowser {
++        DefaultBrowser(appURL: appURL, handler: { scheme in
++            URL(string: "\(scheme)://example.com").flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
++        }, assign: { scheme in
++            try await NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenURLsWithScheme: scheme)
++        })
++    }
 +}
 +
 +/// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -10735,7 +10895,8 @@
 +        let state = hooks.state()
 +        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
 +              let service = hooks.blockingService(profile.id.uuidString) else {
-+            return [caption("Content blocking starts with the browser engine and isn’t available yet.")]
++            return [caption("Content blocking starts with the browser engine and isn’t available yet."),
++                    caption("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
 +        }
 +        let toggle = NSSwitch()
 +        toggle.state = service.settings.enabled ? .on : .off
@@ -10751,6 +10912,7 @@
 +                                   title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
 +                                   trailing: toggle, keeping: handler)
 +        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking])]
++        views += sitePermissions(forProfile: profile.name)
 +        let exceptions = service.exceptions
 +        views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
 +        if !exceptions.isEmpty {
@@ -10762,6 +10924,19 @@
 +            }))
 +        }
 +        return views
++    }
++
++    private func sitePermissions(forProfile name: String) -> [NSView] {
++        [caption("Site permissions"),
++         sitePermissionsGroup(detail: "Camera, location, notifications and more, per site, for the \(name) Profile.")]
++    }
++
++    private func sitePermissionsGroup(detail: String) -> NSView {
++        SettingsGroup(rows: [SettingsRow(leading: SymbolTile(symbol: "checkmark.shield.fill", color: .systemBlue),
++                                         title: "Site permissions", detail: detail,
++                                         trailing: SettingsPillButton(title: "Manage…") { [weak self] in
++                                             self?.hooks.openEssential(.sitePermissions)
++                                         })])
 +    }
 +
 +    private func importPane() -> [NSView] {
@@ -10777,6 +10952,22 @@
 +        [SettingsGroup(rows: ShortcutCatalog.rows.map { shortcut in
 +            SettingsRow(leading: nil, title: shortcut.title, detail: nil, trailing: keyLabel(shortcut.keys))
 +        })]
++    }
++
++    private func defaultBrowserRow() -> NSView {
++        let browser = hooks.defaultBrowser
++        if browser.status == .isDefault {
++            return SettingsRow(leading: nil, title: "Default browser", detail: "Bato opens links from other apps.",
++                               trailing: nil)
++        }
++        return SettingsRow(leading: nil, title: "Default browser",
++                           detail: "Bato isn’t your default browser. macOS asks you to confirm the change.",
++                           trailing: SettingsPillButton(title: "Make Bato Default") { [weak self] in
++                               Task { @MainActor in
++                                   try? await browser.makeDefault()
++                                   self?.reload()
++                               }
++                           })
 +    }
 +
 +    private func advancedPane() -> [NSView] {
@@ -10804,7 +10995,8 @@
 +                                              self?.reload()
 +                                          }))
 +        }
-+        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
++        return [caption("General"), SettingsGroup(rows: [defaultBrowserRow()]),
++                caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
 +    }
 +
 +    // MARK: Pieces
@@ -11881,3 +12073,76 @@
 +
 +    override func cancelOperation(_ sender: Any?) { onCancel?(cancelIndex) }
 +}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/DefaultBrowser.swift
+@@ -0,0 +1,33 @@
++import Foundation
++
++/// Whether Bato is the application macOS opens web links with. Registering is only ever done by an
++/// explicit user action, so reading the state and changing it are separate calls.
++public struct DefaultBrowser: Sendable {
++    public enum Status: Equatable, Sendable { case isDefault, notDefault }
++
++    public static let schemes = ["http", "https"]
++
++    private let appURL: URL
++    private let handler: @Sendable (String) -> URL?
++    private let assign: @Sendable (String) async throws -> Void
++
++    /// `handler` answers which application opens a scheme now; `assign` asks the system to make
++    /// Bato that application (the system confirms with the user).
++    public init(appURL: URL, handler: @escaping @Sendable (String) -> URL?,
++                assign: @escaping @Sendable (String) async throws -> Void) {
++        self.appURL = appURL
++        self.handler = handler
++        self.assign = assign
++    }
++
++    public var status: Status { Self.schemes.allSatisfy(isHandling) ? .isDefault : .notDefault }
++
++    /// Registers Bato for the schemes it doesn't handle yet and stops at the first refusal.
++    public func makeDefault() async throws {
++        for scheme in Self.schemes where !isHandling(scheme) { try await assign(scheme) }
++    }
++
++    private func isHandling(_ scheme: String) -> Bool {
++        handler(scheme)?.standardizedFileURL.path == appURL.standardizedFileURL.path
++    }
++}
+--- a/cef/tests/cefsimple/mac/Info.plist.in
++++ b/cef/tests/cefsimple/mac/Info.plist.in
+@@ -18,6 +18,34 @@
+ 	<string>APPL</string>
+ 	<key>CFBundleSignature</key>
+ 	<string>????</string>
++	<key>CFBundleURLTypes</key>
++	<array>
++		<dict>
++			<key>CFBundleURLName</key>
++			<string>Web site URL</string>
++			<key>CFBundleURLSchemes</key>
++			<array>
++				<string>http</string>
++				<string>https</string>
++			</array>
++			<key>CFBundleTypeRole</key>
++			<string>Viewer</string>
++		</dict>
++	</array>
++	<key>CFBundleDocumentTypes</key>
++	<array>
++		<dict>
++			<key>CFBundleTypeName</key>
++			<string>HTML document</string>
++			<key>CFBundleTypeRole</key>
++			<string>Viewer</string>
++			<key>LSItemContentTypes</key>
++			<array>
++				<string>public.html</string>
++				<string>public.xhtml</string>
++			</array>
++		</dict>
++	</array>
+ 	<key>CFBundleVersion</key>
+ 	<string>${VERSION_SHORT}</string>
+ 	<key>CFBundleShortVersionString</key>

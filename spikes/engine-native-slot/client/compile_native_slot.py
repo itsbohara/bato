@@ -20,7 +20,7 @@ def main():
               '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
               '-I', str(modules)]
     objects = []
-    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift']),
+    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',

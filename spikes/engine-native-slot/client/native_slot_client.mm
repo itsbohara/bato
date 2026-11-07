@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #include <dlfcn.h>
+#include <cctype>
 #include <cstdio>
 #include <cmath>
 #include <map>
@@ -149,6 +150,16 @@ bool ValidDestination(const char* utf8_url) {
       parts.username.length == 0 && parts.password.length == 0;
 }
 
+// Settings' site-permission subtree: "/content" and the pages below it, mirroring BrowserEssential.
+bool IsSiteSettingsPath(const std::string& path) {
+  if (path == "/content") return true;
+  if (path.rfind("/content/", 0) != 0) return false;
+  for (char c : path.substr(9)) {
+    if (!isalnum(static_cast<unsigned char>(c)) && c != '/') return false;
+  }
+  return true;
+}
+
 // Page creation also accepts the exact Chromium pages Bato offers as browser essentials.
 // Navigation, Peek and icon requests keep the web-only rule.
 bool ValidCreateDestination(const char* utf8_url) {
@@ -159,9 +170,13 @@ bool ValidCreateDestination(const char* utf8_url) {
   const auto scheme = CefString(&parts.scheme).ToString();
   const auto host = CefString(&parts.host).ToString();
   const auto path = CefString(&parts.path).ToString();
-  return scheme == "chrome" && (host == "history" || host == "downloads" || host == "settings") &&
-      (path.empty() || path == "/") && parts.username.length == 0 && parts.password.length == 0 &&
-      parts.query.length == 0;
+  if (scheme != "chrome" || parts.username.length != 0 || parts.password.length != 0) return false;
+  const auto query = CefString(&parts.query).ToString();
+  if (host == "settings" && IsSiteSettingsPath(path)) {
+    return query.empty() || (query.rfind("site=", 0) == 0 && query.find('&') == std::string::npos);
+  }
+  return (host == "history" || host == "downloads" || host == "settings") &&
+      (path.empty() || path == "/") && query.empty();
 }
 
 bool SameWindow(CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
@@ -1175,6 +1190,9 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
   if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
+  // Not a Chromium command: the engine's chrome_pages.cc offers this id for page info's
+  // "Site settings" link and content-settings sub-pages (kBatoCommandShowSiteSettings).
+  if (command_id == 1000001) command = 30;
   // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
   // Chrome's restore service, window creation and tab selection must not act on them.
   // New Window opens the command bar because each Profile has exactly one window.

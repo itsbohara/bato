@@ -400,6 +400,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
             root.addSubview(controller.root, positioned: .below, relativeTo: nil)
             root.needsLayout = true
             workspaceHost.mounted = self
+            ExternalURLRouter.install()
             let router = WorkspaceKeyRouter(token: token, root: root,
                                             toggle: { workspaceHost.mounted?.toggle() ?? false },
                                             dismissPeek: { [weak controller] in
@@ -598,6 +599,39 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
         url: url.map { String(cString: $0) } ?? "", title: title.map { String(cString: $0) } ?? "")
 }
 
+/// Chromium's application delegate opens links that macOS hands the app (Bato as the default browser)
+/// as a tab in its own tab strip, which Bato does not track. Web links go to the Bato workspace
+/// instead; anything else, and any link before the workspace exists, keeps Chromium's behaviour.
+@MainActor private enum ExternalURLRouter {
+    private static var installed = false
+
+    static func install() {
+        guard !installed, let delegate = NSApp.delegate else { return }
+        let selector = NSSelectorFromString("application:openURLs:")
+        guard let method = class_getInstanceMethod(type(of: delegate), selector) else {
+            fputs("{\"event\":\"external-url-routing-unavailable\"}\n", stderr)
+            return
+        }
+        installed = true
+        let chromium = method_getImplementation(method)
+        let route: @convention(block) (AnyObject, AnyObject, NSArray) -> Void = { object, application, urls in
+            let links = urls.compactMap { $0 as? URL }
+            if MainActor.assumeIsolated({ open(links) }) { return }
+            typealias Original = @convention(c) (AnyObject, Selector, AnyObject, NSArray) -> Void
+            unsafeBitCast(chromium, to: Original.self)(object, selector, application, urls)
+        }
+        method_setImplementation(method, imp_implementationWithBlock(route))
+        fputs("{\"event\":\"external-url-routing-installed\"}\n", stderr)
+    }
+
+    private static func open(_ urls: [URL]) -> Bool {
+        guard let controller = workspaceHost.controller, !urls.isEmpty else { return false }
+        let opened = urls.filter { controller.openExternalURL($0) }.count
+        fputs("{\"event\":\"external-url-routed\",\"requested\":\(urls.count),\"opened\":\(opened)}\n", stderr)
+        return opened == urls.count
+    }
+}
+
 @_cdecl("BatoSwiftWorkspaceCommand")
 @MainActor public func workspaceCommand(_ token: UInt64, _ command: Int32, _ browserID: Int32) {
     precondition(Thread.isMainThread)
@@ -609,6 +643,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     if command == 6 { controller.openEssential(.downloads) }
     if command == 7 { controller.showSettings() }
     if command == 8 { controller.reopenClosedTab() }
+    if command == 30 { controller.openSiteSettings() }
     if command == 9 { controller.selectAdjacentPage(step: 1) }
     if command == 10 { controller.selectAdjacentPage(step: -1) }
     if (21...29).contains(command) { controller.selectPage(shortcut: Int(command) - 20) }
