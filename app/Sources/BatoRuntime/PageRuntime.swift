@@ -104,6 +104,10 @@ public final class PageRuntime {
     public private(set) var livePages: [UUID: LivePage] = [:]
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
+    private var closedTabs: [UUID: ClosedTabStack] = [:]
+    public var canReopenClosedTab: Bool {
+        closedTabs[state.currentWorkspace.profileID]?.isEmpty == false
+    }
     public private(set) var peekSession = PeekSession()
     public var onStateChange: ((BrowserState) -> Void)?
     public var supportsSplits: Bool { engine.supportsSplits }
@@ -420,11 +424,48 @@ public final class PageRuntime {
             return false
         }
         guard let page = livePages[id] else {
-            return change { try $0.closeEntry(id) }
+            let closed = state.closedTab(for: id)
+            let applied = change { try $0.closeEntry(id) }
+            if applied, let closed { closedTabs[closed.profileID, default: ClosedTabStack()].push(closed) }
+            return applied
         }
         guard pendingClose.insert(page).inserted else { return true }
         engine.requestClose(page)
         return true
+    }
+
+    /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's
+    /// workspaces only. Saved entries never enter this history; they stay in the sidebar.
+    @discardableResult
+    public func reopenClosedTab() -> Bool {
+        let profileID = state.currentWorkspace.profileID
+        guard let closed = closedTabs[profileID]?.last else {
+            lastError = .invalidCommand
+            return false
+        }
+        guard change({ _ = try $0.reopenTab(closed) }) else { return false }
+        closedTabs[profileID]?.pop()
+        return true
+    }
+
+    /// Selects the page one step from the selection in sidebar order. Ignores a page that is closing.
+    @discardableResult
+    public func selectAdjacentEntry(step: Int) -> Bool {
+        select(state.adjacentEntryID(step: step))
+    }
+
+    /// Cmd-1 to Cmd-9 selection in sidebar order.
+    @discardableResult
+    public func selectEntry(forShortcut number: Int) -> Bool {
+        select(state.entryID(forShortcut: number))
+    }
+
+    private func select(_ id: UUID?) -> Bool {
+        guard let id, !pendingClose.contains(where: { $0.entryID == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return selectEntry(id)
     }
 
     /// Previews the destination above the current live page without touching organization.
@@ -624,6 +665,7 @@ public final class PageRuntime {
             // The entry may belong to a workspace that is no longer active.
             // Apply close in its owner workspace, then restore current selection.
             var candidate = state
+            let closedTab = candidate.closedTab(for: page.entryID)
             let active = candidate.activeWorkspaceID
             if let owner = candidate.workspaces.first(where: {
                 $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
@@ -635,7 +677,9 @@ public final class PageRuntime {
             do {
                 try candidate.closeEntry(page.entryID)
                 try candidate.activateWorkspace(active)
-                _ = save(candidate)
+                if save(candidate), let closedTab {
+                    closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
+                }
             } catch {
                 lastError = .invalidCommand
             }
