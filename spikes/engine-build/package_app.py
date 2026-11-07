@@ -36,14 +36,17 @@ USAGE_DESCRIPTIONS = {
     'NSBluetoothAlwaysUsageDescription': 'A website you opened is asking to connect to a Bluetooth device.',
 }
 
-# The alpha state lives inside the engine guard's namespace (cefsimple_mac.mm refuses any other
-# cache path and requires the mock keychain), so a plain launch needs no flags.
-ALPHA_PROFILE = SSD / 'runtime/profiles/alpha-v1'
-ALPHA_STATE = SSD / 'runtime/alpha-state'
+# The packaged app keeps its data under ~/Library/Application Support/Bato and uses the real
+# keychain. cefsimple_mac.mm accepts that exact Profiles location only without the mock keychain,
+# and SSD runtime/profiles/ only with it, so default_arguments adds the mock flag for SSD paths.
+APPLICATION_SUPPORT = Path.home() / 'Library/Application Support/Bato'
+ALPHA_PROFILE = APPLICATION_SUPPORT / 'Profiles'
+ALPHA_STATE = APPLICATION_SUPPORT / 'State'
 
 
 def default_arguments(profile, state):
-    return ['--use-native', '--use-mock-keychain', f'--cache-path={profile}', '--url=about:blank',
+    mock_keychain = ['--use-mock-keychain'] if Path(profile).is_relative_to(SSD) else []
+    return ['--use-native', *mock_keychain, f'--cache-path={profile}', '--url=about:blank',
             '--bato-native-slot', '--bato-native-reservation', '--bato-native-quit',
             f'--bato-workspace-state={state}']
 
@@ -133,6 +136,7 @@ def rebrand_main(app, icon, defaults):
     resources = app / 'Contents/Resources'
     (resources / f'{OLD_NAME}.icns').unlink()
     shutil.copyfile(icon, resources / 'Bato.icns')
+    shutil.copyfile(REPO / 'NOTICES.md', resources / 'NOTICES.md')
     (resources / 'English.lproj/InfoPlist.strings').write_text(
         f'CFBundleName = "{APP_NAME}";\nCFBundleDisplayName = "{APP_NAME}";\n'
         f'NSHumanReadableCopyright = "{COPYRIGHT}";\n')
