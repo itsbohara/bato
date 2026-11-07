@@ -15,8 +15,8 @@ Updated 2026-11-02. Rough planning estimate: **45% of a usable V1**, with the po
 | Peek | Engine-owned inset preview over a backdrop (tab-owned, same window/context); Cmd-T "Open in Peek"; Escape/Cmd-W/Close dismissal with beforeunload Cancel/Leave; transactional Open as Tab without reload; workspace-switch teardown and split refusal; clean Quit ; live dimmed parent with input blocked, scrim-click dismissal, Shift-click links, Cmd-Option-Return/Peek menu promotion | Focus/AX polish, context-menu Open in Peek, real-host second-Peek refusal |
 | Profiles | Synthetic storage sharing/isolation demonstrated | Application context binding and Profile controls |
 | Extensions | Narrow installation/persistence/use checks recorded | Remaining acceptance; extensive testing deferred by user |
-| Blocking | adblock-rust FFI spike and switch-gated CEF request hook (not yet runtime-verified) | Real-host fixture check, filter lists, controls, per-site exceptions, optional uBlock download |
-| Import | Arc StorableSidebar parser, staging model with typed warnings and validated import plan (synthetic fixtures) | Preview sheet, transactional apply with Undo, import-source identity |
+| Blocking | Default-on adblock-rust with runtime EasyList/EasyPrivacy updates, off-thread engine, per-site exceptions, Page menu toggle and blocked count; real-host checked | Cosmetic filtering/scriptlets, eTLD+1 exceptions, optional uBlock download, perf measurement |
+| Import | Arc parser, preview sheet (per-space, Today toggle, unsupported summary), snapshot + atomic apply with Undo, duplicate detection; real-host checked with synthetic data | Imported Profiles need multi-Profile engine support; sheet polish; real Arc data check |
 | Archive and browser essentials | Not implemented as product features | Archive/restore, settings, history, downloads and external-link handling |
 | Persistence and recovery | Atomic organization store, stale-write protection and previous-good backup | Migration, broader recovery and backup workflows |
 | Distribution | Developer source host only | Packaging, signing, updates, security/performance and daily-use readiness |
