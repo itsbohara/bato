@@ -10,6 +10,17 @@ struct BlockingSettingsStoreTests {
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
+    @Test func reloadPicksUpAFileReplacedOnDisk() throws {
+        let directory = temporaryDirectory()
+        let store = BlockingSettingsStore(directory: directory)
+        try store.update { $0.enabled = false }
+        let restored = try JSONEncoder().encode(BlockingSettings())
+        try restored.write(to: store.fileURL)
+        #expect(!store.current().enabled)
+        store.reload()
+        #expect(store.current().enabled)
+    }
+
     @Test func updatesPersistAcrossStoreInstances() throws {
         let directory = temporaryDirectory().appendingPathComponent("nested")
         let store = BlockingSettingsStore(directory: directory)

@@ -28,6 +28,14 @@ public final class BlockingSettingsStore: @unchecked Sendable {
         lock.withLock { cachedOrLoad() }
     }
 
+    /// Drops the in-memory copy so the next read sees a file replaced on disk, e.g. by a backup restore.
+    public func reload() {
+        lock.withLock {
+            cached = nil
+            recovered = false
+        }
+    }
+
     @discardableResult
     public func update(_ change: (inout BlockingSettings) throws -> Void) throws -> BlockingSettings {
         try lock.withLock {

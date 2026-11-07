@@ -43,6 +43,11 @@ public final class BlockingProfiles: @unchecked Sendable {
         }
     }
 
+    /// Re-reads every Profile's settings file after a backup restore replaced them.
+    public func reloadSettings() {
+        for service in lock.withLock({ Array(services.values) }) { service.reloadSettings() }
+    }
+
     public var listStatus: [String: ListStatus] { get async { await updater.status() } }
 
     /// Checks lists now and then every `interval`; lists checked more recently are skipped.

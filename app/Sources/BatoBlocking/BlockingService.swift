@@ -32,6 +32,8 @@ public final class BlockingService: @unchecked Sendable {
         BlockingProfiles.rootDirectory(stateDirectory: stateDirectory).appendingPathComponent(profileKey)
     }
 
+    public func reloadSettings() { store.reload() }
+
     public var settings: BlockingSettings { store.current() }
     public var exceptions: [String] { settings.exceptions }
     public var settingsRecoveredFromCorruption: Bool { store.recoveredFromCorruption }
