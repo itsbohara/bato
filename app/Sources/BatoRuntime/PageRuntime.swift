@@ -72,9 +72,13 @@ public protocol PageEngine: AnyObject {
     var supportsNavigation: Bool { get }
     /// Acts only on a page that is currently visible and focused; the engine refuses anything else.
     func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool
+    /// Closes the Profile's windows and pages without prompting and destroys its stored data.
+    /// False when the engine cannot or will not (the launch Profile, an unknown Profile).
+    func destroyProfile(_ id: UUID) -> Bool
 }
 
 public extension PageEngine {
+    func destroyProfile(_ id: UUID) -> Bool { false }
     func supportsProfile(_ id: UUID) -> Bool { supportedProfileIDs.contains(id) }
     func activateProfile(_ id: UUID) {}
     var supportsSplits: Bool { false }
@@ -114,6 +118,8 @@ public final class PageRuntime {
     }
     public private(set) var peekSession = PeekSession()
     public var onStateChange: ((BrowserState) -> Void)?
+    /// Saves like `commit` and keeps the previous document as a recoverable snapshot; used for Profile delete.
+    public var snapshotCommit: ((BrowserState) throws -> Void)?
     public var supportsSplits: Bool { engine.supportsSplits }
     public var canOpenPeek: Bool {
         engine.supportsPeek && peekSession.preview == nil && state.currentSplit == nil &&
@@ -253,6 +259,47 @@ public final class PageRuntime {
             let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
             try candidate.activateWorkspace(created.workspaceID)
         }
+    }
+
+    /// Deletes a Profile: the organization change is saved first (keeping the previous document as a
+    /// snapshot when `snapshotCommit` is set), then the engine destroys the Profile's data. If the engine
+    /// refuses, the previous organization is saved again so nothing is lost without its data going.
+    @discardableResult
+    public func deleteProfile(_ id: UUID) -> Bool {
+        guard id != state.launchProfileID, state.profiles.contains(where: { $0.id == id }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        var candidate = state
+        do { try candidate.deleteProfile(id); try candidate.validate() } catch {
+            lastError = .invalidCommand
+            return false
+        }
+        let previous = state
+        let wasCurrent = state.currentWorkspace.profileID == id
+        do {
+            try (snapshotCommit ?? commit)(candidate)
+        } catch {
+            lastError = .saveFailed
+            return false
+        }
+        state = candidate
+        tearDownPeek()
+        guard engine.destroyProfile(id) else {
+            if (try? commit(previous)) != nil { state = previous }
+            lastError = .invalidCommand
+            onStateChange?(state)
+            return false
+        }
+        for (entry, page) in livePages where page.profileID == id { livePages.removeValue(forKey: entry) }
+        pendingClose = pendingClose.filter { $0.profileID != id }
+        pagesWithUncommittedNavigation = pagesWithUncommittedNavigation.filter { $0.key.profileID != id }
+        closedTabs.removeValue(forKey: id)
+        pendingArchive = pendingArchive.filter { entry, _ in state.visibleEntries.contains { $0.id == entry } }
+        lastError = nil
+        onStateChange?(state)
+        if wasCurrent { _ = showSelection() }
+        return true
     }
 
     /// Metadata only: the visible page and the Profile's engine context are untouched.
@@ -441,14 +488,14 @@ public final class PageRuntime {
     /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's
     /// workspaces only. Saved entries never enter this history; they stay in the sidebar.
     @discardableResult
-    public func reopenClosedTab() -> Bool {
+    public func reopenClosedTab(at offset: Int = 0) -> Bool {
         let profileID = state.currentWorkspace.profileID
-        guard let closed = closedTabs[profileID]?.last else {
+        guard let closed = closedTabs[profileID]?.closed(at: offset) else {
             lastError = .invalidCommand
             return false
         }
         guard change({ _ = try $0.reopenTab(closed) }) else { return false }
-        closedTabs[profileID]?.pop()
+        closedTabs[profileID]?.remove(at: offset)
         return true
     }
 

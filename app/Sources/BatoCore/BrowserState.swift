@@ -62,6 +62,17 @@ public struct ClosedTabStack: Equatable, Sendable {
     public init() {}
 
     public var last: ClosedTab? { tabs.last }
+
+    /// The `offset`-th most recently closed tab, 0 being the newest.
+    public func closed(at offset: Int) -> ClosedTab? {
+        offset >= 0 && offset < tabs.count ? tabs[tabs.count - 1 - offset] : nil
+    }
+
+    @discardableResult
+    public mutating func remove(at offset: Int) -> ClosedTab? {
+        guard offset >= 0, offset < tabs.count else { return nil }
+        return tabs.remove(at: tabs.count - 1 - offset)
+    }
     public var isEmpty: Bool { tabs.isEmpty }
 
     public mutating func push(_ tab: ClosedTab) {
@@ -270,6 +281,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
     case duplicateIdentity
     case missingProfile
     case duplicateProfileName
+    case launchProfileProtected
     case missingWorkspace
     case invalidEntryOwnership
     case invalidSavedURL
@@ -288,6 +300,7 @@ public enum BrowserStateError: Error, Equatable, LocalizedError {
         case .duplicateIdentity: "The organization contains duplicate identifiers."
         case .missingProfile: "The workspace's Profile could not be found."
         case .duplicateProfileName: "Another Profile already has that name."
+        case .launchProfileProtected: "The Profile Bato started with cannot be deleted."
         case .missingWorkspace: "The selected workspace could not be found."
         case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
         case .invalidSavedURL: "The saved page destination is invalid."
@@ -542,6 +555,40 @@ public struct BrowserState: Codable, Equatable, Sendable {
             guard draft.isProfileNameAvailable(name, excluding: id) else { throw BrowserStateError.duplicateProfileName }
             draft.profiles[index].name = name
             draft.profiles[index].color = color.uppercased()
+        }
+    }
+
+    /// What deleting a Profile removes from the organization; engine data (history, logins) is separate.
+    public struct ProfileLoss: Equatable, Sendable {
+        public let workspaces: Int
+        public let pages: Int
+        public let favorites: Int
+        public let archived: Int
+    }
+
+    public func lossOfDeleting(profile id: UUID) -> ProfileLoss? {
+        guard let profile = profiles.first(where: { $0.id == id }) else { return nil }
+        let owned = workspaces.filter { $0.profileID == id }
+        return ProfileLoss(workspaces: owned.count, pages: owned.reduce(0) { $0 + $1.pins.count + $1.tabs.count },
+                           favorites: profile.favorites.count, archived: archive.records(inProfile: id).count)
+    }
+
+    /// The launch Profile owns the engine's default storage and can never be deleted. Selection moves to the
+    /// launch Profile's first workspace when the current one goes away.
+    public mutating func deleteProfile(_ id: UUID) throws {
+        try transact { draft in
+            guard id != draft.launchProfileID else { throw BrowserStateError.launchProfileProtected }
+            guard draft.profiles.contains(where: { $0.id == id }) else { throw BrowserStateError.missingProfile }
+            let doomed = Set(draft.workspaces.filter { $0.profileID == id }.map(\.id))
+            draft.profiles.removeAll { $0.id == id }
+            draft.workspaces.removeAll { $0.profileID == id }
+            draft.archive.records.removeAll { $0.profileID == id }
+            if doomed.contains(draft.activeWorkspaceID) {
+                guard let next = draft.workspaces.first(where: { $0.profileID == draft.launchProfileID }) ?? draft.workspaces.first else {
+                    throw BrowserStateError.missingWorkspace
+                }
+                draft.activeWorkspaceID = next.id
+            }
         }
     }
 

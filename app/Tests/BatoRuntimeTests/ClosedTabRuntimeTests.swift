@@ -103,4 +103,21 @@ struct ClosedTabRuntimeTests {
         #expect(runtime.closeEntry(ids[0]))
         #expect(runtime.selectAdjacentEntry(step: 1) == false || runtime.state.currentWorkspace.activeEntryID != ids[0])
     }
+
+    @Test func reopeningByMenuPositionPicksThatClosedTabAndKeepsTheOthers() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: url("a"), title: "A")
+        let second = try state.addTab(url: url("b"), title: "B")
+        let runtime = try PageRuntime(state: state, engine: ClosingEngine(state.currentWorkspace.profileID), commit: { _ in })
+        #expect(runtime.closeEntry(first))
+        let loaded = try #require(runtime.livePages[second])
+        #expect(runtime.closeEntry(second))
+        runtime.receive(.closed(loaded))
+        #expect(!runtime.reopenClosedTab(at: 2))
+        #expect(runtime.reopenClosedTab(at: 1))
+        #expect(runtime.state.currentWorkspace.tabs.map(\.title) == ["A"])
+        #expect(runtime.reopenClosedTab(at: 0))
+        #expect(runtime.state.currentWorkspace.tabs.map(\.title).sorted() == ["A", "B"])
+        #expect(!runtime.canReopenClosedTab)
+    }
 }

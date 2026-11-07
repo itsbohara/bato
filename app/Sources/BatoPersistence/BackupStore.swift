@@ -18,7 +18,7 @@ public enum BackupError: Error, LocalizedError, Equatable {
 }
 
 public struct BackupInfo: Equatable, Identifiable, Sendable {
-    public enum Kind: Equatable, Sendable { case daily, lastSession, preImport, preMigration, preRestore }
+    public enum Kind: Equatable, Sendable { case daily, lastSession, preImport, preMigration, preRestore, preDelete }
     public let id: String
     public let kind: Kind
     public let createdAt: Date
@@ -45,7 +45,7 @@ public final class BackupStore {
     public static let lastSessionID = "last-session"
     /// Staging slot for the running session's start. Not a valid backup ID, so it is never listed or restorable.
     static let pendingSessionID = "pending-session"
-    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore"]
+    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore", "pre-delete"]
 
     private struct Manifest: Codable {
         var schema = 1
@@ -109,7 +109,8 @@ public final class BackupStore {
         }
         for name in Self.preChangeNames {
             guard let modified = modificationDate(snapshotURL(name)) else { continue }
-            let kind: BackupInfo.Kind = name == "pre-import" ? .preImport : name == "pre-migration" ? .preMigration : .preRestore
+            let kind: BackupInfo.Kind = name == "pre-import" ? .preImport : name == "pre-migration" ? .preMigration
+                : name == "pre-delete" ? .preDelete : .preRestore
             found.append(BackupInfo(id: name, kind: kind, createdAt: modified))
         }
         return found.sorted { $0.createdAt > $1.createdAt }
@@ -140,7 +141,7 @@ public final class BackupStore {
         for stale in backups.filter({ $0.kind == .daily }).dropFirst(Self.dailyRetention) {
             try? FileManager.default.removeItem(at: root.appendingPathComponent(stale.id))
         }
-        for stale in backups.filter({ [.preImport, .preMigration, .preRestore].contains($0.kind) }).dropFirst() {
+        for stale in backups.filter({ [.preImport, .preMigration, .preRestore, .preDelete].contains($0.kind) }).dropFirst() {
             try? FileManager.default.removeItem(at: snapshotURL(stale.id))
         }
     }
