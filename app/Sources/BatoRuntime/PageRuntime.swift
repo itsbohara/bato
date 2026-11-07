@@ -448,6 +448,46 @@ public final class PageRuntime {
         return true
     }
 
+    /// Opens a second temporary tab on the selected page's address.
+    @discardableResult
+    public func duplicateSelectedEntry() -> Bool {
+        guard let entry = selectedEntry else { lastError = .invalidCommand; return false }
+        return addTab(url: entry.lastURL, title: entry.title)
+    }
+
+    /// Pins a temporary tab; a pin or Favorite goes back to being a temporary tab.
+    @discardableResult
+    public func togglePinSelectedEntry() -> Bool {
+        guard let entry = selectedEntry else { lastError = .invalidCommand; return false }
+        return entry.kind == .temporary ? pinEntry(entry.id) : makeTemporary(entry.id)
+    }
+
+    /// Closes the current Workspace's temporary tabs other than the selection. Saved pages stay.
+    @discardableResult
+    public func closeOtherTemporaryTabs() -> Bool {
+        closeTemporaryTabs { entries, selected in entries.filter { $0.id != selected } }
+    }
+
+    /// Closes the temporary tabs below the selection in sidebar order. Saved pages stay.
+    @discardableResult
+    public func closeTemporaryTabsBelowSelection() -> Bool {
+        closeTemporaryTabs { entries, selected in
+            guard let index = entries.firstIndex(where: { $0.id == selected }) else { return [] }
+            return Array(entries[(index + 1)...])
+        }
+    }
+
+    private var selectedEntry: PageEntry? {
+        state.currentWorkspace.activeEntryID.flatMap { id in state.visibleEntries.first { $0.id == id } }
+    }
+
+    private func closeTemporaryTabs(_ choose: ([PageEntry], UUID) -> [PageEntry]) -> Bool {
+        guard let selected = state.currentWorkspace.activeEntryID else { lastError = .invalidCommand; return false }
+        let doomed = choose(state.visibleEntries, selected).filter { $0.kind == .temporary }
+        guard !doomed.isEmpty else { return false }
+        return doomed.map { closeEntry($0.id) }.contains(true)
+    }
+
     /// Selects the page one step from the selection in sidebar order. Ignores a page that is closing.
     @discardableResult
     public func selectAdjacentEntry(step: Int) -> Bool {
@@ -603,6 +643,9 @@ public final class PageRuntime {
         case let .selected(page):
             guard livePages[page.entryID] == page else { return }
             if state.currentWorkspace.activeEntryID == page.entryID { return }
+            // Chromium picks its own neighbour while the selected page closes; the close handler
+            // below picks the sidebar neighbour instead.
+            if selectedPageIsClosing { return }
             // Chromium already focused this visible split side. Re-presenting
             // would restore a persisted divider before its pending change event.
             let isCurrentSplitSide = state.currentSplit?.contains(page.entryID) == true
@@ -619,7 +662,7 @@ public final class PageRuntime {
         case .peekEnded:
             return
         case .selectionCleared:
-            guard state.currentWorkspace.activeEntryID != nil else { return }
+            guard state.currentWorkspace.activeEntryID != nil, !selectedPageIsClosing else { return }
             let accepted = change { candidate in
                 guard let index = candidate.workspaces.firstIndex(where: { $0.id == candidate.activeWorkspaceID }) else {
                     throw PageRuntimeError.invalidCommand
@@ -667,6 +710,10 @@ public final class PageRuntime {
             var candidate = state
             let closedTab = candidate.closedTab(for: page.entryID)
             let active = candidate.activeWorkspaceID
+            let successor = state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
+                ? state.entryID(afterClosing: page.entryID, skipping: { [pendingClose] id in
+                    pendingClose.contains { $0.entryID == id } })
+                : nil
             if let owner = candidate.workspaces.first(where: {
                 $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
             }) {
@@ -677,16 +724,25 @@ public final class PageRuntime {
             do {
                 try candidate.closeEntry(page.entryID)
                 try candidate.activateWorkspace(active)
+                if let successor { try? candidate.selectEntry(successor) }
                 if save(candidate), let closedTab {
                     closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
                 }
             } catch {
                 lastError = .invalidCommand
             }
-            engine.select(selectedLivePage)
+            if successor != nil, state.currentWorkspace.activeEntryID == successor {
+                _ = showSelection()
+            } else {
+                engine.select(selectedLivePage)
+            }
             // A failed save leaves the committed entry unloaded. Do not recreate
             // it automatically after a physical engine close.
         }
+    }
+
+    private var selectedPageIsClosing: Bool {
+        selectedLivePage.map { pendingClose.contains($0) } ?? false
     }
 
     private var selectedLivePage: LivePage? {

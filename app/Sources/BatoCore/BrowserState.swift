@@ -798,6 +798,14 @@ public struct BrowserState: Codable, Equatable, Sendable {
         return entries[((index + step) % count + count) % count].id
     }
 
+    /// The page to select once `id` closes: the next one in sidebar order, else the previous one.
+    public func entryID(afterClosing id: UUID, skipping unavailable: (UUID) -> Bool = { _ in false }) -> UUID? {
+        let entries = visibleEntries
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return nil }
+        let candidates = entries[(index + 1)...] + entries[..<index].reversed()
+        return candidates.first { !unavailable($0.id) }?.id
+    }
+
     /// Cmd-1 to Cmd-8 pick that page in sidebar order; Cmd-9 always picks the last one.
     public func entryID(forShortcut number: Int) -> UUID? {
         let entries = visibleEntries
