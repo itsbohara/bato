@@ -11,6 +11,8 @@ public final class OrganizationStore<State: Codable> {
         case corruptState
         case invalidState
         case fileOperationFailed
+        case snapshotUnavailable
+        case snapshotStale
 
         public var errorDescription: String? {
             switch self {
@@ -20,6 +22,8 @@ public final class OrganizationStore<State: Codable> {
             case .corruptState: "Organization could not be decoded. The existing document was preserved."
             case .invalidState: "Organization is invalid or uses an unsupported format."
             case .fileOperationFailed: "Organization could not be read or saved."
+            case .snapshotUnavailable: "No saved snapshot is available to restore."
+            case .snapshotStale: "Organization changed after this snapshot, so it can no longer be restored."
             }
         }
     }
@@ -80,6 +84,70 @@ public final class OrganizationStore<State: Codable> {
         }
     }
 
+    /// Proof of one `saveWithSnapshot`: restoring is allowed only while the document is still the committed bytes.
+    public struct Snapshot: Equatable, Sendable {
+        fileprivate let name: String
+        fileprivate let committedBytes: Data
+    }
+
+    /// Saves `state` and keeps the previous document as a named snapshot in one locked step.
+    /// A failure at any point leaves the committed document byte-identical. Snapshot names are
+    /// single-slot: a later call with the same name replaces the earlier snapshot.
+    public func saveWithSnapshot(_ state: State, named name: String) throws -> Snapshot {
+        guard loaded else { throw StoreError.loadRequired }
+        guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
+            throw StoreError.invalidState
+        }
+        do { try validate(state) }
+        catch { throw StoreError.invalidState }
+        let bytes = try encode(state)
+        return try withLock {
+            try checkRegularOrAbsent(backupURL)
+            let current = try readDocument()
+            guard current == knownBytes else { throw StoreError.conflict }
+            guard let current else { throw StoreError.snapshotUnavailable }
+            try atomicWrite(current, to: snapshotURL(name))
+            try atomicWrite(current, to: backupURL)
+            try atomicWrite(bytes, to: documentURL)
+            knownBytes = bytes
+            return Snapshot(name: name, committedBytes: bytes)
+        }
+    }
+
+    /// Replaces the document with the snapshot's content, only if nothing has been saved since
+    /// `saveWithSnapshot` returned it. Returns the restored state.
+    public func restore(_ snapshot: Snapshot) throws -> State {
+        guard loaded else { throw StoreError.loadRequired }
+        return try withLock {
+            try checkRegularOrAbsent(backupURL)
+            let current = try readDocument()
+            guard current == knownBytes else { throw StoreError.conflict }
+            guard current == snapshot.committedBytes else { throw StoreError.snapshotStale }
+            try checkRegularOrAbsent(snapshotURL(snapshot.name))
+            guard let saved = try readFile(snapshotURL(snapshot.name)) else { throw StoreError.snapshotUnavailable }
+            let restored: State
+            do { restored = try JSONDecoder().decode(State.self, from: saved) }
+            catch { throw StoreError.corruptState }
+            do { try validate(restored) }
+            catch { throw StoreError.invalidState }
+            if let current { try atomicWrite(current, to: backupURL) }
+            try atomicWrite(saved, to: documentURL)
+            knownBytes = saved
+            return restored
+        }
+    }
+
+    private func snapshotURL(_ name: String) -> URL {
+        directory.appendingPathComponent("organization.snapshot.\(name).json")
+    }
+
+    private func encode(_ state: State) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do { return try encoder.encode(state) }
+        catch { throw StoreError.invalidState }
+    }
+
     private var documentURL: URL { directory.appendingPathComponent("organization.json") }
     private var backupURL: URL { directory.appendingPathComponent("organization.last-good.json") }
 
@@ -126,9 +194,11 @@ public final class OrganizationStore<State: Codable> {
         }
     }
 
-    private func readDocument() throws -> Data? {
-        try checkRegularOrAbsent(documentURL)
-        let descriptor = open(documentURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    private func readDocument() throws -> Data? { try readFile(documentURL) }
+
+    private func readFile(_ url: URL) throws -> Data? {
+        try checkRegularOrAbsent(url)
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if descriptor < 0 {
             if errno == ENOENT { return nil }
             if errno == ELOOP { throw StoreError.unsafeFile }
