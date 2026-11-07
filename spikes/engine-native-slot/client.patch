@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,64 @@
+@@ -2313,6 +2317,69 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -142,6 +142,11 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsButton.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsSidebar.swift",
++      "tests/cefsimple/bato/BatoCore/Archive.swift",
++      "tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/UBlockOffer.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -160,7 +165,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2398,19 @@
+@@ -2336,12 +2403,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -183,7 +188,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1393 @@
+@@ -0,0 +1,1484 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -247,6 +252,14 @@
 +using SwiftConfigureProfiles = void (*)(int (*)(const char*, int));
 +using SwiftProfileWindowReady = void (*)(uint64_t, const char*, int);
 +
++// Download hooks are optional Swift exports, resolved with dlsym at registration.
++// DownloadsConfigure(snapshot, act): act(profile_key, id, action) with the Bato Profile key.
++// DownloadUpserted/Removed deliver engine events with Bato Profile keys, on the main thread.
++using SwiftDownloadsConfigure = void (*)(int (*)(), int (*)(const char*, const char*, int));
++using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
++                                       int64_t, int64_t, int64_t, int, int, int, int);
++using SwiftDownloadRemoved = void (*)(const char*, const char*);
++
 +extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
 +    const unsigned char* png, size_t size);
 +
@@ -265,6 +278,10 @@
 +using PeekEnd = decltype(&bato_native_slot_peek_end_v1);
 +PeekPresent g_peek_present = nullptr;
 +PeekEnd g_peek_end = nullptr;
++decltype(&bato_native_slot_download_snapshot_v1) g_download_snapshot = nullptr;
++decltype(&bato_native_slot_download_action_v1) g_download_action = nullptr;
++SwiftDownloadUpserted g_swift_download_upserted = nullptr;
++SwiftDownloadRemoved g_swift_download_removed = nullptr;
 +SwiftPeekEnded g_swift_peek_ended = nullptr;
 +SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 +SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
@@ -1010,6 +1027,57 @@
 +      }, token, identifier));
 +}
 +
++// Engine Profile keys name the directory under the cache root: empty is the launch Profile,
++// whose Bato key Swift supplied when it asked for that window. Same mapping as blocking.
++std::string BatoKeyForEngineKey(const std::string& engine_key) {
++  if (!engine_key.empty()) return engine_key;
++  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++  return ProfileKeys().launch_key;
++}
++
++std::string EngineKeyForBatoKey(const std::string& key) {
++  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++  return !key.empty() && key == ProfileKeys().launch_key ? std::string() : key;
++}
++
++struct DownloadSnapshotCopy {
++  std::string profile_key, id, filename, path;
++  int64_t received, total, bytes_per_second;
++  int state, can_resume, file_exists, warning;
++};
++
++// Runs inside a download update, possibly under a tab-model mutation: copy and defer.
++void DownloadUpserted(void*, const BatoDownloadInfoV1* info) {
++  if (!info || info->size != sizeof(BatoDownloadInfoV1) || !info->profile_key || !info->id) return;
++  DownloadSnapshotCopy copy{info->profile_key, info->id, info->filename ? info->filename : "",
++                            info->path ? info->path : "", info->received_bytes, info->total_bytes,
++                            info->bytes_per_second, info->state, info->can_resume, info->file_exists,
++                            info->warning};
++  CefPostTask(TID_UI, base::BindOnce([](DownloadSnapshotCopy copy) {
++    if (!g_swift_download_upserted) return;
++    const std::string key = BatoKeyForEngineKey(copy.profile_key);
++    g_swift_download_upserted(key.c_str(), copy.id.c_str(), copy.filename.c_str(), copy.path.c_str(),
++                              copy.received, copy.total, copy.bytes_per_second, copy.state,
++                              copy.can_resume, copy.file_exists, copy.warning);
++  }, std::move(copy)));
++}
++
++void DownloadRemoved(void*, const char* profile_key, const char* id) {
++  if (!profile_key || !id) return;
++  CefPostTask(TID_UI, base::BindOnce([](std::string profile_key, std::string id) {
++    if (!g_swift_download_removed) return;
++    const std::string key = BatoKeyForEngineKey(profile_key);
++    g_swift_download_removed(key.c_str(), id.c_str());
++  }, std::string(profile_key), std::string(id)));
++}
++
++int RequestDownloadSnapshot() { return g_download_snapshot ? g_download_snapshot() : 0; }
++
++int PerformDownloadAction(const char* profile_key, const char* id, int action) {
++  if (!g_download_action || !profile_key || !id) return 0;
++  return g_download_action(EngineKeyForBatoKey(profile_key).c_str(), id, action);
++}
++
 +void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
 +  auto slot = WorkspaceSlots().find(token);
 +  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
@@ -1486,6 +1554,18 @@
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
 +  auto swift_configure_navigation = reinterpret_cast<SwiftConfigureNavigation>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureNavigation"));
++  auto register_downloads = reinterpret_cast<decltype(&bato_native_slot_register_download_callbacks_v1)>(
++      dlsym(loaded, "bato_native_slot_register_download_callbacks_v1"));
++  auto download_snapshot = reinterpret_cast<decltype(&bato_native_slot_download_snapshot_v1)>(
++      dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
++  auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
++      dlsym(loaded, "bato_native_slot_download_action_v1"));
++  auto swift_configure_downloads = reinterpret_cast<SwiftDownloadsConfigure>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadsConfigure"));
++  auto swift_download_upserted = reinterpret_cast<SwiftDownloadUpserted>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadUpserted"));
++  auto swift_download_removed = reinterpret_cast<SwiftDownloadRemoved>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadRemoved"));
 +  dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
 +  if (!registration || !focus || !advance || !active_browser_id) {
 +    fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -1540,6 +1620,22 @@
 +            g_swift_peek_link_requested = swift_link_requested;
 +          }
 +        }
++      }
++    }
++    // Downloads are additive: without the engine exports Chromium's own UI stays the only one.
++    if (register_downloads && download_snapshot && download_action && swift_configure_downloads &&
++        swift_download_upserted && swift_download_removed) {
++      BatoDownloadCallbacksV1 downloads = {};
++      downloads.size = sizeof(downloads);
++      downloads.version = 1;
++      downloads.upserted = DownloadUpserted;
++      downloads.removed = DownloadRemoved;
++      if (register_downloads(&downloads) == 1) {
++        g_download_snapshot = download_snapshot;
++        g_download_action = download_action;
++        g_swift_download_upserted = swift_download_upserted;
++        g_swift_download_removed = swift_download_removed;
++        swift_configure_downloads(RequestDownloadSnapshot, PerformDownloadAction);
 +      }
 +    }
 +    if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);
@@ -1618,7 +1714,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -1642,16 +1738,17 @@
 +              '-I', str(modules)]
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
-+                                        'DownloadsModel.swift', 'DownloadsController.swift']),
++                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
-+                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
++                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift', 'UBlockListsChoice.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
 +                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
-+                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift'])]:
++                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
++                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -1829,7 +1926,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,989 @@
+@@ -0,0 +1,1040 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -1847,6 +1944,8 @@
 +private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 +private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 +private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32
++private typealias DownloadSnapshot = @convention(c) () -> Int32
++private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 +@MainActor private var workspaceDirectory: URL?
 +@MainActor private var createPage: CreatePage?
 +@MainActor private var selectPage: PageAction?
@@ -1863,7 +1962,21 @@
 +@MainActor private var endPeekPages: EndPeek?
 +@MainActor private var navigatePage: NavigatePage?
 +@MainActor private var openProfileWindow: OpenProfileWindow?
++@MainActor private var downloadSnapshot: DownloadSnapshot?
++@MainActor private var downloadAct: DownloadAct?
++@MainActor private var nativeDownloads: NativeDownloadsEngine?
++@MainActor private var downloadsController: DownloadsController?
 +@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
++
++/// Download events and actions through the client's engine tables. The client has already mapped
++/// engine Profile keys to Bato Profile UUID strings in both directions.
++@MainActor private final class NativeDownloadsEngine: DownloadsEngine {
++    var onEvent: ((DownloadEvent) -> Void)?
++    func requestSnapshot() { _ = downloadSnapshot?() }
++    func perform(_ action: DownloadAction, id: String, profileKey: String) -> Bool {
++        downloadAct?(profileKey, id, action.engineCode) == 1
++    }
++}
 +
 +/// Routes pages to one Chromium window per Bato Profile: a Chrome Browser has exactly one
 +/// Profile, so pages of different Profiles can never share a window. The launch Profile
@@ -2219,6 +2332,13 @@
 +                return engine
 +            }
 +            workspaceHost.controller = controller
++            if downloadsController == nil, downloadSnapshot != nil, downloadAct != nil {
++                let engine = NativeDownloadsEngine()
++                let downloads = DownloadsController(engine: engine)
++                nativeDownloads = engine
++                downloadsController = downloads
++                controller.attachDownloads(downloads)
++            }
 +            controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
 +            controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
 +            controller.requestPagePresentation = {
@@ -2818,6 +2938,34 @@
 +    precondition(Thread.isMainThread)
 +    guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
 +    workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
++}
++
++@_cdecl("BatoSwiftDownloadsConfigure")
++@MainActor public func configureDownloads(
++    _ snapshot: @escaping @convention(c) () -> Int32,
++    _ act: @escaping @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    downloadSnapshot = snapshot
++    downloadAct = act
++}
++
++@_cdecl("BatoSwiftDownloadUpserted")
++@MainActor public func downloadUpserted(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>,
++                                        _ filename: UnsafePointer<CChar>, _ path: UnsafePointer<CChar>,
++                                        _ received: Int64, _ total: Int64, _ bytesPerSecond: Int64,
++                                        _ state: Int32, _ canResume: Int32, _ fileExists: Int32, _ warning: Int32) {
++    precondition(Thread.isMainThread)
++    nativeDownloads?.onEvent?(.upsert(DownloadItem(
++        engineProfileKey: String(cString: profileKey), id: String(cString: id),
++        filename: String(cString: filename), path: String(cString: path), receivedBytes: received,
++        totalBytes: total, bytesPerSecond: bytesPerSecond, state: state, canResume: canResume != 0,
++        fileExists: fileExists != 0, warning: warning)))
++}
++
++@_cdecl("BatoSwiftDownloadRemoved")
++@MainActor public func downloadRemoved(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>) {
++    precondition(Thread.isMainThread)
++    nativeDownloads?.onEvent?(.removed(profileKey: String(cString: profileKey), id: String(cString: id)))
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
@@ -3549,7 +3697,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1193 @@
+@@ -0,0 +1,1243 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -3574,13 +3722,17 @@
 +    public var savedURL: URL?
 +    public var lastURL: URL
 +    public var kind: EntryKind
++    /// When a temporary tab was last known to be in use; set only while its workspace archives idle tabs.
++    public var lastActiveAt: Date?
 +
-+    public init(id: UUID = UUID(), title: String, savedURL: URL? = nil, lastURL: URL, kind: EntryKind) {
++    public init(id: UUID = UUID(), title: String, savedURL: URL? = nil, lastURL: URL, kind: EntryKind,
++                lastActiveAt: Date? = nil) {
 +        self.id = id
 +        self.title = title
 +        self.savedURL = savedURL
 +        self.lastURL = lastURL
 +        self.kind = kind
++        self.lastActiveAt = lastActiveAt
 +    }
 +}
 +
@@ -3708,8 +3860,10 @@
 +    public var activeEntryID: UUID?
 +    public var splits: [PageSplit]
 +    public var activeSplitID: UUID?
++    /// Overrides the global archive period for this workspace.
++    public var archivePeriod: ArchivePeriod?
 +
-+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil) {
++    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil) {
 +        self.id = id
 +        self.profileID = profileID
 +        self.name = name
@@ -3720,6 +3874,7 @@
 +        self.activeEntryID = activeEntryID
 +        self.splits = splits
 +        self.activeSplitID = activeSplitID
++        self.archivePeriod = archivePeriod
 +    }
 +
 +    public func folder(containingPin id: UUID) -> PageFolder? {
@@ -3772,7 +3927,7 @@
 +    }
 +
 +    private enum CodingKeys: String, CodingKey {
-+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID
++        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod
 +    }
 +
 +    public init(from decoder: any Decoder) throws {
@@ -3787,6 +3942,7 @@
 +        splits = try values.decodeIfPresent([PageSplit].self, forKey: .splits) ?? []
 +        activeSplitID = try values.decodeIfPresent(UUID.self, forKey: .activeSplitID)
 +        activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
++        archivePeriod = try values.decodeIfPresent(ArchivePeriod.self, forKey: .archivePeriod)
 +    }
 +
 +    public func encode(to encoder: any Encoder) throws {
@@ -3802,6 +3958,7 @@
 +        if !splits.isEmpty { try values.encode(splits, forKey: .splits) }
 +        try values.encodeIfPresent(activeSplitID, forKey: .activeSplitID)
 +        try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
++        try values.encodeIfPresent(archivePeriod, forKey: .archivePeriod)
 +    }
 +}
 +
@@ -3849,6 +4006,32 @@
 +    public var profiles: [BrowserProfile]
 +    public var workspaces: [Workspace]
 +    public var activeWorkspaceID: UUID
++    public var archive = ArchiveState()
++
++    /// Version 3 added the archive. Documents that never use it keep their version and bytes.
++    public static let archiveVersion = 3
++
++    private enum CodingKeys: String, CodingKey {
++        case version, profiles, workspaces, activeWorkspaceID, archive
++    }
++
++    public init(from decoder: any Decoder) throws {
++        let values = try decoder.container(keyedBy: CodingKeys.self)
++        version = try values.decode(Int.self, forKey: .version)
++        profiles = try values.decode([BrowserProfile].self, forKey: .profiles)
++        workspaces = try values.decode([Workspace].self, forKey: .workspaces)
++        activeWorkspaceID = try values.decode(UUID.self, forKey: .activeWorkspaceID)
++        archive = try values.decodeIfPresent(ArchiveState.self, forKey: .archive) ?? ArchiveState()
++    }
++
++    public func encode(to encoder: any Encoder) throws {
++        var values = encoder.container(keyedBy: CodingKeys.self)
++        try values.encode(version, forKey: .version)
++        try values.encode(profiles, forKey: .profiles)
++        try values.encode(workspaces, forKey: .workspaces)
++        try values.encode(activeWorkspaceID, forKey: .activeWorkspaceID)
++        if !archive.isDefault { try values.encode(archive, forKey: .archive) }
++    }
 +
 +    /// Folders are at most this many levels deep, so indentation fits the 220-point minimum sidebar.
 +    public static let maxFolderDepth = 4
@@ -3922,7 +4105,13 @@
 +    }
 +
 +    public func validate() throws {
-+        guard version == 1 || version == 2 else { throw BrowserStateError.unsupportedVersion(version) }
++        guard (1...Self.archiveVersion).contains(version) else { throw BrowserStateError.unsupportedVersion(version) }
++        if version < Self.archiveVersion {
++            let usesArchive = !archive.isDefault || workspaces.contains {
++                $0.archivePeriod != nil || $0.tabs.contains { $0.lastActiveAt != nil }
++            }
++            guard !usesArchive else { throw BrowserStateError.unsupportedVersion(version) }
++        }
 +        var identities = Set<UUID>()
 +        func claim(_ id: UUID) throws {
 +            guard identities.insert(id).inserted else { throw BrowserStateError.duplicateIdentity }
@@ -3999,6 +4188,11 @@
 +                    throw BrowserStateError.invalidSelection
 +                }
 +            }
++        }
++        for record in archive.records {
++            try claim(record.id)
++            guard profileIDs.contains(record.profileID) else { throw BrowserStateError.missingProfile }
++            try Self.validateURL(record.url)
 +        }
 +        guard workspaces.contains(where: { $0.id == activeWorkspaceID }) else {
 +            throw BrowserStateError.missingWorkspace
@@ -4682,6 +4876,10 @@
 +        }
 +    }
 +
++    mutating func removeTemporaryTab(_ id: UUID) { removeEntry(id) }
++
++    mutating func selectTabInPlace(_ id: UUID) { selectEntryInPlace(id) }
++
 +    private mutating func removeEntry(_ id: UUID) {
 +        removeSplits(containing: id)
 +        for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }
@@ -5038,7 +5236,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,923 @@
 +import Foundation
 +import BatoCore
 +
@@ -5146,6 +5344,10 @@
 +    public private(set) var pendingClose: Set<LivePage> = []
 +    public private(set) var lastError: PageRuntimeError?
 +    private var closedTabs: [UUID: ClosedTabStack] = [:]
++    /// Live pages being closed to archive their tab, with the time the archive was requested.
++    private var pendingArchive: [UUID: Date] = [:]
++    /// Time source for archive activity and records; tests replace it.
++    public var clock: () -> Date = { Date() }
 +    public var canReopenClosedTab: Bool {
 +        closedTabs[state.currentWorkspace.profileID]?.isEmpty == false
 +    }
@@ -5489,6 +5691,52 @@
 +        return true
 +    }
 +
++    /// Archives a temporary tab. A loaded page is archived once the engine has closed it, and stays
++    /// in the sidebar if the close is cancelled, like a normal close.
++    @discardableResult
++    public func archiveTab(_ id: UUID) -> Bool {
++        guard state.workspaces.contains(where: { $0.tabs.contains { $0.id == id } }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        let now = clock()
++        guard let page = livePages[id] else { return change { try $0.archiveTab(id, at: now) } }
++        guard pendingClose.insert(page).inserted else { return true }
++        pendingArchive[id] = now
++        engine.requestClose(page)
++        return true
++    }
++
++    /// Archives every temporary tab idle for its workspace's period. Returns how many were archived or
++    /// are closing to be archived.
++    @discardableResult
++    public func archiveIdleTabs() -> Int {
++        guard state.archivesIdleTabs else { return 0 }
++        _ = change(reconcileSelection: false) { _ in }
++        let idle = state.idleTabIDs(at: clock()).filter { id in !pendingClose.contains { $0.entryID == id } }
++        return idle.filter { archiveTab($0) }.count
++    }
++
++    @discardableResult
++    public func restoreArchivedTab(_ id: UUID, deferPageSelection: Bool = false) -> Bool {
++        change(reconcileSelection: !deferPageSelection) { _ = try $0.restoreArchivedTab(id) }
++    }
++
++    @discardableResult
++    public func deleteArchivedTab(_ id: UUID) -> Bool {
++        change(reconcileSelection: false) { try $0.deleteArchivedTab(id) }
++    }
++
++    @discardableResult
++    public func setArchivePeriod(_ period: ArchivePeriod) -> Bool {
++        change(reconcileSelection: false) { try $0.setArchivePeriod(period) }
++    }
++
++    @discardableResult
++    public func setArchivePeriod(_ period: ArchivePeriod?, forWorkspace id: UUID) -> Bool {
++        change(reconcileSelection: false) { try $0.setArchivePeriod(period, forWorkspace: id) }
++    }
++
 +    /// Opens a second temporary tab on the selected page's address.
 +    @discardableResult
 +    public func duplicateSelectedEntry() -> Bool {
@@ -5741,6 +5989,7 @@
 +        case let .closeCancelled(page):
 +            guard livePages[page.entryID] == page else { return }
 +            pendingClose.remove(page)
++            pendingArchive.removeValue(forKey: page.entryID)
 +        case let .closed(page):
 +            guard livePages[page.entryID] == page else { return }
 +            livePages.removeValue(forKey: page.entryID)
@@ -5750,6 +5999,7 @@
 +            // Apply close in its owner workspace, then restore current selection.
 +            var candidate = state
 +            let closedTab = candidate.closedTab(for: page.entryID)
++            let archivedAt = pendingArchive.removeValue(forKey: page.entryID)
 +            let active = candidate.activeWorkspaceID
 +            let successor = state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
 +                ? state.entryID(afterClosing: page.entryID, skipping: { [pendingClose] id in
@@ -5763,10 +6013,11 @@
 +                try? candidate.activateWorkspace(owner.id)
 +            }
 +            do {
-+                try candidate.closeEntry(page.entryID)
++                if let archivedAt { try candidate.archiveTab(page.entryID, at: archivedAt) }
++                else { try candidate.closeEntry(page.entryID) }
 +                try candidate.activateWorkspace(active)
 +                if let successor { try? candidate.selectEntry(successor) }
-+                if save(candidate), let closedTab {
++                if save(candidate), let closedTab, archivedAt == nil {
 +                    closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
 +                }
 +            } catch {
@@ -5793,6 +6044,8 @@
 +    private func change(reconcileSelection: Bool = true,
 +                        _ mutate: (inout BrowserState) throws -> Void) -> Bool {
 +        var candidate = state
++        // Before the change, so a tab that stops being selected keeps the time it was last in use.
++        candidate.stampActivity(at: clock())
 +        do {
 +            try mutate(&candidate)
 +            try candidate.validate()
@@ -6029,7 +6282,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2256 @@
+@@ -0,0 +1,2289 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -6080,6 +6333,14 @@
 +    private let recovery: RecoveryController
 +    private var arcImport: ArcImportController?
 +    private var settingsWindow: SettingsWindowController?
++    private lazy var archiveController = ArchiveController(
++        runtime: runtime, window: { [weak self] in self?.root.window },
++        canPresent: { [weak self] in self?.canOpenBrowserPage ?? false },
++        restored: { [weak self] in
++            guard let self else { return }
++            render()
++            if let request = requestPagePresentation { request() } else { resumeCommittedSelection() }
++        })
 +    private var commandBar: CommandBarController?
 +    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
 +    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
@@ -6142,6 +6403,16 @@
 +        render()
 +        recovery.confirmLaunchSoon()
 +        if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
++        archiveController.start()
++        offerUBlockListsOnFirstRun()
++    }
++
++    /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
++    private func offerUBlockListsOnFirstRun() {
++        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
++            guard let self, canOpenBrowserPage, let window = root.window else { return }
++            UBlockOffer.offerIfDue(on: window)
++        }
 +    }
 +
 +    /// Marks this session as ended cleanly; the next launch then offers no recovery.
@@ -6253,7 +6524,10 @@
 +            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
 +            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
 +            defaultBrowser: .system(),
-+            recovery: recovery))
++            recovery: recovery,
++            setArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($0) },
++            setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
++            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } }))
 +        settingsWindow = window
 +        window.show(pane)
 +    }
@@ -6280,6 +6554,7 @@
 +                switch result.action {
 +                case .command(.toggleSidebar): return self.requestSidebarToggle != nil
 +                case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
++                case .command(.archiveTab): return self.selectedTemporaryTabID != nil
 +                case .peek: return self.runtime.canOpenPeek
 +                default: return true
 +                }
@@ -6336,6 +6611,8 @@
 +            case .findPage: findPage()
 +            case .toggleSidebar: requestSidebarToggle?()
 +            case .closePage: closeSelection()
++            case .archiveTab: selectedTemporaryTabID.map { id in perform { runtime.archiveTab(id) } }
++            case .openArchive: archiveController.show()
 +            case .openHistory: openEssential(.history)
 +            case .openDownloads: openEssential(.downloads)
 +            case .openSettings: showSettings()
@@ -6389,6 +6666,11 @@
 +        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
 +        FileHandle.standardError.write(data)
 +        FileHandle.standardError.write(Data([0x0A]))
++    }
++
++    private var selectedTemporaryTabID: UUID? {
++        let workspace = runtime.state.currentWorkspace
++        return workspace.tabs.first { $0.id == workspace.activeEntryID }?.id
 +    }
 +
 +    public func closeSelection() {
@@ -6995,6 +7277,10 @@
 +            menu.addItem(ActionMenuItem(title: "Add to Favorites") { [weak self] in
 +                guard let self else { return }
 +                self.perform { self.runtime.favoriteEntry(page.id) }
++            })
++            menu.addItem(ActionMenuItem(title: "Archive Tab") { [weak self] in
++                guard let self else { return }
++                self.perform { self.runtime.archiveTab(page.id) }
 +            })
 +            select.menu = menu
 +        } else {
@@ -8288,7 +8574,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,172 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -8359,12 +8645,14 @@
 +}
 +
 +public enum CommandBarCommand: String, CaseIterable, Sendable {
-+    case findPage, toggleSidebar, closePage, openHistory, openDownloads, openSettings
++    case findPage, toggleSidebar, closePage, archiveTab, openArchive, openHistory, openDownloads, openSettings
 +    public var title: String {
 +        switch self {
 +        case .findPage: "Find Page"
 +        case .toggleSidebar: "Toggle Sidebar"
 +        case .closePage: "Close Current Page"
++        case .archiveTab: "Archive Current Tab"
++        case .openArchive: "Archive"
 +        case .openHistory: "History"
 +        case .openDownloads: "Downloads"
 +        case .openSettings: "Settings"
@@ -10079,7 +10367,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingProfiles.swift
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,112 @@
 +import Foundation
 +
 +/// Blocking for every Profile of one browser process.
@@ -10092,6 +10380,8 @@
 +    public let rootDirectory: URL
 +    public let counters = BlockedCounters()
 +    private let updater: FilterListUpdater
++    private let baseSources: [FilterListSource]
++    private let choiceStore: UBlockListsChoiceStore
 +    private let lock = NSLock()
 +    private var services: [String: BlockingService] = [:]
 +    private var updateTask: Task<Void, Never>?
@@ -10099,7 +10389,39 @@
 +    public init(rootDirectory: URL, sources: [FilterListSource] = FilterListSource.defaults,
 +                fetcher: FilterListFetching = URLSessionListFetcher()) {
 +        self.rootDirectory = rootDirectory
-+        updater = FilterListUpdater(directory: rootDirectory, sources: sources, fetcher: fetcher)
++        baseSources = sources
++        choiceStore = UBlockListsChoiceStore(directory: rootDirectory)
++        let wanted = choiceStore.choice == .enabled ? sources + FilterListSource.uBlockOrigin : sources
++        updater = FilterListUpdater(directory: rootDirectory, sources: wanted, fetcher: fetcher)
++    }
++
++    public var uBlockChoice: UBlockListsChoice { choiceStore.choice }
++
++    /// True until the user has answered the first-run offer.
++    public var shouldOfferUBlockLists: Bool { choiceStore.choice == .undecided }
++
++    /// Records a "not now" so the offer is not shown again. Settings can still add the lists.
++    public func declineUBlockLists() throws {
++        guard choiceStore.choice == .undecided else { return }
++        try choiceStore.set(.declined)
++    }
++
++    /// The user's consent to download the uBlock Origin lists. Nothing is fetched before this call.
++    /// Returns each uBlock list's outcome; a failed list is retried by the daily update.
++    @discardableResult
++    public func enableUBlockLists() async throws -> [String: ListUpdateOutcome] {
++        try choiceStore.set(.enabled)
++        await updater.setSources(baseSources + FilterListSource.uBlockOrigin)
++        let outcomes = await updater.update(maxAge: BlockingService.defaultUpdateInterval)
++        let ids = Set(FilterListSource.uBlockOrigin.map(\.id))
++        return outcomes.filter { ids.contains($0.key) }
++    }
++
++    /// Stops using the uBlock Origin lists and deletes their downloads.
++    public func disableUBlockLists() async throws {
++        try choiceStore.set(.declined)
++        await updater.setSources(baseSources)
++        await updater.discard(FilterListSource.uBlockOrigin)
 +    }
 +
 +    /// `<state>/blocking`.
@@ -10410,7 +10732,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/FilterListUpdater.swift
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,203 @@
 +import Foundation
 +
 +/// A filter list fetched at runtime. Lists are never bundled or committed: EasyList and
@@ -10420,12 +10742,15 @@
 +    public let url: URL
 +    public let minimumRuleCount: Int
 +    public let maximumBytes: Int
++    /// Adblock Plus lists open with a `[` header line. uBlock Origin's own lists open with `!` comments.
++    public let requiresHeader: Bool
 +
-+    public init(id: String, url: URL, minimumRuleCount: Int, maximumBytes: Int) {
++    public init(id: String, url: URL, minimumRuleCount: Int, maximumBytes: Int, requiresHeader: Bool = true) {
 +        self.id = id
 +        self.url = url
 +        self.minimumRuleCount = minimumRuleCount
 +        self.maximumBytes = maximumBytes
++        self.requiresHeader = requiresHeader
 +    }
 +
 +    public static let easyList = FilterListSource(
@@ -10435,6 +10760,19 @@
 +        id: "easyprivacy", url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!,
 +        minimumRuleCount: 5_000, maximumBytes: 20_000_000)
 +    public static let defaults = [easyList, easyPrivacy]
++
++    /// The uBlock Origin project's own filter lists (GPL-3.0, from uAssets). Downloaded only after
++    /// the user accepts the offer; never bundled.
++    public static let uBlockFilters = uBlock("ublock-filters", file: "filters", minimumRuleCount: 10_000, maximumBytes: 10_000_000)
++    public static let uBlockPrivacy = uBlock("ublock-privacy", file: "privacy", minimumRuleCount: 800, maximumBytes: 5_000_000)
++    public static let uBlockBadware = uBlock("ublock-badware", file: "badware", minimumRuleCount: 2_000, maximumBytes: 5_000_000)
++    public static let uBlockUnbreak = uBlock("ublock-unbreak", file: "unbreak", minimumRuleCount: 1_000, maximumBytes: 5_000_000)
++    public static let uBlockOrigin = [uBlockFilters, uBlockPrivacy, uBlockBadware, uBlockUnbreak]
++
++    private static func uBlock(_ id: String, file: String, minimumRuleCount: Int, maximumBytes: Int) -> FilterListSource {
++        FilterListSource(id: id, url: URL(string: "https://ublockorigin.github.io/uAssets/filters/\(file).min.txt")!,
++                         minimumRuleCount: minimumRuleCount, maximumBytes: maximumBytes, requiresHeader: false)
++    }
 +}
 +
 +public enum FetchResult: Equatable, Sendable {
@@ -10474,7 +10812,7 @@
 +    public static func validate(_ data: Data, for source: FilterListSource) -> Result<Int, ListRejection> {
 +        guard data.count <= source.maximumBytes else { return .failure(.tooLarge) }
 +        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { return .failure(.notText) }
-+        guard text.drop(while: { $0 == "\u{FEFF}" || $0.isWhitespace }).hasPrefix("[") else {
++        guard !source.requiresHeader || text.drop(while: { $0 == "\u{FEFF}" || $0.isWhitespace }).hasPrefix("[") else {
 +            return .failure(.missingHeader)
 +        }
 +        let rules = text.split(whereSeparator: \.isNewline).count(where: { line in
@@ -10492,7 +10830,7 @@
 +
 +    private let listsDirectory: URL
 +    private let statusURL: URL
-+    private let sources: [FilterListSource]
++    private var sources: [FilterListSource]
 +    private let fetcher: FilterListFetching
 +    private let now: @Sendable () -> Date
 +    private var statuses: [String: ListStatus]
@@ -10509,6 +10847,20 @@
 +    }
 +
 +    public func status() -> [String: ListStatus] { statuses }
++
++    /// Replaces the lists to keep fresh. Files of lists no longer wanted are left for `discard`.
++    public func setSources(_ sources: [FilterListSource]) {
++        self.sources = sources
++    }
++
++    /// Deletes the lists' files and status so the host stops filtering with them.
++    public func discard(_ removed: [FilterListSource]) {
++        for source in removed {
++            try? FileManager.default.removeItem(at: fileURL(source))
++            statuses.removeValue(forKey: source.id)
++        }
++        saveStatuses()
++    }
 +
 +    /// Checks every list whose last check is older than `maxAge` or whose file is missing.
 +    @discardableResult
@@ -10794,16 +11146,17 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/SettingsModel.swift
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,69 @@
 +import Foundation
 +
 +public enum SettingsPane: String, CaseIterable, Sendable {
-+    case profiles, privacy, importData, shortcuts, advanced
++    case profiles, privacy, archive, importData, shortcuts, advanced
 +
 +    public var title: String {
 +        switch self {
 +        case .profiles: "Profiles"
 +        case .privacy: "Privacy"
++        case .archive: "Archive"
 +        case .importData: "Import"
 +        case .shortcuts: "Shortcuts"
 +        case .advanced: "Advanced"
@@ -10814,6 +11167,7 @@
 +        switch self {
 +        case .profiles: "person.crop.circle"
 +        case .privacy: "hand.raised"
++        case .archive: "archivebox"
 +        case .importData: "square.and.arrow.down"
 +        case .shortcuts: "keyboard"
 +        case .advanced: "gearshape.2"
@@ -10889,7 +11243,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,575 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10905,6 +11259,9 @@
 +    let openEssential: (BrowserEssential) -> Void
 +    let defaultBrowser: DefaultBrowser
 +    let recovery: RecoveryController
++    let setArchivePeriod: (ArchivePeriod) -> Void
++    let setWorkspaceArchivePeriod: (UUID, ArchivePeriod?) -> Void
++    let openArchive: () -> Void
 +}
 +
 +extension DefaultBrowser {
@@ -11030,6 +11387,7 @@
 +        switch pane {
 +        case .profiles: profilesPane()
 +        case .privacy: privacyPane()
++        case .archive: archivePane()
 +        case .importData: importPane()
 +        case .shortcuts: shortcutsPane()
 +        case .advanced: advancedPane()
@@ -11070,7 +11428,7 @@
 +        let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
 +                                   title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
 +                                   trailing: toggle, keeping: handler)
-+        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking])]
++        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
 +        views += sitePermissions(forProfile: profile.name)
 +        let exceptions = service.exceptions
 +        views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
@@ -11083,6 +11441,53 @@
 +            }))
 +        }
 +        return views
++    }
++
++    private func uBlockListsRow() -> NSView {
++        let tile = SymbolTile(symbol: "shield.lefthalf.filled", color: .systemOrange)
++        let title = "uBlock Origin filter lists"
++        guard let blocking = BlockingHost.shared.profiles else {
++            return SettingsRow(leading: tile, title: title, detail: "Available once content blocking has started.", trailing: nil)
++        }
++        if blocking.uBlockChoice == .enabled {
++            return SettingsRow(leading: tile, title: title,
++                               detail: "Added for every Profile and updated daily.",
++                               trailing: SettingsPillButton(title: "Remove") { [weak self] in
++                                   UBlockOffer.remove(blocking: blocking) { self?.reload() }
++                               })
++        }
++        return SettingsRow(leading: tile, title: title,
++                           detail: "More filters from the uBlock Origin project. Downloaded only if you add them.",
++                           trailing: SettingsPillButton(title: "Add…") { [weak self] in
++                               guard let self else { return }
++                               UBlockOffer.present(on: window, blocking: blocking) { [weak self] in self?.reload() }
++                           })
++    }
++
++    private func archivePane() -> [NSView] {
++        let state = hooks.state()
++        let global = SettingsRow(leading: SymbolTile(symbol: "archivebox.fill", color: .systemIndigo),
++                                 title: "Archive tabs", detail: "Temporary tabs you haven’t used move to the Archive. Pins and Favorites stay.",
++                                 trailing: ArchivePeriodPicker(selected: state.archive.period, includeDefault: false) { [weak self] in
++                                     self?.hooks.setArchivePeriod($0 ?? .never)
++                                     self?.reload()
++                                 })
++        var views: [NSView] = [SettingsGroup(rows: [global])]
++        let profileID = state.currentWorkspace.profileID
++        let rows = state.workspaces.filter { $0.profileID == profileID }.map { workspace in
++            SettingsRow(leading: ColorDot(hex: workspace.color), title: workspace.name,
++                        detail: workspace.archivePeriod == nil ? "Uses the setting above" : nil,
++                        trailing: ArchivePeriodPicker(selected: workspace.archivePeriod, includeDefault: true) { [weak self] in
++                            self?.hooks.setWorkspaceArchivePeriod(workspace.id, $0)
++                            self?.reload()
++                        })
++        }
++        if rows.count > 1 { views += [caption("Workspaces"), SettingsGroup(rows: rows)] }
++        let count = state.archive.records(inProfile: profileID).count
++        let open = SettingsRow(leading: nil, title: "Archived tabs",
++                               detail: count == 0 ? "Nothing is archived yet." : "\(count) archived in this Profile.",
++                               trailing: SettingsPillButton(title: "Open Archive…") { [weak self] in self?.hooks.openArchive() })
++        return views + [caption("Restore"), SettingsGroup(rows: [open])]
 +    }
 +
 +    private func sitePermissions(forProfile name: String) -> [NSView] {
@@ -11345,6 +11750,27 @@
 +        font = .systemFont(ofSize: 15)
 +        target = handlerTarget
 +        action = #selector(ActionTarget.fire)
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private final class ArchivePeriodPicker: NSPopUpButton {
++    private let handler: ActionTarget
++
++    /// `nil` stands for "follow the global setting" when `includeDefault` is set.
++    init(selected: ArchivePeriod?, includeDefault: Bool, choose: @escaping (ArchivePeriod?) -> Void) {
++        let periods: [ArchivePeriod?] = (includeDefault ? [nil] : []) + ArchivePeriod.allCases.map { Optional($0) }
++        var picker: (() -> Int)?
++        handler = ActionTarget { choose(periods[picker?() ?? 0]) }
++        super.init(frame: .zero, pullsDown: false)
++        picker = { [unowned self] in indexOfSelectedItem }
++        addItems(withTitles: periods.map { $0?.title ?? "Use default" })
++        selectItem(at: periods.firstIndex(of: selected) ?? 0)
++        controlSize = .large
++        target = handler
++        action = #selector(ActionTarget.fire)
++        setAccessibilityLabel("Archive period")
 +    }
 +
 +    required init?(coder: NSCoder) { fatalError("Not used") }
@@ -12309,13 +12735,24 @@
  	<key>CFBundleShortVersionString</key>
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/DownloadsModel.swift
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,207 @@
 +import Foundation
 +
 +public enum DownloadState: String, Codable, Equatable, Sendable {
 +    case inProgress, paused, completed, failed, cancelled
 +
 +    public var isActive: Bool { self == .inProgress || self == .paused }
++}
++
++/// Why Chromium holds a download until the user decides. The sidebar offers Keep and Discard.
++public enum DownloadWarning: Int, Codable, Equatable, Sendable {
++    case none = 0
++    /// Chromium flagged the file or its source as dangerous or uncommon.
++    case dangerous = 1
++    /// Fetched over an insecure connection from a secure page.
++    case insecure = 2
++    /// Chromium could not scan it, for example a password-protected archive.
++    case unscanned = 3
 +}
 +
 +/// One engine download as last reported. `id` is stable for the item's life within its Profile.
@@ -12333,10 +12770,11 @@
 +    public var state: DownloadState
 +    public var canResume: Bool
 +    public var fileExists: Bool
++    public var warning: DownloadWarning
 +
 +    public init(id: String, profileKey: String, filename: String, path: String = "", receivedBytes: Int64 = 0,
 +                totalBytes: Int64 = -1, bytesPerSecond: Int64 = 0, state: DownloadState = .inProgress,
-+                canResume: Bool = false, fileExists: Bool = true) {
++                canResume: Bool = false, fileExists: Bool = true, warning: DownloadWarning = .none) {
 +        self.id = id
 +        self.profileKey = profileKey
 +        self.filename = filename
@@ -12347,6 +12785,7 @@
 +        self.state = state
 +        self.canResume = canResume
 +        self.fileExists = fileExists
++        self.warning = warning
 +    }
 +
 +    /// nil when the total is unknown, so the UI shows an indeterminate state.
@@ -12368,6 +12807,42 @@
 +
 +public enum DownloadAction: Equatable, Sendable {
 +    case pause, resume, cancel, open, showInFinder, remove
++    /// Keep a warned download; discard removes it and its partial file.
++    case keep, discard
++}
++
++extension DownloadAction {
++    /// The action number of `bato_native_slot_download_action_v1`.
++    public var engineCode: Int32 {
++        switch self {
++        case .pause: 0
++        case .resume: 1
++        case .cancel: 2
++        case .open: 3
++        case .showInFinder: 4
++        case .remove: 5
++        case .keep: 6
++        case .discard: 7
++        }
++    }
++}
++
++extension DownloadItem {
++    /// Converts the fields of `BatoDownloadInfoV1`; unknown state or warning codes degrade to failed and none.
++    public init(engineProfileKey: String, id: String, filename: String, path: String, receivedBytes: Int64,
++                totalBytes: Int64, bytesPerSecond: Int64, state: Int32, canResume: Bool, fileExists: Bool, warning: Int32) {
++        let mapped: DownloadState
++        switch state {
++        case 0: mapped = .inProgress
++        case 1: mapped = .paused
++        case 2: mapped = .completed
++        case 4: mapped = .cancelled
++        default: mapped = .failed
++        }
++        self.init(id: id, profileKey: engineProfileKey, filename: filename, path: path, receivedBytes: receivedBytes,
++                  totalBytes: totalBytes, bytesPerSecond: bytesPerSecond, state: mapped, canResume: canResume,
++                  fileExists: fileExists, warning: DownloadWarning(rawValue: Int(warning)) ?? .none)
++    }
 +}
 +
 +/// What the sidebar needs from the engine. Events arrive on the main actor; actions return whether
@@ -12384,7 +12859,7 @@
 +/// Per-Profile download lists, newest first. Pure state; the controller owns engine wiring.
 +public struct DownloadsModel: Equatable, Sendable {
 +    private var itemsByProfile: [String: [DownloadItem]] = [:]
-+    /// Profiles with a download that finished since the list was last viewed.
++    /// Profiles with a download that finished, or needs a decision, since the list was last viewed.
 +    private var unseen: Set<String> = []
 +
 +    public init() {}
@@ -12421,11 +12896,13 @@
 +    private mutating func upsert(_ item: DownloadItem) {
 +        var list = itemsByProfile[item.profileKey] ?? []
 +        if let index = list.firstIndex(where: { $0.id == item.id }) {
-+            if list[index].state.isActive, !item.state.isActive { unseen.insert(item.profileKey) }
++            let previous = list[index]
++            if previous.state.isActive, !item.state.isActive { unseen.insert(item.profileKey) }
++            if previous.warning == .none, item.warning != .none { unseen.insert(item.profileKey) }
 +            list[index] = item
 +        } else {
 +            list.insert(item, at: 0)
-+            if !item.state.isActive { unseen.insert(item.profileKey) }
++            if !item.state.isActive || item.warning != .none { unseen.insert(item.profileKey) }
 +        }
 +        itemsByProfile[item.profileKey] = list
 +    }
@@ -12440,8 +12917,14 @@
 +}
 +
 +public enum DownloadFormat {
-+    /// "4.2 MB of 48 MB · 1.1 MB/s", "Done · 48 MB", "Paused", "Failed", "Cancelled".
++    /// "4.2 MB of 48 MB · 1.1 MB/s", "Done · 48 MB", "Paused", "Failed", "Cancelled"; a warning wins.
 +    public static func status(_ item: DownloadItem) -> String {
++        switch item.warning {
++        case .dangerous: return "May harm your computer"
++        case .insecure: return "Not downloaded securely"
++        case .unscanned: return "Couldn't be scanned for threats"
++        case .none: break
++        }
 +        switch item.state {
 +        case .completed:
 +            if !item.fileExists { return "File moved or deleted" }
@@ -12560,7 +13043,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,287 @@
 +import AppKit
 +import BatoCore
 +
@@ -12741,7 +13224,7 @@
 +        name.lineBreakMode = .byTruncatingMiddle
 +        let status = NSTextField(labelWithString: DownloadFormat.status(item))
 +        status.font = .systemFont(ofSize: 11)
-+        status.textColor = item.state == .failed ? .systemRed : .secondaryLabelColor
++        status.textColor = item.state == .failed || item.warning != .none ? .systemRed : .secondaryLabelColor
 +        status.lineBreakMode = .byTruncatingTail
 +        var text: [NSView] = [name, status]
 +        if item.state.isActive {
@@ -12755,13 +13238,22 @@
 +            if bar.isIndeterminate { bar.startAnimation(nil) }
 +            text.insert(bar, at: 1)
 +        }
++        if item.warning != .none {
++            let decision = NSStackView(views: [
++                DownloadTextButton(title: "Keep", id: "bato-download-keep") { [act] in act(.keep) },
++                DownloadTextButton(title: "Discard", id: "bato-download-discard") { [act] in act(.discard) }
++            ])
++            decision.orientation = .horizontal
++            decision.spacing = 6
++            text.append(decision)
++        }
 +        let textStack = NSStackView(views: text)
 +        textStack.orientation = .vertical
 +        textStack.alignment = .leading
 +        textStack.spacing = 2
 +        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 +        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        text.forEach { $0.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true }
++        text.filter { !($0 is NSStackView) }.forEach { $0.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true }
 +
 +        actions.orientation = .horizontal
 +        actions.spacing = 2
@@ -12787,7 +13279,8 @@
 +    }
 +
 +    private func actionSpecs() -> [(action: DownloadAction, symbol: String, label: String)] {
-+        switch item.state {
++        if item.warning != .none { return [] }
++        return switch item.state {
 +        case .inProgress: [(.pause, "pause.fill", "Pause"), (.cancel, "xmark", "Cancel")]
 +        case .paused: [(.resume, "play.fill", "Resume"), (.cancel, "xmark", "Cancel")]
 +        case .completed where item.canOpen: [(.showInFinder, "magnifyingglass", "Show in Finder"), (.remove, "xmark", "Remove from list")]
@@ -12814,6 +13307,25 @@
 +        action = #selector(run)
 +        widthAnchor.constraint(equalToConstant: 24).isActive = true
 +        heightAnchor.constraint(equalToConstant: 24).isActive = true
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    @objc private func run() { invoke() }
++}
++
++private final class DownloadTextButton: NSButton {
++    private let invoke: () -> Void
++
++    init(title: String, id: String, invoke: @escaping () -> Void) {
++        self.invoke = invoke
++        super.init(frame: .zero)
++        self.title = title
++        bezelStyle = .rounded
++        controlSize = .small
++        font = .systemFont(ofSize: 11, weight: .medium)
++        target = self
++        action = #selector(run)
++        setAccessibilityIdentifier(id)
 +    }
 +
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
@@ -12862,5 +13374,640 @@
 +    @objc private func toggle() {
 +        popover.toggle(from: button, profileKey: profileKey)
 +        refresh()
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/Archive.swift
+@@ -0,0 +1,191 @@
++import Foundation
++
++/// How long a temporary tab may sit unused before it is archived.
++public enum ArchivePeriod: String, Codable, CaseIterable, Sendable {
++    case twelveHours, day, week, month, never
++
++    public var interval: TimeInterval? {
++        switch self {
++        case .twelveHours: 12 * 3600
++        case .day: 24 * 3600
++        case .week: 7 * 24 * 3600
++        case .month: 30 * 24 * 3600
++        case .never: nil
++        }
++    }
++
++    public var title: String {
++        switch self {
++        case .twelveHours: "After 12 hours"
++        case .day: "After 24 hours"
++        case .week: "After 7 days"
++        case .month: "After 30 days"
++        case .never: "Never"
++        }
++    }
++}
++
++/// A temporary tab that was archived, with where it sat so restoring can put it back.
++public struct ArchiveRecord: Identifiable, Codable, Equatable, Sendable {
++    /// The archived tab's own identity, which a restore gives back to the tab.
++    public var id: UUID
++    public var profileID: UUID
++    public var workspaceID: UUID
++    public var title: String
++    public var url: URL
++    public var index: Int
++    public var archivedAt: Date
++
++    public init(id: UUID, profileID: UUID, workspaceID: UUID, title: String, url: URL, index: Int, archivedAt: Date) {
++        self.id = id
++        self.profileID = profileID
++        self.workspaceID = workspaceID
++        self.title = title
++        self.url = url
++        self.index = index
++        self.archivedAt = archivedAt
++    }
++}
++
++/// The global archive period and the archived tabs. A default value is not encoded, so documents
++/// that never used the archive keep their bytes.
++public struct ArchiveState: Codable, Equatable, Sendable {
++    public var period: ArchivePeriod
++    public var records: [ArchiveRecord]
++
++    public init(period: ArchivePeriod = .never, records: [ArchiveRecord] = []) {
++        self.period = period
++        self.records = records
++    }
++
++    public var isDefault: Bool { self == ArchiveState() }
++
++    /// Newest first, optionally narrowed to one Profile and a case-insensitive title or address match.
++    public func records(inProfile profileID: UUID, matching query: String = "") -> [ArchiveRecord] {
++        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
++        return records.filter { $0.profileID == profileID }.filter { record in
++            query.isEmpty || [record.title, record.url.absoluteString].contains {
++                $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
++            }
++        }.sorted { $0.archivedAt > $1.archivedAt }
++    }
++}
++
++extension BrowserState {
++    /// The workspace's own period, else the global one.
++    public func archivePeriod(of workspace: Workspace) -> ArchivePeriod {
++        workspace.archivePeriod ?? archive.period
++    }
++
++    /// Archive data needs version 3. Documents that never use it stay at their old version.
++    public mutating func setArchivePeriod(_ period: ArchivePeriod) throws {
++        try applyArchiveChange { $0.archive.period = period }
++    }
++
++    /// `nil` makes the workspace follow the global period again.
++    public mutating func setArchivePeriod(_ period: ArchivePeriod?, forWorkspace id: UUID) throws {
++        try applyArchiveChange { draft in
++            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            draft.workspaces[index].archivePeriod = period
++        }
++    }
++
++    /// Moves a temporary tab of any workspace into the archive. Saved entries are never archived.
++    @discardableResult
++    public mutating func archiveTab(_ id: UUID, at now: Date) throws -> UUID {
++        try applyArchiveChange { draft in
++            for index in draft.workspaces.indices {
++                guard let position = draft.workspaces[index].tabs.firstIndex(where: { $0.id == id }) else { continue }
++                let workspace = draft.workspaces[index]
++                let entry = workspace.tabs[position]
++                draft.archive.records.append(ArchiveRecord(
++                    id: entry.id, profileID: workspace.profileID, workspaceID: workspace.id,
++                    title: entry.title, url: entry.lastURL, index: position, archivedAt: now))
++                draft.removeTemporaryTab(id)
++                return
++            }
++            throw BrowserStateError.missingEntry
++        }
++        return id
++    }
++
++    /// Puts an archived tab back at its old position in its original workspace, or in the first
++    /// workspace of its Profile when that one is gone, and selects it.
++    @discardableResult
++    public mutating func restoreArchivedTab(_ id: UUID) throws -> UUID {
++        try applyArchiveChange { draft in
++            guard let position = draft.archive.records.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            let record = draft.archive.records.remove(at: position)
++            guard let workspace = draft.workspaces.firstIndex(where: { $0.id == record.workspaceID && $0.profileID == record.profileID })
++                    ?? draft.workspaces.firstIndex(where: { $0.profileID == record.profileID }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            let entry = PageEntry(id: record.id, title: record.title, lastURL: record.url, kind: .temporary)
++            let slot = min(max(record.index, 0), draft.workspaces[workspace].tabs.count)
++            draft.workspaces[workspace].tabs.insert(entry, at: slot)
++            draft.activeWorkspaceID = draft.workspaces[workspace].id
++            draft.selectTabInPlace(entry.id)
++        }
++        return id
++    }
++
++    public mutating func deleteArchivedTab(_ id: UUID) throws {
++        try applyArchiveChange { draft in
++            guard draft.archive.records.contains(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
++            draft.archive.records.removeAll { $0.id == id }
++        }
++    }
++
++    /// True when any workspace archives idle tabs, so activity tracking is worth writing.
++    public var archivesIdleTabs: Bool {
++        workspaces.contains { archivePeriod(of: $0).interval != nil }
++    }
++
++    /// Records "in use now" on the selected temporary tab and starts the clock for tabs with no
++    /// record yet, in workspaces that archive. Does nothing when no workspace archives, so such
++    /// documents never change.
++    public mutating func stampActivity(at now: Date) {
++        guard archivesIdleTabs else { return }
++        var next = self
++        for index in next.workspaces.indices where archivePeriod(of: next.workspaces[index]).interval != nil {
++            let active = next.workspaces[index].id == next.activeWorkspaceID ? next.workspaces[index].activeEntryID : nil
++            for tab in next.workspaces[index].tabs.indices {
++                let isActive = next.workspaces[index].tabs[tab].id == active
++                if isActive || next.workspaces[index].tabs[tab].lastActiveAt == nil {
++                    next.workspaces[index].tabs[tab].lastActiveAt = now
++                }
++            }
++        }
++        guard next != self else { return }
++        next.version = max(next.version, Self.archiveVersion)
++        self = next
++    }
++
++    /// Temporary tabs that have been idle for their workspace's whole period. The selected tab of the
++    /// current workspace and tabs in a split are never idle.
++    public func idleTabIDs(at now: Date) -> [UUID] {
++        var idle: [UUID] = []
++        for workspace in workspaces {
++            guard let interval = archivePeriod(of: workspace).interval else { continue }
++            let inSplit = Set(workspace.splits.flatMap { [$0.leftEntryID, $0.rightEntryID] })
++            let selected = workspace.id == activeWorkspaceID ? workspace.activeEntryID : nil
++            for tab in workspace.tabs where tab.id != selected && !inSplit.contains(tab.id) {
++                if let last = tab.lastActiveAt, now.timeIntervalSince(last) >= interval { idle.append(tab.id) }
++            }
++        }
++        return idle
++    }
++
++    private mutating func applyArchiveChange(_ change: (inout BrowserState) throws -> Void) throws {
++        var draft = self
++        try draft.validate()
++        try change(&draft)
++        draft.version = max(draft.version, Self.archiveVersion)
++        try draft.validate()
++        self = draft
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift
+@@ -0,0 +1,50 @@
++import Foundation
++
++/// Where the user stands on the optional uBlock Origin filter lists.
++public enum UBlockListsChoice: String, Codable, Equatable, Sendable {
++    /// Never asked. The first-run offer is due.
++    case undecided
++    case enabled
++    /// Asked and declined, or added and later removed. The offer is not shown again; Settings re-offers.
++    case declined
++}
++
++/// Persists the choice as `list-choices.json` in the blocking root. It is per machine, not per Profile,
++/// because the lists are shared by every Profile.
++public final class UBlockListsChoiceStore: @unchecked Sendable {
++    public static let fileName = "list-choices.json"
++
++    private struct Document: Codable {
++        var version = 1
++        var uBlockLists: UBlockListsChoice
++    }
++
++    private let fileURL: URL
++    private let lock = NSLock()
++    private var cached: UBlockListsChoice?
++
++    public init(directory: URL) {
++        fileURL = directory.appendingPathComponent(Self.fileName)
++    }
++
++    public var choice: UBlockListsChoice {
++        lock.withLock {
++            if let cached { return cached }
++            let loaded = (try? Data(contentsOf: fileURL))
++                .flatMap { try? JSONDecoder().decode(Document.self, from: $0) }
++                .flatMap { $0.version == 1 ? $0.uBlockLists : nil } ?? .undecided
++            cached = loaded
++            return loaded
++        }
++    }
++
++    public func set(_ choice: UBlockListsChoice) throws {
++        try lock.withLock {
++            let encoder = JSONEncoder()
++            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
++            try encoder.encode(Document(uBlockLists: choice)).write(to: fileURL, options: .atomic)
++            cached = choice
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift
+@@ -0,0 +1,67 @@
++import AppKit
++import BatoCore
++import BatoRuntime
++
++/// Archives idle tabs on a timer and presents the Archive list for one window's runtime.
++@MainActor
++final class ArchiveController {
++    static let sweepInterval: TimeInterval = 5 * 60
++
++    private let runtime: PageRuntime
++    private let window: () -> NSWindow?
++    private let canPresent: () -> Bool
++    private let restored: () -> Void
++    private var sheet: ArchiveSheet?
++    private var timer: Timer?
++
++    /// `restored` runs after the sheet closed and a tab was restored, so page work can follow.
++    init(runtime: PageRuntime, window: @escaping () -> NSWindow?, canPresent: @escaping () -> Bool,
++         restored: @escaping () -> Void) {
++        self.runtime = runtime
++        self.window = window
++        self.canPresent = canPresent
++        self.restored = restored
++    }
++
++    func start() {
++        guard timer == nil else { return }
++        _ = runtime.archiveIdleTabs()
++        timer = Timer.scheduledTimer(withTimeInterval: Self.sweepInterval, repeats: true) { [weak self] _ in
++            MainActor.assumeIsolated { _ = self?.runtime.archiveIdleTabs() }
++        }
++    }
++
++    func show() {
++        guard sheet == nil, canPresent(), let parent = window() else { return }
++        let runtime = runtime
++        let archive = ArchiveSheet(
++            records: { query in
++                runtime.state.archive.records(inProfile: runtime.state.currentWorkspace.profileID, matching: query)
++            },
++            workspaceName: { id in runtime.state.workspaces.first { $0.id == id }?.name },
++            restore: { id in
++                runtime.restoreArchivedTab(id, deferPageSelection: true) ? nil : Self.message(for: runtime.lastError)
++            },
++            delete: { id in runtime.deleteArchivedTab(id) ? nil : Self.message(for: runtime.lastError) },
++            now: { runtime.clock() })
++        sheet = archive
++        guard let panel = archive.window else { sheet = nil; return }
++        parent.beginSheet(panel) { [weak self, weak parent] response in
++            guard let self else { return }
++            self.sheet = nil
++            guard response == .OK else { return }
++            // Engine page work must not start inside the sheet's completion.
++            DispatchQueue.main.async { [weak self, weak parent] in
++                guard let self, let parent, self.window() === parent else { return }
++                self.restored()
++            }
++        }
++        archive.focusSearch()
++    }
++
++    private static func message(for error: PageRuntimeError?) -> String {
++        error == .saveFailed
++            ? "Changes couldn’t be saved. Reopen Bato to reload organization."
++            : "That tab is no longer in the archive."
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift
+@@ -0,0 +1,252 @@
++import AppKit
++import BatoCore
++
++/// The Archive list: search the current Profile's archived tabs, restore one or delete it.
++/// Restoring reopens the tab in its original workspace.
++@MainActor
++final class ArchiveSheet: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
++    private let searchField = NSSearchField(string: "")
++    private let table = ArchiveTable()
++    private let countLabel = NSTextField(labelWithString: "")
++    private let errorLabel = NSTextField(wrappingLabelWithString: "")
++    private let restoreButton = NSButton(title: "Restore", target: nil, action: nil)
++    private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
++    private let records: (String) -> [ArchiveRecord]
++    private let workspaceName: (UUID) -> String?
++    private let restore: (UUID) -> String?
++    private let delete: (UUID) -> String?
++    private let now: () -> Date
++    private var rows: [ArchiveRecord] = []
++
++    /// `restore` and `delete` return an error message, or nil when they succeeded.
++    init(records: @escaping (String) -> [ArchiveRecord], workspaceName: @escaping (UUID) -> String?,
++         restore: @escaping (UUID) -> String?, delete: @escaping (UUID) -> String?,
++         now: @escaping () -> Date = { Date() }) {
++        self.records = records
++        self.workspaceName = workspaceName
++        self.restore = restore
++        self.delete = delete
++        self.now = now
++        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
++                            styleMask: [.titled], backing: .buffered, defer: false)
++        panel.title = "Archive"
++        panel.isReleasedWhenClosed = false
++        super.init(window: panel)
++        buildLayout(panel)
++        refresh()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func focusSearch() {
++        window?.makeFirstResponder(searchField)
++    }
++
++    func refresh() {
++        let selectedID = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : nil
++        rows = records(searchField.stringValue)
++        table.reloadData()
++        if let index = rows.firstIndex(where: { $0.id == selectedID }) {
++            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
++        } else if !rows.isEmpty {
++            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++        }
++        updateButtons()
++        let searching = !searchField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
++        countLabel.stringValue = rows.isEmpty
++            ? (searching ? "No archived tabs match." : "Nothing is archived yet. Tabs you don’t use move here.")
++            : "\(rows.count) archived \(rows.count == 1 ? "tab" : "tabs")"
++    }
++
++    private func buildLayout(_ panel: NSPanel) {
++        searchField.placeholderString = "Search archived tabs"
++        searchField.setAccessibilityLabel("Search archived tabs")
++        searchField.setAccessibilityIdentifier("bato-archive-search")
++        searchField.delegate = self
++        searchField.sendsSearchStringImmediately = true
++        searchField.cell?.sendsActionOnEndEditing = false
++        table.dataSource = self
++        table.delegate = self
++        table.headerView = nil
++        table.rowHeight = 52
++        table.backgroundColor = .clear
++        table.allowsEmptySelection = false
++        table.allowsMultipleSelection = false
++        table.selectionHighlightStyle = .regular
++        table.setAccessibilityLabel("Archived tabs")
++        table.setAccessibilityIdentifier("bato-archive-results")
++        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("archived"))
++        column.resizingMask = .autoresizingMask
++        table.addTableColumn(column)
++        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
++        table.target = self
++        table.doubleAction = #selector(restoreSelected)
++        table.restoreSelection = { [weak self] in self?.restoreSelected() }
++        table.cancel = { [weak self] in self?.dismiss(.cancel) }
++        let scroll = NSScrollView()
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.drawsBackground = false
++        scroll.documentView = table
++        countLabel.font = .systemFont(ofSize: 12)
++        countLabel.textColor = .secondaryLabelColor
++        countLabel.setAccessibilityIdentifier("bato-archive-count")
++        errorLabel.font = .systemFont(ofSize: 11)
++        errorLabel.textColor = .systemRed
++        errorLabel.setAccessibilityIdentifier("bato-archive-error")
++        let done = NSButton(title: "Done", target: self, action: #selector(done(_:)))
++        done.bezelStyle = .rounded
++        done.keyEquivalent = "\u{1b}"
++        done.setAccessibilityIdentifier("bato-archive-done")
++        deleteButton.bezelStyle = .rounded
++        deleteButton.target = self
++        deleteButton.action = #selector(deleteSelected)
++        deleteButton.setAccessibilityIdentifier("bato-archive-delete")
++        restoreButton.bezelStyle = .rounded
++        restoreButton.target = self
++        restoreButton.action = #selector(restoreSelected)
++        restoreButton.keyEquivalent = "\r"
++        restoreButton.setAccessibilityIdentifier("bato-archive-restore")
++        panel.defaultButtonCell = restoreButton.cell as? NSButtonCell
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let buttons = NSStackView(views: [deleteButton, spacer, done, restoreButton])
++        buttons.orientation = .horizontal
++        buttons.spacing = 8
++        let stack = NSStackView(views: [searchField, countLabel, scroll, errorLabel, buttons])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 10
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        guard let content = panel.contentView else { return }
++        content.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
++            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
++            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
++            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
++            searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
++            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
++        ])
++        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
++    }
++
++    private func updateButtons() {
++        let hasSelection = rows.indices.contains(table.selectedRow)
++        restoreButton.isEnabled = hasSelection
++        deleteButton.isEnabled = hasSelection
++    }
++
++    func controlTextDidChange(_ notification: Notification) {
++        errorLabel.stringValue = ""
++        refresh()
++    }
++
++    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
++        switch commandSelector {
++        case #selector(NSResponder.moveDown(_:)): moveSelection(1)
++        case #selector(NSResponder.moveUp(_:)): moveSelection(-1)
++        case #selector(NSResponder.insertNewline(_:)): restoreSelected()
++        case #selector(NSResponder.cancelOperation(_:)): dismiss(.cancel)
++        default: return false
++        }
++        return true
++    }
++
++    private func moveSelection(_ delta: Int) {
++        guard !rows.isEmpty else { return }
++        let row = max(0, min(rows.count - 1, table.selectedRow + delta))
++        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
++        table.scrollRowToVisible(row)
++    }
++
++    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
++
++    func tableViewSelectionDidChange(_ notification: Notification) { updateButtons() }
++
++    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedRowView() }
++
++    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
++        guard rows.indices.contains(row) else { return nil }
++        let record = rows[row]
++        let title = NSTextField(labelWithString: record.title.isEmpty ? record.url.absoluteString : record.title)
++        title.font = .systemFont(ofSize: 14, weight: .medium)
++        title.lineBreakMode = .byTruncatingTail
++        let place = workspaceName(record.workspaceID).map { "\($0) · " } ?? ""
++        let detail = NSTextField(labelWithString: "\(place)\(record.url.absoluteString)")
++        detail.font = .systemFont(ofSize: 12)
++        detail.textColor = .secondaryLabelColor
++        detail.lineBreakMode = .byTruncatingMiddle
++        let age = NSTextField(labelWithString: Self.relativeAge(of: record.archivedAt, to: now()))
++        age.font = .systemFont(ofSize: 12)
++        age.textColor = .tertiaryLabelColor
++        age.setContentHuggingPriority(.required, for: .horizontal)
++        age.setContentCompressionResistancePriority(.required, for: .horizontal)
++        let text = NSStackView(views: [title, detail])
++        text.orientation = .vertical
++        text.alignment = .leading
++        text.spacing = 3
++        let line = NSStackView(views: [text, age])
++        line.spacing = 10
++        line.alignment = .centerY
++        line.translatesAutoresizingMaskIntoConstraints = false
++        let cell = NSTableCellView()
++        cell.textField = title
++        cell.addSubview(line)
++        NSLayoutConstraint.activate([
++            line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
++            line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
++            line.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
++        ])
++        return cell
++    }
++
++    static func relativeAge(of date: Date, to now: Date) -> String {
++        let formatter = RelativeDateTimeFormatter()
++        formatter.unitsStyle = .short
++        return formatter.localizedString(for: date, relativeTo: now)
++    }
++
++    @objc private func restoreSelected() {
++        guard rows.indices.contains(table.selectedRow) else { return }
++        if let error = restore(rows[table.selectedRow].id) {
++            errorLabel.stringValue = error
++        } else {
++            dismiss(.OK)
++        }
++    }
++
++    @objc private func deleteSelected() {
++        guard rows.indices.contains(table.selectedRow) else { return }
++        if let error = delete(rows[table.selectedRow].id) {
++            errorLabel.stringValue = error
++        } else {
++            refresh()
++        }
++    }
++
++    @objc private func done(_ sender: Any?) { dismiss(.cancel) }
++
++    private func dismiss(_ response: NSApplication.ModalResponse) {
++        guard let window, let parent = window.sheetParent else { return }
++        parent.endSheet(window, returnCode: response)
++        window.orderOut(nil)
++    }
++}
++
++@MainActor
++private final class ArchiveTable: NSTableView {
++    var restoreSelection: (() -> Void)?
++    var cancel: (() -> Void)?
++
++    override func keyDown(with event: NSEvent) {
++        switch event.keyCode {
++        case 36, 76: restoreSelection?()
++        case 53: cancel?()
++        default: super.keyDown(with: event)
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/UBlockOffer.swift
+@@ -0,0 +1,60 @@
++import AppKit
++import BatoBlocking
++
++/// The optional uBlock Origin filter lists: a one-time first-run offer, and the same offer from
++/// Settings > Privacy. Nothing is downloaded until the user chooses Add Lists.
++@MainActor
++enum UBlockOffer {
++    static let licenseNote = "The lists are published by the uBlock Origin project under GPL-3.0. Bato downloads them from ublockorigin.github.io, keeps them up to date, and works with its built-in blocking. They add no extension."
++
++    private static var activeBlocking: BlockingProfiles? { BlockingHost.shared.profiles }
++
++    /// Shows the first-run offer once. Dismissing it, by any button or Escape, counts as an answer.
++    static func offerIfDue(on window: NSWindow) {
++        guard let blocking = activeBlocking, blocking.shouldOfferUBlockLists, window.attachedSheet == nil else { return }
++        present(on: window, blocking: blocking, changed: {})
++    }
++
++    /// Asks again whatever was answered before. `changed` runs once the answer was applied.
++    static func present(on window: NSWindow, blocking: BlockingProfiles, changed: @escaping () -> Void) {
++        RecoverySheet.present(
++            on: window, symbol: "shield.lefthalf.filled", title: "Add uBlock Origin filter lists?",
++            body: "Block more ads, trackers and malicious sites with the filter lists from uBlock Origin. Nothing is downloaded unless you add them.\n\n\(licenseNote)",
++            buttons: [.init(title: "Not Now", isDefault: false), .init(title: "Add Lists", isDefault: true)],
++            cancelIndex: 0) { index in
++            guard index == 1 else {
++                try? blocking.declineUBlockLists()
++                return changed()
++            }
++            Task { @MainActor in
++                let outcomes = try? await blocking.enableUBlockLists()
++                changed()
++                report(outcomes, on: window)
++            }
++        }
++    }
++
++    static func remove(blocking: BlockingProfiles, changed: @escaping () -> Void) {
++        Task { @MainActor in
++            try? await blocking.disableUBlockLists()
++            changed()
++        }
++    }
++
++    private static func report(_ outcomes: [String: ListUpdateOutcome]?, on window: NSWindow) {
++        guard window.isVisible else { return }
++        let failed = outcomes?.values.contains { outcome in
++            switch outcome {
++            case .updated, .unchanged: false
++            case .rejected, .failed: true
++            }
++        } ?? true
++        let title = failed ? "Some lists couldn’t be downloaded" : "uBlock Origin lists added"
++        let body = failed
++            ? "Bato will try again with the next daily update. You can also remove them in Settings > Privacy."
++            : "They apply to every Profile and update daily."
++        guard window.attachedSheet == nil else { return }
++        RecoverySheet.present(on: window, symbol: failed ? "exclamationmark.triangle" : "checkmark.shield", title: title,
++                              body: body, buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
 +    }
 +}

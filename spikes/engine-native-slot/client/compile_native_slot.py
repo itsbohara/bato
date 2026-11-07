@@ -21,16 +21,17 @@ def main():
               '-I', str(modules)]
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
-                                        'DownloadsModel.swift', 'DownloadsController.swift']),
+                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
                                            'ArcSourceReader.swift', 'ImportTransaction.swift']),
-                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
+                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift', 'UBlockListsChoice.swift']),
                            ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
                                               'ArcImportController.swift', 'BlockingControls.swift',
                                               'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
-                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift'])]:
+                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
+                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',

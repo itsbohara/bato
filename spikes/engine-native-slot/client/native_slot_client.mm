@@ -61,6 +61,14 @@ using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, const char*));
 using SwiftConfigureProfiles = void (*)(int (*)(const char*, int));
 using SwiftProfileWindowReady = void (*)(uint64_t, const char*, int);
 
+// Download hooks are optional Swift exports, resolved with dlsym at registration.
+// DownloadsConfigure(snapshot, act): act(profile_key, id, action) with the Bato Profile key.
+// DownloadUpserted/Removed deliver engine events with Bato Profile keys, on the main thread.
+using SwiftDownloadsConfigure = void (*)(int (*)(), int (*)(const char*, const char*, int));
+using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
+                                       int64_t, int64_t, int64_t, int, int, int, int);
+using SwiftDownloadRemoved = void (*)(const char*, const char*);
+
 extern "C" void BatoSwiftWorkspacePageIcon(uint64_t token, int browser_id,
     const unsigned char* png, size_t size);
 
@@ -79,6 +87,10 @@ using PeekPresent = decltype(&bato_native_slot_peek_present_v1);
 using PeekEnd = decltype(&bato_native_slot_peek_end_v1);
 PeekPresent g_peek_present = nullptr;
 PeekEnd g_peek_end = nullptr;
+decltype(&bato_native_slot_download_snapshot_v1) g_download_snapshot = nullptr;
+decltype(&bato_native_slot_download_action_v1) g_download_action = nullptr;
+SwiftDownloadUpserted g_swift_download_upserted = nullptr;
+SwiftDownloadRemoved g_swift_download_removed = nullptr;
 SwiftPeekEnded g_swift_peek_ended = nullptr;
 SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
@@ -824,6 +836,57 @@ void ActiveChanged(void*, uint64_t token, int identifier) {
       }, token, identifier));
 }
 
+// Engine Profile keys name the directory under the cache root: empty is the launch Profile,
+// whose Bato key Swift supplied when it asked for that window. Same mapping as blocking.
+std::string BatoKeyForEngineKey(const std::string& engine_key) {
+  if (!engine_key.empty()) return engine_key;
+  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+  return ProfileKeys().launch_key;
+}
+
+std::string EngineKeyForBatoKey(const std::string& key) {
+  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+  return !key.empty() && key == ProfileKeys().launch_key ? std::string() : key;
+}
+
+struct DownloadSnapshotCopy {
+  std::string profile_key, id, filename, path;
+  int64_t received, total, bytes_per_second;
+  int state, can_resume, file_exists, warning;
+};
+
+// Runs inside a download update, possibly under a tab-model mutation: copy and defer.
+void DownloadUpserted(void*, const BatoDownloadInfoV1* info) {
+  if (!info || info->size != sizeof(BatoDownloadInfoV1) || !info->profile_key || !info->id) return;
+  DownloadSnapshotCopy copy{info->profile_key, info->id, info->filename ? info->filename : "",
+                            info->path ? info->path : "", info->received_bytes, info->total_bytes,
+                            info->bytes_per_second, info->state, info->can_resume, info->file_exists,
+                            info->warning};
+  CefPostTask(TID_UI, base::BindOnce([](DownloadSnapshotCopy copy) {
+    if (!g_swift_download_upserted) return;
+    const std::string key = BatoKeyForEngineKey(copy.profile_key);
+    g_swift_download_upserted(key.c_str(), copy.id.c_str(), copy.filename.c_str(), copy.path.c_str(),
+                              copy.received, copy.total, copy.bytes_per_second, copy.state,
+                              copy.can_resume, copy.file_exists, copy.warning);
+  }, std::move(copy)));
+}
+
+void DownloadRemoved(void*, const char* profile_key, const char* id) {
+  if (!profile_key || !id) return;
+  CefPostTask(TID_UI, base::BindOnce([](std::string profile_key, std::string id) {
+    if (!g_swift_download_removed) return;
+    const std::string key = BatoKeyForEngineKey(profile_key);
+    g_swift_download_removed(key.c_str(), id.c_str());
+  }, std::string(profile_key), std::string(id)));
+}
+
+int RequestDownloadSnapshot() { return g_download_snapshot ? g_download_snapshot() : 0; }
+
+int PerformDownloadAction(const char* profile_key, const char* id, int action) {
+  if (!g_download_action || !profile_key || !id) return 0;
+  return g_download_action(EngineKeyForBatoKey(profile_key).c_str(), id, action);
+}
+
 void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
   auto slot = WorkspaceSlots().find(token);
   if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
@@ -1300,6 +1363,18 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspacePeekLinkRequested"));
   auto swift_configure_navigation = reinterpret_cast<SwiftConfigureNavigation>(
       dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigureNavigation"));
+  auto register_downloads = reinterpret_cast<decltype(&bato_native_slot_register_download_callbacks_v1)>(
+      dlsym(loaded, "bato_native_slot_register_download_callbacks_v1"));
+  auto download_snapshot = reinterpret_cast<decltype(&bato_native_slot_download_snapshot_v1)>(
+      dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
+  auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
+      dlsym(loaded, "bato_native_slot_download_action_v1"));
+  auto swift_configure_downloads = reinterpret_cast<SwiftDownloadsConfigure>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadsConfigure"));
+  auto swift_download_upserted = reinterpret_cast<SwiftDownloadUpserted>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadUpserted"));
+  auto swift_download_removed = reinterpret_cast<SwiftDownloadRemoved>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftDownloadRemoved"));
   dlclose(loaded);  // CefScopedLibraryLoader retains framework until shutdown.
   if (!registration || !focus || !advance || !active_browser_id) {
     fprintf(stderr, "{\"event\":\"slot-client-abi-unavailable\"}\n");
@@ -1354,6 +1429,22 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
             g_swift_peek_link_requested = swift_link_requested;
           }
         }
+      }
+    }
+    // Downloads are additive: without the engine exports Chromium's own UI stays the only one.
+    if (register_downloads && download_snapshot && download_action && swift_configure_downloads &&
+        swift_download_upserted && swift_download_removed) {
+      BatoDownloadCallbacksV1 downloads = {};
+      downloads.size = sizeof(downloads);
+      downloads.version = 1;
+      downloads.upserted = DownloadUpserted;
+      downloads.removed = DownloadRemoved;
+      if (register_downloads(&downloads) == 1) {
+        g_download_snapshot = download_snapshot;
+        g_download_action = download_action;
+        g_swift_download_upserted = swift_download_upserted;
+        g_swift_download_removed = swift_download_removed;
+        swift_configure_downloads(RequestDownloadSnapshot, PerformDownloadAction);
       }
     }
     if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);

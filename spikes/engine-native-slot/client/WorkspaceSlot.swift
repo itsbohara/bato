@@ -15,6 +15,8 @@ private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
 private typealias EndPeek = @convention(c) (UInt64, UInt64, Int32) -> Int32
 private typealias NavigatePage = @convention(c) (UInt64, Int32, UnsafePointer<CChar>?) -> Int32
 private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int32) -> Int32
+private typealias DownloadSnapshot = @convention(c) () -> Int32
+private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 @MainActor private var workspaceDirectory: URL?
 @MainActor private var createPage: CreatePage?
 @MainActor private var selectPage: PageAction?
@@ -31,7 +33,21 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
 @MainActor private var endPeekPages: EndPeek?
 @MainActor private var navigatePage: NavigatePage?
 @MainActor private var openProfileWindow: OpenProfileWindow?
+@MainActor private var downloadSnapshot: DownloadSnapshot?
+@MainActor private var downloadAct: DownloadAct?
+@MainActor private var nativeDownloads: NativeDownloadsEngine?
+@MainActor private var downloadsController: DownloadsController?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
+
+/// Download events and actions through the client's engine tables. The client has already mapped
+/// engine Profile keys to Bato Profile UUID strings in both directions.
+@MainActor private final class NativeDownloadsEngine: DownloadsEngine {
+    var onEvent: ((DownloadEvent) -> Void)?
+    func requestSnapshot() { _ = downloadSnapshot?() }
+    func perform(_ action: DownloadAction, id: String, profileKey: String) -> Bool {
+        downloadAct?(profileKey, id, action.engineCode) == 1
+    }
+}
 
 /// Routes pages to one Chromium window per Bato Profile: a Chrome Browser has exactly one
 /// Profile, so pages of different Profiles can never share a window. The launch Profile
@@ -387,6 +403,13 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
                 return engine
             }
             workspaceHost.controller = controller
+            if downloadsController == nil, downloadSnapshot != nil, downloadAct != nil {
+                let engine = NativeDownloadsEngine()
+                let downloads = DownloadsController(engine: engine)
+                nativeDownloads = engine
+                downloadsController = downloads
+                controller.attachDownloads(downloads)
+            }
             controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
             controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
             controller.requestPagePresentation = {
@@ -986,4 +1009,32 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     precondition(Thread.isMainThread)
     guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
     workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
+}
+
+@_cdecl("BatoSwiftDownloadsConfigure")
+@MainActor public func configureDownloads(
+    _ snapshot: @escaping @convention(c) () -> Int32,
+    _ act: @escaping @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32) {
+    precondition(Thread.isMainThread)
+    downloadSnapshot = snapshot
+    downloadAct = act
+}
+
+@_cdecl("BatoSwiftDownloadUpserted")
+@MainActor public func downloadUpserted(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>,
+                                        _ filename: UnsafePointer<CChar>, _ path: UnsafePointer<CChar>,
+                                        _ received: Int64, _ total: Int64, _ bytesPerSecond: Int64,
+                                        _ state: Int32, _ canResume: Int32, _ fileExists: Int32, _ warning: Int32) {
+    precondition(Thread.isMainThread)
+    nativeDownloads?.onEvent?(.upsert(DownloadItem(
+        engineProfileKey: String(cString: profileKey), id: String(cString: id),
+        filename: String(cString: filename), path: String(cString: path), receivedBytes: received,
+        totalBytes: total, bytesPerSecond: bytesPerSecond, state: state, canResume: canResume != 0,
+        fileExists: fileExists != 0, warning: warning)))
+}
+
+@_cdecl("BatoSwiftDownloadRemoved")
+@MainActor public func downloadRemoved(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>) {
+    precondition(Thread.isMainThread)
+    nativeDownloads?.onEvent?(.removed(profileKey: String(cString: profileKey), id: String(cString: id)))
 }
