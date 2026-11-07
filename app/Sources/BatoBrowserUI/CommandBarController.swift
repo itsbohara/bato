@@ -4,8 +4,9 @@ import BatoCore
 /// A native modal surface: Chromium retains ownership of the parent window and
 /// its sheet lifecycle. No page or network work happens while the user types.
 @MainActor
-final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
-    private let field = CommandBarSearchField(string: "")
+final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private let field = NSTextField(string: "")
+    private let glyph = NSImageView()
     private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private var provider: CommandBarSearchProvider
     private let providerChanged: (CommandBarSearchProvider) -> Void
@@ -52,8 +53,11 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         field.setAccessibilityLabel("Command bar search or address")
         field.setAccessibilityIdentifier("bato-command-bar-input")
         field.delegate = self
-        field.sendsSearchStringImmediately = true
         field.cell?.sendsActionOnEndEditing = false
+        glyph.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        glyph.symbolConfiguration = .init(pointSize: 17, weight: .regular)
+        glyph.contentTintColor = .secondaryLabelColor
+        glyph.setContentHuggingPriority(.required, for: .horizontal)
         providerPicker.addItems(withTitles: CommandBarSearchProvider.allCases.map(\.title))
         if let index = CommandBarSearchProvider.allCases.firstIndex(of: provider) { providerPicker.selectItem(at: index) }
         providerPicker.target = self
@@ -64,7 +68,9 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         providerPicker.isBordered = false
         providerPicker.controlSize = .small
         providerPicker.font = .systemFont(ofSize: 12)
-        let inputRow = NSStackView(views: [field])
+        let inputRow = NSStackView(views: [glyph, field])
+        inputRow.spacing = 10
+        inputRow.alignment = .centerY
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         table.dataSource = self
         table.delegate = self
@@ -279,7 +285,7 @@ private final class GoPillButton: NSButton {
 
 @MainActor
 private final class CommandBarPanel: NSPanel {
-    weak var searchField: NSSearchField?
+    weak var searchField: NSTextField?
     private var focusedOnFirstKey = false
     override var canBecomeKey: Bool { true }
     /// A sheet becomes key after beginSheet returns, which can reset the first responder set
@@ -316,28 +322,5 @@ private final class CommandBarSurface: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
-    }
-}
-
-/// The search glyph is drawn inside the cell; without a bezel the text rect starts under it, so typed text
-/// would overlap the magnifier.
-private final class CommandBarSearchField: NSSearchField {
-    override class var cellClass: AnyClass? {
-        get { ClearanceSearchFieldCell.self }
-        set {}
-    }
-}
-
-private final class ClearanceSearchFieldCell: NSSearchFieldCell {
-    private static let glyphGap: CGFloat = 8
-
-    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
-        var text = super.searchTextRect(forBounds: rect)
-        let clearance = searchButtonRect(forBounds: rect).maxX + Self.glyphGap
-        if text.minX < clearance {
-            text.size.width -= clearance - text.minX
-            text.origin.x = clearance
-        }
-        return text
     }
 }
