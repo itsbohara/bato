@@ -1094,6 +1094,59 @@ struct PageRuntimeTests {
         #expect(runtime.canUpdateSavedURL(id))
     }
 
+    @Test func lostRendererOrEnginePageNeverRemovesASidebarEntry() throws {
+        var state = BrowserState.initial()
+        let pinned = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(pinned)
+        let temporary = try state.addTab(url: next, title: "Temp")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { commits.append($0) })
+        #expect(runtime.start())
+        #expect(runtime.selectEntry(pinned))
+        let pinnedPage = try #require(runtime.livePages[pinned])
+        #expect(runtime.selectEntry(temporary))
+        let temporaryPage = try #require(runtime.livePages[temporary])
+        let before = runtime.state
+
+        runtime.receive(.unloaded(pinnedPage))
+        runtime.receive(.unloaded(temporaryPage))
+        #expect(runtime.state == before)
+        #expect(runtime.livePages.isEmpty)
+        #expect(runtime.state.currentWorkspace.tabs.map(\.id) == [temporary])
+
+        // Only the explicit close path removes a temporary entry, and the user can reload the lost page.
+        #expect(runtime.selectEntry(temporary))
+        let reloaded = try #require(runtime.livePages[temporary])
+        #expect(reloaded != temporaryPage)
+        runtime.receive(.creationFailed(reloaded))
+        #expect(runtime.state.currentWorkspace.tabs.map(\.id) == [temporary])
+        #expect(runtime.state.workspaces.flatMap(\.pins).map(\.id) == [pinned])
+    }
+
+    @Test func restoredOrganizationReplacesStateOnlyBeforeAnyPageIsLive() throws {
+        var original = BrowserState.initial()
+        _ = try original.addTab(url: start, title: "Kept")
+        var restored = original
+        let extra = try restored.addTab(url: next, title: "From backup")
+        let engine = FakeEngine(original.currentWorkspace.profileID)
+        let runtime = try PageRuntime(state: original, engine: engine, commit: { _ in })
+        var published: [BrowserState] = []
+        runtime.onStateChange = { published.append($0) }
+
+        var invalid = restored
+        invalid.workspaces = []
+        #expect(!runtime.adoptRestoredOrganization(invalid))
+        #expect(runtime.adoptRestoredOrganization(restored))
+        #expect(runtime.state == restored)
+        #expect(published.count == 1)
+        #expect(runtime.start())
+        #expect(runtime.livePages[extra] != nil)
+
+        #expect(!runtime.adoptRestoredOrganization(original))
+        #expect(runtime.state == restored)
+    }
+
     @Test func newerRejectedNavigationDuringPublicationKeepsSavedDestinationBlocked() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: start, title: "Pin")

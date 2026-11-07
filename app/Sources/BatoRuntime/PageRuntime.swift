@@ -216,6 +216,20 @@ public final class PageRuntime {
         return true
     }
 
+    /// Replaces organization with a restored backup the caller has already saved. Unlike
+    /// `adoptSavedOrganization` it may change the selection, so it is only allowed while no page is live.
+    @discardableResult
+    public func adoptRestoredOrganization(_ saved: BrowserState) -> Bool {
+        guard livePages.isEmpty, peekSession.preview == nil, (try? saved.validate()) != nil else {
+            lastError = .invalidCommand
+            return false
+        }
+        state = saved
+        lastError = nil
+        onStateChange?(saved)
+        return true
+    }
+
     /// A metadata edit must not refocus or recreate the current engine page.
     @discardableResult
     public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
