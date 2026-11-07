@@ -64,7 +64,7 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         providerPicker.action = #selector(changeProvider)
         providerPicker.setAccessibilityLabel("Web search provider")
         providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
-        providerPicker.toolTip = "Search provider for this session"
+        providerPicker.toolTip = "Search provider (also in Settings > General)"
         providerPicker.isBordered = false
         providerPicker.controlSize = .small
         providerPicker.font = .systemFont(ofSize: 12)

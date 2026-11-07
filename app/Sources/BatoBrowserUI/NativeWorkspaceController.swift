@@ -58,7 +58,8 @@ public final class NativeWorkspaceController: NSObject {
             if let request = requestPagePresentation { request() } else { resumeCommittedSelection() }
         })
     private var commandBar: CommandBarController?
-    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
+    private let preferences: AppPreferencesStore
+    private var commandBarSearchProvider: CommandBarSearchProvider { preferences.current().searchProvider }
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
     private weak var pendingCommandBarWindow: NSWindow?
     private var commandBarNavigationTarget: LivePage?
@@ -86,6 +87,7 @@ public final class NativeWorkspaceController: NSObject {
         }
         let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
         organizationStore = store
+        preferences = AppPreferencesStore(directory: directory)
         self.recovery = recovery
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
@@ -245,9 +247,16 @@ public final class NativeWorkspaceController: NSObject {
             recovery: recovery,
             setArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($0) },
             setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
-            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } }))
+            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } },
+            searchProvider: { [weak self] in self?.commandBarSearchProvider ?? .default },
+            setSearchProvider: { [weak self] in self?.setSearchProvider($0) }))
         settingsWindow = window
         window.show(pane)
+    }
+
+    private func setSearchProvider(_ provider: CommandBarSearchProvider) {
+        try? preferences.update { $0.searchProvider = provider }
+        settingsWindow?.reload()
     }
 
     /// Sheets and pages belong to the browser window, so Settings actions bring it forward first.
@@ -264,7 +273,7 @@ public final class NativeWorkspaceController: NSObject {
         commandBarNavigationTarget = target
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
-                                       providerChanged: { [weak self] in self?.commandBarSearchProvider = $0 }) { [weak self] query in
+                                       providerChanged: { [weak self] in self?.setSearchProvider($0) }) { [weak self] query in
             guard let self else { return [] }
             return CommandBarResults.make(query: query, state: self.runtime.state,
                                           provider: self.commandBarSearchProvider,
@@ -502,10 +511,14 @@ public final class NativeWorkspaceController: NSObject {
         let promote = ActionButton(title: "Open as Tab") { [weak self] in self?.promotePeek() }
         configureTextAction(promote, symbol: "arrow.up.left.and.arrow.down.right")
         promote.setAccessibilityIdentifier("bato-peek-promote")
+        promote.setAccessibilityLabel("Open Peek as tab")
+        promote.setAccessibilityHelp("Keeps the previewed page as a tab in this workspace. Option-Command-Return.")
         let closePeek = ActionButton(title: "Close") { [weak self] in self?.dismissPeek() }
         configureTextAction(closePeek, symbol: "xmark")
         closePeek.toolTip = "Close Peek (Esc)"
         closePeek.setAccessibilityIdentifier("bato-peek-close")
+        closePeek.setAccessibilityLabel("Close Peek")
+        closePeek.setAccessibilityHelp("Dismisses the preview and returns to the page beneath. Escape.")
         let peekActions = NSStackView(views: [promote, closePeek])
         peekActions.orientation = .horizontal
         peekActions.distribution = .fillEqually
@@ -515,6 +528,8 @@ public final class NativeWorkspaceController: NSObject {
         peekRow.alignment = .leading
         peekRow.spacing = 4
         peekRow.isHidden = true
+        peekRow.setAccessibilityRole(.group)
+        peekRow.setAccessibilityLabel("Peek")
         peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 
@@ -730,6 +745,8 @@ public final class NativeWorkspaceController: NSObject {
             statusLabel.stringValue = "Changes couldn’t be saved. Reopen Bato to reload organization."
         case .invalidCommand:
             statusLabel.stringValue = "This action couldn’t be completed."
+        case .peekAlreadyOpen:
+            statusLabel.stringValue = "A Peek is already open. Close it or open it as a tab first."
         }
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
     }
@@ -1350,6 +1367,10 @@ public final class NativeWorkspaceController: NSObject {
         }
         moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
         menu.addItem(moveDown)
+        menu.addItem(.separator())
+        let delete = ActionMenuItem(title: "Delete Workspace…") { [weak self] in self?.confirmDeleteWorkspace(id) }
+        delete.isEnabled = runtime.state.canDeleteWorkspace(id)
+        menu.addItem(delete)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
     }
 
@@ -1537,6 +1558,37 @@ public final class NativeWorkspaceController: NSObject {
             return
         }
         BlockingHost.shared.profiles?.removeProfile(id.uuidString)
+        render()
+    }
+
+    /// Asks before deleting a workspace, saying what goes with it. A Profile's last workspace is never offered.
+    private func confirmDeleteWorkspace(_ id: UUID) {
+        guard hasStarted, runtime.state.canDeleteWorkspace(id), let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              let workspace = runtime.state.workspaces.first(where: { $0.id == id }),
+              let loss = runtime.state.lossOfDeleting(workspace: id) else { return }
+        requestNativeFocus?()
+        func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
+        let body = "This removes the workspace’s \(count(loss.pages, "pin and tab")) and \(count(loss.archived, "archived tab")) "
+            + "and closes its open pages without asking. Browsing history and logins stay with the Profile. "
+            + "The sidebar organization is backed up first."
+        RecoverySheet.present(on: window, symbol: "trash", title: "Delete the workspace “\(workspace.name)”?", body: body,
+                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Delete Workspace", isDefault: false)],
+                              cancelIndex: 0) { [weak self] index in
+            guard index == 1 else { return }
+            DispatchQueue.main.async { [weak self] in self?.deleteWorkspace(id) }
+        }
+    }
+
+    private func deleteWorkspace(_ id: UUID) {
+        guard runtime.deleteWorkspace(id) else {
+            render()
+            guard let window = root.window, window.attachedSheet == nil else { return }
+            RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The workspace couldn’t be deleted",
+                                  body: "Nothing was removed. Try again.",
+                                  buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
+            return
+        }
         render()
     }
 

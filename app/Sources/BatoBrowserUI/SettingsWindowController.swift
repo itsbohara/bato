@@ -17,6 +17,8 @@ struct SettingsHooks {
     let setArchivePeriod: (ArchivePeriod) -> Void
     let setWorkspaceArchivePeriod: (UUID, ArchivePeriod?) -> Void
     let openArchive: () -> Void
+    let searchProvider: () -> CommandBarSearchProvider
+    let setSearchProvider: (CommandBarSearchProvider) -> Void
 }
 
 extension DefaultBrowser {
@@ -196,16 +198,42 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func content(for pane: SettingsPane) -> [NSView] {
         switch pane {
+        case .general: generalPane()
         case .profiles: profilesPane()
         case .privacy: privacyPane()
         case .archive: archivePane()
         case .importData: importPane()
         case .shortcuts: shortcutsPane()
         case .advanced: advancedPane()
+        case .about: aboutPane()
         }
     }
 
     // MARK: Panes
+
+    private func generalPane() -> [NSView] {
+        let picker = SearchProviderPicker(selected: hooks.searchProvider()) { [weak self] in self?.hooks.setSearchProvider($0) }
+        let row = SettingsRow(leading: SymbolTile(symbol: "magnifyingglass", color: .systemBlue),
+                              title: "Search engine",
+                              detail: "Used when you type a search in the command bar. Chromium’s own search engine setting is separate.",
+                              trailing: picker)
+        return [sectionHeading("Search"), SettingsGroup(rows: [row])]
+    }
+
+    private func aboutPane() -> [NSView] {
+        let info = AboutInfo(
+            bundleVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            bundleBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+            versionFileText: Bundle.main.url(forResource: "VERSION", withExtension: nil).flatMap { try? String(contentsOf: $0, encoding: .utf8) })
+        let version = SettingsRow(leading: SymbolTile(symbol: "info.circle.fill", color: .systemTeal),
+                                  title: "Bato", detail: "Version \(info.displayVersion). Released under the MIT License.", trailing: nil)
+        let notices = SettingsRow(leading: nil, title: "Open source notices",
+                                  detail: "Chromium, the Chromium Embedded Framework, adblock-rust and the filter lists Bato can download.",
+                                  trailing: SettingsPillButton(title: "View Notices") {
+                                      NSWorkspace.shared.open(Bundle.main.url(forResource: "NOTICES", withExtension: "md") ?? AboutInfo.noticesURL)
+                                  })
+        return [SettingsGroup(rows: [version, notices])]
+    }
 
     private func profilesPane() -> [NSView] {
         let note = caption("Each Profile keeps its own history, downloads, logins, cookies and extensions.")
@@ -620,6 +648,27 @@ private final class ArchivePeriodPicker: NSPopUpButton {
         target = handler
         action = #selector(ActionTarget.fire)
         setAccessibilityLabel("Archive period")
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not used") }
+}
+
+private final class SearchProviderPicker: NSPopUpButton {
+    private let handler: ActionTarget
+
+    init(selected: CommandBarSearchProvider, choose: @escaping (CommandBarSearchProvider) -> Void) {
+        let providers = CommandBarSearchProvider.allCases
+        var picker: (() -> Int)?
+        handler = ActionTarget { choose(providers[picker?() ?? 0]) }
+        super.init(frame: .zero, pullsDown: false)
+        picker = { [unowned self] in indexOfSelectedItem }
+        addItems(withTitles: providers.map(\.title))
+        selectItem(at: providers.firstIndex(of: selected) ?? 0)
+        controlSize = .large
+        target = handler
+        action = #selector(ActionTarget.fire)
+        setAccessibilityLabel("Search engine")
+        setAccessibilityIdentifier("bato-settings-search-provider")
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }
