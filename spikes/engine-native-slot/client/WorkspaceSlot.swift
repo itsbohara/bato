@@ -608,6 +608,10 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     if command == 5 { controller.openEssential(.history) }
     if command == 6 { controller.openEssential(.downloads) }
     if command == 7 { controller.showSettings() }
+    if command == 8 { controller.reopenClosedTab() }
+    if command == 9 { controller.selectAdjacentPage(step: 1) }
+    if command == 10 { controller.selectAdjacentPage(step: -1) }
+    if (21...29).contains(command) { controller.selectPage(shortcut: Int(command) - 20) }
     if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
         controller.dismissPeek()
     } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {

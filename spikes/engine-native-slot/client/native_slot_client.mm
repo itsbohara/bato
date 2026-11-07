@@ -1175,6 +1175,23 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
   if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
   if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
+  // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
+  // Chrome's restore service, window creation and tab selection must not act on them.
+  // New Window opens the command bar because each Profile has exactly one window.
+  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
+  if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
+  if (command_id == cef_id_for_command_id_name("IDC_SELECT_NEXT_TAB") ||
+      command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_NEXT_TAB")) command = 9;
+  if (command_id == cef_id_for_command_id_name("IDC_SELECT_PREVIOUS_TAB") ||
+      command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_PREV_TAB")) command = 10;
+  static const char* const kSelectTabNames[] = {
+      "IDC_SELECT_TAB_0", "IDC_SELECT_TAB_1", "IDC_SELECT_TAB_2", "IDC_SELECT_TAB_3",
+      "IDC_SELECT_TAB_4", "IDC_SELECT_TAB_5", "IDC_SELECT_TAB_6", "IDC_SELECT_TAB_7"};
+  for (int i = 0; i < 8; ++i) {
+    if (command_id == cef_id_for_command_id_name(kSelectTabNames[i])) command = 21 + i;
+  }
+  if (command_id == cef_id_for_command_id_name("IDC_SELECT_LAST_TAB")) command = 29;
+  fprintf(stderr, "{\"event\":\"workspace-chrome-command\",\"id\":%d,\"command\":%d}\n", command_id, command);
   if (!command || !browser || !browser->IsValid()) return false;
   for (const auto& [token, slot] : WorkspaceSlots()) {
     auto* available = AvailableSlot(token);

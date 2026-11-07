@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "7f30d2803473d48f89175e4c1e3cf00475b4bd4e807a7e4852df0a68dea98a11",
+  "patch_sha256": "11f692caa2693527637e523b536dedf8e785607d17fe14879c04a0c43b2dadf5",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "adaafd89c104d0eed02ebfbd41bb17c1f45da1d70fd67b9ff6f75c392c98daa4"
+      "patched_sha256": "20f212e171ef70b4189650c3c9173d207691aa274e397af82470f2c66420b9fc"
     },
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "baff36b2970ccfde622b031116aaec6cbe832ba6d4ef67ba14000c7c79bef4aa"
+      "patched_sha256": "1749e6c4995fe5409f1f39ca588c42d12fbb88b99b1ef6ad9513ec1219e91bd7"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "51ae55776cf71c6bd9dbe99bdb62ef6b1e5cb88fdc46f1432e9f79c2f9f30202"
+      "patched_sha256": "0ef0088d702e9ab827865c598cb403ad83f607cd6f08ea03d8614c2d48c43c8a"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "ea2ad7b92730fd3dd57cfbc63f04648e8c94e8f610a1e3ca5ae2e97f2c357cb1"
+      "patched_sha256": "980b3f59bd7c3e368cbd5ed063bc3f7c31a7a791e6acc48b246842f02715979a"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "d369da1674708a2ba6016dd8421fa17f097d3491bf4d21baa0c83240aabb7214"
+      "patched_sha256": "3de73ee07aa03779a0bda6c33c55e97cd4d56f4cb03ca8d145ed72dcd5523dfe"
     },
     {
       "root": "cef",
@@ -98,7 +98,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
       "original_sha256": null,
-      "patched_sha256": "09352494cc479cb572610f97ccddcf55346a9fa3118af90f7c40066a7c4d9ef0"
+      "patched_sha256": "b5ee13b05ea1262f14614f1bcf1263aead99eeb78de7545a396520d5ec584d08"
     },
     {
       "root": "cef",
@@ -212,7 +212,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
       "original_sha256": null,
-      "patched_sha256": "56ffe5598c4f6fa2c833cc089cbcecf78267e4397b322d36eb7ccbc66f02b056"
+      "patched_sha256": "e3dc7ba62d6e317cdfbdc3d4c61f039fc6050e704d378c048b8bc4d5852c02ae"
     },
     {
       "root": "cef",
@@ -224,19 +224,19 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoPersistence/BackupStore.swift",
       "original_sha256": null,
-      "patched_sha256": "4651533db9077a95b6b4b694bd51f9c2ae58fcd9329b8a4fa6df2aacf870e90f"
+      "patched_sha256": "91e1507d848d664bd384a8f0f74ec96bca7f96e3dd45340738b9e3f7da1cbb16"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift",
       "original_sha256": null,
-      "patched_sha256": "f095563bcfc245ae3057db4ad8bae7b5e3991545d88579b5ba111c2204d21895"
+      "patched_sha256": "a78e212de2105fd206fa826ddde490fcc6a4d20cd33e6e770cb011e946084dde"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift",
       "original_sha256": null,
-      "patched_sha256": "8dcd4bece1fa2925b4d2b7ec14640b3fc15076d25d89203e2e408fed43030813"
+      "patched_sha256": "bcb2a6a3250ffc1101d5d9ab404d29fd53f82de851a56a6c0f7f0e5589eb958f"
     }
   ],
   "source_mirrors": {

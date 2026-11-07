@@ -177,7 +177,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1343 @@
+@@ -0,0 +1,1360 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -1355,6 +1355,23 @@
 +  if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
 +  if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
 +  if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
++  // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
++  // Chrome's restore service, window creation and tab selection must not act on them.
++  // New Window opens the command bar because each Profile has exactly one window.
++  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
++  if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
++  if (command_id == cef_id_for_command_id_name("IDC_SELECT_NEXT_TAB") ||
++      command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_NEXT_TAB")) command = 9;
++  if (command_id == cef_id_for_command_id_name("IDC_SELECT_PREVIOUS_TAB") ||
++      command_id == cef_id_for_command_id_name("IDC_CYCLE_TO_PREV_TAB")) command = 10;
++  static const char* const kSelectTabNames[] = {
++      "IDC_SELECT_TAB_0", "IDC_SELECT_TAB_1", "IDC_SELECT_TAB_2", "IDC_SELECT_TAB_3",
++      "IDC_SELECT_TAB_4", "IDC_SELECT_TAB_5", "IDC_SELECT_TAB_6", "IDC_SELECT_TAB_7"};
++  for (int i = 0; i < 8; ++i) {
++    if (command_id == cef_id_for_command_id_name(kSelectTabNames[i])) command = 21 + i;
++  }
++  if (command_id == cef_id_for_command_id_name("IDC_SELECT_LAST_TAB")) command = 29;
++  fprintf(stderr, "{\"event\":\"workspace-chrome-command\",\"id\":%d,\"command\":%d}\n", command_id, command);
 +  if (!command || !browser || !browser->IsValid()) return false;
 +  for (const auto& [token, slot] : WorkspaceSlots()) {
 +    auto* available = AvailableSlot(token);
@@ -1771,7 +1788,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,910 @@
+@@ -0,0 +1,914 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2382,6 +2399,10 @@
 +    if command == 5 { controller.openEssential(.history) }
 +    if command == 6 { controller.openEssential(.downloads) }
 +    if command == 7 { controller.showSettings() }
++    if command == 8 { controller.reopenClosedTab() }
++    if command == 9 { controller.selectAdjacentPage(step: 1) }
++    if command == 10 { controller.selectAdjacentPage(step: -1) }
++    if (21...29).contains(command) { controller.selectPage(shortcut: Int(command) - 20) }
 +    if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
 +        controller.dismissPeek()
 +    } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
@@ -3377,7 +3398,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1097 @@
+@@ -0,0 +1,1185 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -3413,6 +3434,42 @@
 +}
 +
 +/// A transient organization search result; engine-loaded state stays in the runtime.
++/// A temporary tab that was closed, with where it sat so reopening can put it back.
++public struct ClosedTab: Equatable, Sendable {
++    public var profileID: UUID
++    public var workspaceID: UUID
++    public var title: String
++    public var url: URL
++    public var index: Int
++
++    public init(profileID: UUID, workspaceID: UUID, title: String, url: URL, index: Int) {
++        self.profileID = profileID
++        self.workspaceID = workspaceID
++        self.title = title
++        self.url = url
++        self.index = index
++    }
++}
++
++/// The last closed tab comes out first. Past the capacity the oldest is dropped.
++public struct ClosedTabStack: Equatable, Sendable {
++    public static let capacity = 25
++    public private(set) var tabs: [ClosedTab] = []
++
++    public init() {}
++
++    public var last: ClosedTab? { tabs.last }
++    public var isEmpty: Bool { tabs.isEmpty }
++
++    public mutating func push(_ tab: ClosedTab) {
++        tabs.append(tab)
++        if tabs.count > Self.capacity { tabs.removeFirst(tabs.count - Self.capacity) }
++    }
++
++    @discardableResult
++    public mutating func pop() -> ClosedTab? { tabs.popLast() }
++}
++
 +public struct PageSearchResult: Identifiable, Equatable, Sendable {
 +    public var id: UUID { entryID }
 +    public let entryID: UUID
@@ -4098,6 +4155,58 @@
 +        }
 +    }
 +
++    /// The closed-tab record for a temporary tab of any workspace; nil for saved entries, which stay in the sidebar.
++    public func closedTab(for id: UUID) -> ClosedTab? {
++        for workspace in workspaces {
++            if let index = workspace.tabs.firstIndex(where: { $0.id == id }) {
++                let entry = workspace.tabs[index]
++                return ClosedTab(profileID: workspace.profileID, workspaceID: workspace.id,
++                                 title: entry.title, url: entry.lastURL, index: index)
++            }
++        }
++        return nil
++    }
++
++    /// Puts a closed tab back at its old position in its workspace, or in the first workspace of its
++    /// Profile when that workspace is gone, and selects it.
++    @discardableResult
++    public mutating func reopenTab(_ closed: ClosedTab) throws -> UUID {
++        try transact { draft in
++            try Self.validateURL(closed.url)
++            guard let workspace = draft.workspaces.firstIndex(where: { $0.id == closed.workspaceID && $0.profileID == closed.profileID })
++                    ?? draft.workspaces.firstIndex(where: { $0.profileID == closed.profileID }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            let entry = PageEntry(title: closed.title, lastURL: closed.url, kind: .temporary)
++            let position = min(max(closed.index, 0), draft.workspaces[workspace].tabs.count)
++            draft.workspaces[workspace].tabs.insert(entry, at: position)
++            draft.activeWorkspaceID = draft.workspaces[workspace].id
++            draft.selectEntryInPlace(entry.id)
++            return entry.id
++        }
++    }
++
++    /// The page one step from the selection in sidebar order, wrapping at the ends.
++    /// With nothing selected, forward starts at the first page and backward at the last.
++    public func adjacentEntryID(step: Int) -> UUID? {
++        let entries = visibleEntries
++        guard !entries.isEmpty, step != 0 else { return nil }
++        guard let active = currentWorkspace.activeEntryID,
++              let index = entries.firstIndex(where: { $0.id == active }) else {
++            return step > 0 ? entries.first?.id : entries.last?.id
++        }
++        let count = entries.count
++        return entries[((index + step) % count + count) % count].id
++    }
++
++    /// Cmd-1 to Cmd-8 pick that page in sidebar order; Cmd-9 always picks the last one.
++    public func entryID(forShortcut number: Int) -> UUID? {
++        let entries = visibleEntries
++        guard (1...9).contains(number), !entries.isEmpty else { return nil }
++        if number == 9 { return entries.last?.id }
++        return number <= entries.count ? entries[number - 1].id : nil
++    }
++
 +    public mutating func selectEntry(_ id: UUID) throws {
 +        try transact { draft in
 +            guard draft.visibleEntries.contains(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
@@ -4770,7 +4879,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,768 @@
+@@ -0,0 +1,812 @@
 +import Foundation
 +import BatoCore
 +
@@ -4877,6 +4986,10 @@
 +    public private(set) var livePages: [UUID: LivePage] = [:]
 +    public private(set) var pendingClose: Set<LivePage> = []
 +    public private(set) var lastError: PageRuntimeError?
++    private var closedTabs: [UUID: ClosedTabStack] = [:]
++    public var canReopenClosedTab: Bool {
++        closedTabs[state.currentWorkspace.profileID]?.isEmpty == false
++    }
 +    public private(set) var peekSession = PeekSession()
 +    public var onStateChange: ((BrowserState) -> Void)?
 +    public var supportsSplits: Bool { engine.supportsSplits }
@@ -5193,11 +5306,48 @@
 +            return false
 +        }
 +        guard let page = livePages[id] else {
-+            return change { try $0.closeEntry(id) }
++            let closed = state.closedTab(for: id)
++            let applied = change { try $0.closeEntry(id) }
++            if applied, let closed { closedTabs[closed.profileID, default: ClosedTabStack()].push(closed) }
++            return applied
 +        }
 +        guard pendingClose.insert(page).inserted else { return true }
 +        engine.requestClose(page)
 +        return true
++    }
++
++    /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's
++    /// workspaces only. Saved entries never enter this history; they stay in the sidebar.
++    @discardableResult
++    public func reopenClosedTab() -> Bool {
++        let profileID = state.currentWorkspace.profileID
++        guard let closed = closedTabs[profileID]?.last else {
++            lastError = .invalidCommand
++            return false
++        }
++        guard change({ _ = try $0.reopenTab(closed) }) else { return false }
++        closedTabs[profileID]?.pop()
++        return true
++    }
++
++    /// Selects the page one step from the selection in sidebar order. Ignores a page that is closing.
++    @discardableResult
++    public func selectAdjacentEntry(step: Int) -> Bool {
++        select(state.adjacentEntryID(step: step))
++    }
++
++    /// Cmd-1 to Cmd-9 selection in sidebar order.
++    @discardableResult
++    public func selectEntry(forShortcut number: Int) -> Bool {
++        select(state.entryID(forShortcut: number))
++    }
++
++    private func select(_ id: UUID?) -> Bool {
++        guard let id, !pendingClose.contains(where: { $0.entryID == id }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return selectEntry(id)
 +    }
 +
 +    /// Previews the destination above the current live page without touching organization.
@@ -5397,6 +5547,7 @@
 +            // The entry may belong to a workspace that is no longer active.
 +            // Apply close in its owner workspace, then restore current selection.
 +            var candidate = state
++            let closedTab = candidate.closedTab(for: page.entryID)
 +            let active = candidate.activeWorkspaceID
 +            if let owner = candidate.workspaces.first(where: {
 +                $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
@@ -5408,7 +5559,9 @@
 +            do {
 +                try candidate.closeEntry(page.entryID)
 +                try candidate.activateWorkspace(active)
-+                _ = save(candidate)
++                if save(candidate), let closedTab {
++                    closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
++                }
 +            } catch {
 +                lastError = .invalidCommand
 +            }
@@ -5661,7 +5814,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2186 @@
+@@ -0,0 +1,2190 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -5767,6 +5920,7 @@
 +    }
 +
 +    private func finishStart() {
++        recovery.captureSessionStart()
 +        _ = runtime.start()
 +        render()
 +        recovery.confirmLaunchSoon()
@@ -5811,6 +5965,16 @@
 +    /// Opens native navigation, organization search and browser commands.
 +    public func newTab() { showCommandBar() }
 +
++    /// Browser chords that would otherwise act on Chromium's tab strip or history: they follow the sidebar.
++    public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
++    public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
++    public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
++
++    private func performWhenIdle(_ command: () -> Bool) {
++        guard commandBar == nil, pageFinder == nil, root.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        perform(command)
++    }
++
 +    /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
 +    public func openEssential(_ essential: BrowserEssential) {
 +        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
@@ -5831,7 +5995,7 @@
 +            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
 +            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
 +            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
-+            restoreFromBackup: { [weak self] in self?.fromBrowserWindow { $0.restoreFromBackup() } }))
++            recovery: recovery))
 +        settingsWindow = window
 +        window.show(pane)
 +    }
@@ -6922,13 +7086,6 @@
 +        }
 +        arcImport = flow
 +        flow.begin()
-+    }
-+
-+    private func restoreFromBackup() {
-+        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, arcImport == nil,
-+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
-+        requestNativeFocus?()
-+        recovery.presentRestorePicker(on: window)
 +    }
 +
 +    private func findPage() {
@@ -8023,7 +8180,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,343 @@
 +import AppKit
 +import BatoCore
 +
@@ -8031,7 +8188,7 @@
 +/// its sheet lifecycle. No page or network work happens while the user types.
 +@MainActor
 +final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
-+    private let field = NSSearchField(string: "")
++    private let field = CommandBarSearchField(string: "")
 +    private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
 +    private var provider: CommandBarSearchProvider
 +    private let providerChanged: (CommandBarSearchProvider) -> Void
@@ -8342,6 +8499,29 @@
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
++    }
++}
++
++/// The search glyph is drawn inside the cell; without a bezel the text rect starts under it, so typed text
++/// would overlap the magnifier.
++private final class CommandBarSearchField: NSSearchField {
++    override class var cellClass: AnyClass? {
++        get { ClearanceSearchFieldCell.self }
++        set {}
++    }
++}
++
++private final class ClearanceSearchFieldCell: NSSearchFieldCell {
++    private static let glyphGap: CGFloat = 8
++
++    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
++        var text = super.searchTextRect(forBounds: rect)
++        let clearance = searchButtonRect(forBounds: rect).maxX + Self.glyphGap
++        if text.minX < clearance {
++            text.size.width -= clearance - text.minX
++            text.origin.x = clearance
++        }
++        return text
 +    }
 +}
 --- /dev/null
@@ -10402,7 +10582,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,459 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10416,7 +10596,7 @@
 +    let renameCurrentProfile: () -> Void
 +    let importFromArc: () -> Void
 +    let openEssential: (BrowserEssential) -> Void
-+    let restoreFromBackup: () -> Void
++    let recovery: RecoveryController
 +}
 +
 +/// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -10611,8 +10791,20 @@
 +        }
 +        let backup = SettingsRow(leading: nil, title: "Backups",
 +                                 detail: "Restore your organization and blocking settings from a daily or pre-import copy.",
-+                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in self?.hooks.restoreFromBackup() })
-+        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: [backup])]
++                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in
++                                     guard let self else { return }
++                                     hooks.recovery.presentRestorePicker(on: window) { [weak self] in self?.reload() }
++                                 })
++        var backupRows = [backup]
++        if let staged = hooks.recovery.stagedRestoreTitle {
++            backupRows.append(SettingsRow(leading: nil, title: "Restore staged",
++                                          detail: "“\(staged)” will replace your organization the next time Bato opens.",
++                                          trailing: SettingsPillButton(title: "Cancel staged restore") { [weak self] in
++                                              self?.hooks.recovery.cancelStagedRestore()
++                                              self?.reload()
++                                          }))
++        }
++        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: backupRows)]
 +    }
 +
 +    // MARK: Pieces
@@ -10941,7 +11133,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/BackupStore.swift
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,274 @@
 +import Foundation
 +import Darwin
 +
@@ -10987,6 +11179,8 @@
 +public final class BackupStore {
 +    public static let dailyRetention = 7
 +    public static let lastSessionID = "last-session"
++    /// Staging slot for the running session's start. Not a valid backup ID, so it is never listed or restorable.
++    static let pendingSessionID = "pending-session"
 +    static let preChangeNames = ["pre-import", "pre-migration", "pre-restore"]
 +
 +    private struct Manifest: Codable {
@@ -11019,6 +11213,25 @@
 +    /// Replaces the previous last-session copy; a failure leaves the previous copy in place.
 +    public func captureLastSession(organization: Data, files: [String: Data]) throws {
 +        try write(id: Self.lastSessionID, organization: organization, files: files)
++    }
++
++    /// Records the running session's start without touching `last-session`, which a crashing launch must not replace.
++    public func capturePendingSession(organization: Data, files: [String: Data]) throws {
++        try write(id: Self.pendingSessionID, organization: organization, files: files)
++    }
++
++    /// Makes the pending session start the `last-session` copy. Returns false when none is pending.
++    @discardableResult
++    public func promotePendingSession() throws -> Bool {
++        let manager = FileManager.default
++        let pending = root.appendingPathComponent(Self.pendingSessionID, isDirectory: true)
++        guard manager.fileExists(atPath: pending.path) else { return false }
++        let destination = root.appendingPathComponent(Self.lastSessionID, isDirectory: true)
++        do {
++            if manager.fileExists(atPath: destination.path) { _ = try manager.replaceItemAt(destination, withItemAt: pending) }
++            else { try manager.moveItem(at: pending, to: destination) }
++        } catch { throw BackupError.writeFailed }
++        return true
 +    }
 +
 +    /// Newest first.
@@ -11089,6 +11302,16 @@
 +        guard list().contains(where: { $0.id == id }) else { throw BackupError.unknownBackup }
 +        do { try Data(id.utf8).write(to: pendingRestoreURL, options: .atomic) }
 +        catch { throw BackupError.writeFailed }
++    }
++
++    /// The backup a staged restore will apply at the next launch, if it still exists.
++    public func stagedRestore() -> BackupInfo? {
++        guard let bytes = try? Data(contentsOf: pendingRestoreURL), let id = String(data: bytes, encoding: .utf8) else { return nil }
++        return list().first { $0.id == id }
++    }
++
++    public func cancelStagedRestore() {
++        try? FileManager.default.removeItem(at: pendingRestoreURL)
 +    }
 +
 +    /// Consumes the staged request, so a failing restore cannot repeat on every launch.
@@ -11187,7 +11410,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,153 @@
 +import Foundation
 +import Darwin
 +
@@ -11211,7 +11434,8 @@
 +/// Detects abnormal termination with a marker written at launch and removed on clean quit, and keeps
 +/// the previous recovery snapshot until a later launch is confirmed.
 +///
-+/// The recovery snapshot (`BackupStore.lastSessionID`) is replaced only by `confirmLaunch`. A launch that
++/// The session start is captured at launch into a pending slot; the recovery snapshot
++/// (`BackupStore.lastSessionID`) is replaced only when `confirmLaunch` promotes it. A launch that
 +/// crashes before confirming never overwrites it, and nothing here relaunches or restores on its own, so a
 +/// crashing launch cannot loop.
 +public final class RecoveryCoordinator {
@@ -11229,6 +11453,7 @@
 +    private let bootDate: () -> Date
 +    private let now: () -> Date
 +    private var marker: Marker?
++    private var capturedSessionStart = false
 +
 +    public init(directory: URL, backups: BackupStore, processID: Int32 = getpid(),
 +                isProcessAlive: @escaping (Int32) -> Bool = RecoveryCoordinator.processExists,
@@ -11278,9 +11503,20 @@
 +        return status
 +    }
 +
-+    /// The launch worked: the recovery snapshot and today's daily backup now reflect this session's start.
-+    /// Call only after any recovery offer is resolved, because this replaces the snapshot the offer refers to.
-+    /// Every step is attempted; the first failure is returned.
++    /// Records the organization as this session found it. Call after it is loaded (and after any restore),
++    /// before the user can edit it. The copy only becomes the recovery snapshot at `confirmLaunch`.
++    @discardableResult
++    public func captureSessionStart(organization: Data, files: [String: Data]) -> BackupError? {
++        capturedSessionStart = false
++        do { try backups.capturePendingSession(organization: organization, files: files) }
++        catch { return (error as? BackupError) ?? .writeFailed }
++        capturedSessionStart = true
++        return nil
++    }
++
++    /// The launch worked: this session's start becomes the recovery snapshot, and today's daily backup is
++    /// taken from `organization`. Call only after any recovery offer is resolved, because this replaces the
++    /// snapshot the offer refers to. Every step is attempted; the first failure is returned.
 +    @discardableResult
 +    public func confirmLaunch(organization: Data?, files: [String: Data]) -> BackupError? {
 +        guard var current = marker else { return nil }
@@ -11289,9 +11525,11 @@
 +        marker = current
 +        writeMarker(current)
 +        var failure: BackupError?
-+        if let organization {
-+            do { try backups.captureLastSession(organization: organization, files: files) }
++        if capturedSessionStart {
++            do { try backups.promotePendingSession() }
 +            catch { failure = (error as? BackupError) ?? .writeFailed }
++        }
++        if let organization {
 +            do { try backups.captureDaily(organization: organization, files: files) }
 +            catch { failure = failure ?? (error as? BackupError) ?? .writeFailed }
 +        }
@@ -11328,7 +11566,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,314 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -11380,6 +11618,18 @@
 +
 +    func prepareForQuit() { coordinator.endCleanly() }
 +
++    /// Records the organization this session starts with. Call once the launch offer is resolved and before
++    /// pages open; it becomes the recovery snapshot only after the launch is confirmed.
++    func captureSessionStart() {
++        guard let organization = try? store.committedDocument() else { return }
++        if let error = coordinator.captureSessionStart(organization: organization, files: settingsFiles()) { report(error) }
++    }
++
++    /// Title of the restore waiting for the next launch, for Settings.
++    var stagedRestoreTitle: String? { backups.stagedRestore().map(Self.title) }
++
++    func cancelStagedRestore() { backups.cancelStagedRestore() }
++
 +    /// Marks the launch successful after `confirmationDelay` and refreshes the recovery snapshot and daily backup.
 +    func confirmLaunchSoon() {
 +        DispatchQueue.main.asyncAfter(deadline: .now() + Self.confirmationDelay) { [weak self] in
@@ -11404,21 +11654,19 @@
 +                            adopt: @escaping (BrowserState) -> Bool, completion: @escaping () -> Void) {
 +        guard case .abnormal(let crash) = launchStatus else { return completion() }
 +        let snapshot = backups.list().first { $0.kind == .lastSession }
-+        let alert = NSAlert()
-+        alert.messageText = "Bato didn’t quit properly last time"
 +        var text = "Your sidebar was saved after your last change, so nothing is lost."
 +        if crash.isRepeating {
 +            text += " This has now happened \(crash.consecutiveFailures) times in a row; a page that opens at launch may be the cause."
 +        }
 +        if let snapshot {
-+            text += " You can also go back to how it was when that session started, \(Self.format(snapshot.createdAt))."
++            text += " You can also go back to how it was when your last full session began, \(Self.format(snapshot.createdAt))."
 +        }
-+        alert.informativeText = text
-+        alert.addButton(withTitle: "Keep Current")
-+        if snapshot != nil { alert.addButton(withTitle: "Restore Session Start") }
-+        alert.beginSheetModal(for: window) { [weak self] response in
++        var buttons = [RecoverySheet.Button(title: "Keep Current", isDefault: true)]
++        if snapshot != nil { buttons.append(.init(title: "Restore Session", isDefault: false)) }
++        RecoverySheet.present(on: window, symbol: "arrow.counterclockwise.circle", title: "Bato didn’t quit properly last time",
++                              body: text, buttons: buttons, cancelIndex: 0) { [weak self] choice in
 +            guard let self else { return }
-+            if snapshot != nil, response == .alertSecondButtonReturn {
++            if snapshot != nil, choice == 1 {
 +                self.restoreSessionStart(on: window, canAdopt: canAdopt, adopt: adopt, completion: completion)
 +            } else {
 +                completion()
@@ -11446,38 +11694,36 @@
 +    // MARK: Restore from Settings
 +
 +    /// Lets the user pick a backup and stages it for the next launch: live pages are bound to the current
-+    /// organization, so it is replaced before anything is loaded.
-+    func presentRestorePicker(on window: NSWindow) {
++    /// organization, so it is replaced before anything is loaded. `didChange` runs when a restore is staged.
++    func presentRestorePicker(on window: NSWindow, didChange: @escaping () -> Void = {}) {
 +        let available = backups.list()
 +        guard !available.isEmpty else {
 +            return showFailure("There are no backups yet. Bato keeps one daily copy and refreshes it while you use the browser.",
 +                               on: window, completion: {})
 +        }
-+        let alert = NSAlert()
-+        alert.messageText = "Restore from backup"
-+        alert.informativeText = "Backups cover your sidebar organization and blocking settings, not passwords, cookies or open pages. The restore happens the next time Bato opens, and what you have now is kept as “Before last restore”."
-+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26))
++        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: RecoverySheet.contentWidth, height: 26))
 +        picker.addItems(withTitles: available.map(Self.title))
 +        picker.setAccessibilityIdentifier("bato-restore-backup-picker")
-+        alert.accessoryView = picker
-+        alert.addButton(withTitle: "Restore on Next Launch")
-+        alert.addButton(withTitle: "Cancel")
-+        alert.beginSheetModal(for: window) { [weak self] response in
-+            guard let self, response == .alertFirstButtonReturn else { return }
-+            self.stage(available[picker.indexOfSelectedItem], on: window)
++        RecoverySheet.present(
++            on: window, symbol: "clock.arrow.circlepath", title: "Restore from backup",
++            body: "Backups cover your sidebar organization and blocking settings, not passwords, cookies or open pages. The restore happens the next time Bato opens, and what you have now is kept as “Before last restore”.",
++            accessory: picker,
++            buttons: [.init(title: "Cancel", isDefault: false), .init(title: "Restore on Relaunch", isDefault: true)],
++            cancelIndex: 0) { [weak self] choice in
++            guard let self, choice == 1 else { return }
++            self.stage(available[picker.indexOfSelectedItem], on: window, didChange: didChange)
 +        }
 +    }
 +
-+    private func stage(_ backup: BackupInfo, on window: NSWindow) {
++    private func stage(_ backup: BackupInfo, on window: NSWindow, didChange: @escaping () -> Void) {
 +        do { try backups.stageRestore(backup.id) }
 +        catch { return showFailure("The restore couldn’t be scheduled: \(Self.reason(error))", on: window, completion: {}) }
-+        let alert = NSAlert()
-+        alert.messageText = "Quit Bato to finish restoring"
-+        alert.informativeText = "“\(Self.title(backup))” will replace your organization the next time Bato opens."
-+        alert.addButton(withTitle: "Quit Bato")
-+        alert.addButton(withTitle: "Later")
-+        alert.beginSheetModal(for: window) { response in
-+            if response == .alertFirstButtonReturn { NSApp.terminate(nil) }
++        didChange()
++        RecoverySheet.present(on: window, symbol: "arrow.triangle.2.circlepath", title: "Quit Bato to finish restoring",
++                              body: "“\(Self.title(backup))” will replace your organization the next time Bato opens.",
++                              buttons: [.init(title: "Later", isDefault: false), .init(title: "Quit Bato", isDefault: true)],
++                              cancelIndex: 0) { choice in
++            if choice == 1 { NSApp.terminate(nil) }
 +        }
 +    }
 +
@@ -11490,11 +11736,8 @@
 +    // MARK: Pieces
 +
 +    private func showFailure(_ text: String, on window: NSWindow, completion: @escaping () -> Void) {
-+        let alert = NSAlert()
-+        alert.messageText = "Backup problem"
-+        alert.informativeText = text
-+        alert.addButton(withTitle: "OK")
-+        alert.beginSheetModal(for: window) { _ in completion() }
++        RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "Backup problem", body: text,
++                              buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in completion() }
 +    }
 +
 +    /// Blocking settings only: a Profile's other blocking files (lists, counters) are rebuilt by the host.
@@ -11534,4 +11777,107 @@
 +    private static func reason(_ error: Error) -> String {
 +        (error as? LocalizedError)?.errorDescription ?? "An unexpected error occurred."
 +    }
++}
++
++/// A compact card sheet for recovery and restore: optional icon, title, body, optional accessory and
++/// side-by-side buttons, about 320 pt wide.
++@MainActor
++final class RecoverySheet: NSObject {
++    struct Button {
++        let title: String
++        let isDefault: Bool
++    }
++
++    static let cardWidth: CGFloat = 320
++    static let inset: CGFloat = 16
++    static let contentWidth = cardWidth - inset * 2
++
++    private let panel: SheetPanel
++    private let completion: (Int) -> Void
++    private weak var parent: NSWindow?
++
++    static func present(on parent: NSWindow, symbol: String?, title: String, body: String, accessory: NSView? = nil,
++                        buttons: [Button], cancelIndex: Int, completion: @escaping (Int) -> Void) {
++        let sheet = RecoverySheet(parent: parent, symbol: symbol, title: title, body: body, accessory: accessory,
++                                  buttons: buttons, cancelIndex: cancelIndex, completion: completion)
++        parent.beginSheet(sheet.panel) { _ in _ = sheet }
++    }
++
++    private init(parent: NSWindow, symbol: String?, title: String, body: String, accessory: NSView?,
++                 buttons: [Button], cancelIndex: Int, completion: @escaping (Int) -> Void) {
++        self.parent = parent
++        self.completion = completion
++        panel = SheetPanel(contentRect: NSRect(x: 0, y: 0, width: Self.cardWidth, height: 200),
++                           styleMask: [.titled], backing: .buffered, defer: false)
++        super.init()
++        panel.isReleasedWhenClosed = false
++        panel.cancelIndex = cancelIndex
++        panel.onCancel = { [weak self] index in self?.finish(index) }
++
++        var views: [NSView] = []
++        if let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
++            let icon = NSImageView(image: image)
++            icon.symbolConfiguration = .init(pointSize: 26, weight: .regular)
++            icon.contentTintColor = .secondaryLabelColor
++            views.append(icon)
++        }
++        let heading = NSTextField(wrappingLabelWithString: title)
++        heading.font = .systemFont(ofSize: 15, weight: .bold)
++        heading.preferredMaxLayoutWidth = Self.contentWidth
++        heading.setAccessibilityIdentifier("bato-recovery-title")
++        let message = NSTextField(wrappingLabelWithString: body)
++        message.font = .systemFont(ofSize: 13)
++        message.textColor = .secondaryLabelColor
++        message.preferredMaxLayoutWidth = Self.contentWidth
++        message.setAccessibilityIdentifier("bato-recovery-body")
++        views += [heading, message]
++        if let accessory { views.append(accessory) }
++
++        let row = NSStackView(views: buttons.enumerated().map { index, spec in
++            let button = NSButton(title: spec.title, target: self, action: #selector(buttonPressed(_:)))
++            button.tag = index
++            button.bezelStyle = .rounded
++            button.controlSize = .large
++            button.setAccessibilityIdentifier("bato-recovery-button-\(index)")
++            if spec.isDefault { button.keyEquivalent = "\r" }
++            return button
++        })
++        row.orientation = .horizontal
++        row.distribution = .fillEqually
++        row.spacing = 8
++        views.append(row)
++
++        let stack = NSStackView(views: views)
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 10
++        if let last = views.dropLast().last { stack.setCustomSpacing(16, after: last) }
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        panel.contentView?.addSubview(stack)
++        if let content = panel.contentView {
++            NSLayoutConstraint.activate([
++                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.inset),
++                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.inset),
++                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.inset),
++                row.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            ])
++            if let accessory { accessory.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
++        }
++        SidebarStyle.fitSheet(panel, to: stack, horizontalInset: Self.inset, verticalInset: Self.inset)
++        panel.defaultButtonCell = row.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.keyEquivalent == "\r" }?.cell as? NSButtonCell
++    }
++
++    @objc private func buttonPressed(_ sender: NSButton) { finish(sender.tag) }
++
++    private func finish(_ index: Int) {
++        parent?.endSheet(panel)
++        completion(index)
++    }
++}
++
++private final class SheetPanel: NSWindow {
++    var cancelIndex = 0
++    var onCancel: ((Int) -> Void)?
++
++    override func cancelOperation(_ sender: Any?) { onCancel?(cancelIndex) }
 +}
