@@ -39,3 +39,15 @@ Build wiring (client patch NOT regenerated): `client.json` source_mirrors and fi
 ## Known limits
 
 Engine data (cookies, credentials, extension state) is not backed up (DESIGN.md keeps that separate). Open pages are not restored, only organization; temporary tabs return at their last URL as before. Disk-full backup failures are logged with `NSLog` and not shown in the UI. Blocking filter lists are not backed up (they re-download). Restore points do not include the engine's per-Profile blocking counters.
+
+## Fixes (R1, R3, R5, sheet layout, N1)
+
+Swift only; verified by unit tests (`logs/recovery-ui-swift-tests.log`), not yet on a real host.
+
+- **R1.** Settings now holds the `RecoveryController` (`SettingsHooks.recovery`) and presents "Restore from backup…" and the follow-up "Quit Bato" sheet on its own window. The browser-window hook and `NativeWorkspaceController.restoreFromBackup()` are gone.
+- **R3.** `RecoveryCoordinator.captureSessionStart` writes the organization and blocking settings to a `pending-session` slot (not a valid backup ID, never listed) when the launch offer is resolved, just before `runtime.start()` (`finishStart`). `confirmLaunch` promotes it to `last-session`, so the snapshot is the session's real start and its time is the capture time. A crashing launch still never replaces `last-session`; a failed capture disables promotion so a stale pending copy is never promoted. Copy now reads "how it was when your last full session began". Daily backup is still taken from the state at confirmation.
+- **R5.** `BackupStore.stagedRestore()` and `cancelStagedRestore()`. Settings > Advanced > Backup shows a "Restore staged" row naming the backup, with "Cancel staged restore"; staging refreshes the pane.
+- **Sheet layout.** `RecoverySheet` replaces `NSAlert`: 320 pt card, optional SF Symbol header, bold title, secondary body, optional accessory, equal-width side-by-side buttons (default on Return, Esc on the safe choice). Buttons: Keep Current / Restore Session; Cancel / Restore on Relaunch; Later / Quit Bato.
+- **N1.** The command-bar field uses a search-field cell whose text rect starts 8 pt right of the magnifier. Not visually checked.
+
+Still to check on a host: card width and button fit, glyph clearance, Settings-attached sheets, the staged row. R2 (blank sidebar behind sheets) and R4 are unchanged.
