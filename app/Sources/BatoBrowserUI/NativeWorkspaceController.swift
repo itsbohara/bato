@@ -43,6 +43,7 @@ public final class NativeWorkspaceController: NSObject {
     private var profileEditor: ProfileEditor?
     private var pageFinder: PageFinder?
     private let organizationStore: OrganizationStore<BrowserState>
+    private let recovery: RecoveryController
     private var arcImport: ArcImportController?
     private var settingsWindow: SettingsWindowController?
     private var commandBar: CommandBarController?
@@ -60,8 +61,13 @@ public final class NativeWorkspaceController: NSObject {
     public init(directory: URL, handlesKeyEquivalents: Bool = true,
                 makeEngine: (UUID) throws -> any PageEngine) throws {
         let store = OrganizationStore<BrowserState>(directory: directory, validate: { try $0.validate() })
+        let recovery = RecoveryController(directory: directory, store: store)
+        recovery.beginLaunch()
         let state: BrowserState
-        if let restored = try store.load() {
+        let loaded = try store.load()
+        if let staged = recovery.applyPendingRestore() {
+            state = staged
+        } else if let restored = loaded {
             state = restored
         } else {
             state = BrowserState.initial()
@@ -69,6 +75,7 @@ public final class NativeWorkspaceController: NSObject {
         }
         let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
         organizationStore = store
+        self.recovery = recovery
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
         sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
@@ -89,8 +96,25 @@ public final class NativeWorkspaceController: NSObject {
             // Let the sheet finish detaching before the engine is asked to select or close.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.runtime.retryAbandonedPreviews() } }
         }
+        guard let window = root.window, case .abnormal = recovery.launchStatus else { return finishStart() }
+        recovery.presentLaunchOffer(on: window, canAdopt: { [weak self] in self?.runtime.livePages.isEmpty == true },
+                                    adopt: { [weak self] in self?.runtime.adoptRestoredOrganization($0) ?? false },
+                                    completion: { [weak self] in self?.finishStart() })
+    }
+
+    private func finishStart() {
         _ = runtime.start()
         render()
+        recovery.confirmLaunchSoon()
+        if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
+    }
+
+    /// Marks this session as ended cleanly; the next launch then offers no recovery.
+    public func prepareForQuit() { recovery.prepareForQuit() }
+
+    /// What to show instead of the sidebar when organization can't be opened.
+    public static func unavailableMessage(for error: Error) -> String {
+        RecoveryController.unavailableMessage(for: error)
     }
 
     public func receive(_ event: PageEvent) {
@@ -142,7 +166,8 @@ public final class NativeWorkspaceController: NSObject {
             createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
             renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
             importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
-            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } }))
+            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
+            restoreFromBackup: { [weak self] in self?.fromBrowserWindow { $0.restoreFromBackup() } }))
         settingsWindow = window
         window.show(pane)
     }
@@ -1233,6 +1258,13 @@ public final class NativeWorkspaceController: NSObject {
         }
         arcImport = flow
         flow.begin()
+    }
+
+    private func restoreFromBackup() {
+        guard hasStarted, pageFinder == nil, workspaceEditor == nil, folderEditor == nil, arcImport == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        requestNativeFocus?()
+        recovery.presentRestorePicker(on: window)
     }
 
     private func findPage() {

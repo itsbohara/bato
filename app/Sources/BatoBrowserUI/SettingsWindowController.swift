@@ -11,6 +11,7 @@ struct SettingsHooks {
     let renameCurrentProfile: () -> Void
     let importFromArc: () -> Void
     let openEssential: (BrowserEssential) -> Void
+    let restoreFromBackup: () -> Void
 }
 
 /// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
@@ -203,7 +204,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             SettingsRow(leading: nil, title: essential.title, detail: detail,
                         trailing: SettingsPillButton(title: "Open") { [weak self] in self?.hooks.openEssential(essential) })
         }
-        return [caption("Browser pages"), SettingsGroup(rows: rows)]
+        let backup = SettingsRow(leading: nil, title: "Backups",
+                                 detail: "Restore your organization and blocking settings from a daily or pre-import copy.",
+                                 trailing: SettingsPillButton(title: "Restore from backup…") { [weak self] in self?.hooks.restoreFromBackup() })
+        return [caption("Browser pages"), SettingsGroup(rows: rows), caption("Backup"), SettingsGroup(rows: [backup])]
     }
 
     // MARK: Pieces
