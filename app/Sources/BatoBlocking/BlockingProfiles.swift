@@ -77,6 +77,13 @@ public final class BlockingProfiles: @unchecked Sendable {
         }
     }
 
+    /// Forgets a deleted Profile's blocking settings and removes their directory.
+    public func removeProfile(_ key: String) {
+        guard Self.isValidKey(key) else { return }
+        lock.withLock { _ = services.removeValue(forKey: key) }
+        try? FileManager.default.removeItem(at: rootDirectory.appendingPathComponent(key))
+    }
+
     /// Re-reads every Profile's settings file after a backup restore replaced them.
     public func reloadSettings() {
         for service in lock.withLock({ Array(services.values) }) { service.reloadSettings() }
