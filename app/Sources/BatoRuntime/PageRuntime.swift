@@ -14,35 +14,12 @@ public struct LivePage: Hashable, Sendable {
     }
 }
 
-/// Engine-reported navigation state of one live page.
-public struct PageNavigationState: Equatable, Sendable {
-    public var canGoBack: Bool
-    public var canGoForward: Bool
-    public var isLoading: Bool
-    /// Engine error code of the latest main-frame load failure. It outlives the error page's own
-    /// loading cycle and ends only when the next navigation starts.
-    public var failureCode: Int32?
-    /// The destination of a navigation that is loading or failed, before it commits.
-    public var attemptedURL: URL?
-
-    public init(canGoBack: Bool = false, canGoForward: Bool = false, isLoading: Bool = false,
-                failureCode: Int32? = nil, attemptedURL: URL? = nil) {
-        self.canGoBack = canGoBack
-        self.canGoForward = canGoForward
-        self.isLoading = isLoading
-        self.failureCode = failureCode
-        self.attemptedURL = attemptedURL
-    }
-}
-
 public enum PageNavigationCommand: Equatable, Sendable {
-    case back, forward, reload, stop
     case load(URL)
 }
 
 public enum PageEvent: Sendable {
     case navigation(LivePage, url: URL, title: String)
-    case navigationState(LivePage, PageNavigationState)
     case closed(LivePage)
     case closeCancelled(LivePage)
     case creationFailed(LivePage)
@@ -121,7 +98,6 @@ public final class PageRuntime {
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
     public private(set) var peekSession = PeekSession()
-    public private(set) var navigationStates: [LivePage: PageNavigationState] = [:]
     public var onStateChange: ((BrowserState) -> Void)?
     public var supportsSplits: Bool { engine.supportsSplits }
     public var canOpenPeek: Bool {
@@ -136,24 +112,9 @@ public final class PageRuntime {
               !pendingClose.contains(page) else { return nil }
         return page
     }
-    /// State of the selected live page, which stays the Peek parent while a Peek is presented.
-    /// nil for an unloaded entry.
-    public var navigationState: PageNavigationState? {
-        selectedLivePage.map { navigationStates[$0] ?? PageNavigationState() }
-    }
-    /// What the header shows as the address: the attempted destination while it loads or after it
-    /// failed, otherwise the selected entry's latest committed URL.
-    public var displayedURL: URL? {
-        guard let id = state.currentWorkspace.activeEntryID else { return nil }
-        return navigationState?.attemptedURL ?? state.visibleEntries.first { $0.id == id }?.lastURL
-    }
     public func canPerform(_ command: PageNavigationCommand) -> Bool {
-        guard navigationTarget != nil, let state = navigationState else { return false }
+        guard navigationTarget != nil else { return false }
         switch command {
-        case .back: return state.canGoBack
-        case .forward: return state.canGoForward
-        case .reload: return !state.isLoading
-        case .stop: return state.isLoading
         case .load(let url):
             return ["http", "https"].contains(url.scheme?.lowercased() ?? "") &&
                 url.host?.isEmpty == false && url.user == nil && url.password == nil
@@ -244,8 +205,8 @@ public final class PageRuntime {
     }
 
     @discardableResult
-    public func createFolder(name: String) -> Bool {
-        change(reconcileSelection: false) { _ = try $0.createFolder(name: name) }
+    public func createFolder(name: String, parentID: UUID? = nil) -> Bool {
+        change(reconcileSelection: false) { _ = try $0.createFolder(name: name, parentID: parentID) }
     }
 
     @discardableResult
@@ -261,6 +222,11 @@ public final class PageRuntime {
     @discardableResult
     public func moveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
         change(reconcileSelection: false) { try $0.moveFolder(id, direction: direction) }
+    }
+
+    @discardableResult
+    public func moveFolder(_ id: UUID, toParent parentID: UUID?) -> Bool {
+        change(reconcileSelection: false) { try $0.moveFolder(id, toParent: parentID) }
     }
 
     @discardableResult
@@ -525,11 +491,6 @@ public final class PageRuntime {
         if case let .peekEnded(preview, reason) = event { return handlePeekEnded(preview, reason) }
         if case let .closed(page) = event { abandonedPreviews.remove(page) }
         if case let .unloaded(page) = event { abandonedPreviews.remove(page) }
-        switch event {
-        case let .closed(page), let .unloaded(page), let .creationFailed(page):
-            navigationStates.removeValue(forKey: page)
-        default: break
-        }
         if peekSession.handle(event) { return }
         switch event {
         case let .splitRatioChanged(left, right, ratio):
@@ -561,10 +522,6 @@ public final class PageRuntime {
             if !accepted { engine.select(selectedLivePage) }
         case .peekEnded:
             return
-        case let .navigationState(page, value):
-            // A Peek preview is not live until promoted; its state is kept for that moment.
-            guard livePages[page.entryID] == page || peekSession.preview?.page == page else { return }
-            navigationStates[page] = value
         case .selectionCleared:
             guard state.currentWorkspace.activeEntryID != nil else { return }
             let accepted = change { candidate in

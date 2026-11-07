@@ -38,6 +38,29 @@ struct PageRuntimeTests {
     private let next = URL(string: "https://example.invalid/next")!
     private enum Failure: Error { case disk }
 
+    @Test func nestedFolderCommandsCommitMetadataOnlyAndRejectCycles() throws {
+        var state = BrowserState.initial()
+        let id = try state.addTab(url: start, title: "Pin")
+        try state.pinEntry(id)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        var commits: [BrowserState] = []
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { commits.append($0) })
+        #expect(runtime.start())
+        #expect(runtime.createFolder(name: "Outer"))
+        let outer = try #require(runtime.state.currentWorkspace.folders.first?.id)
+        #expect(runtime.createFolder(name: "Inner", parentID: outer))
+        let inner = runtime.state.currentWorkspace.subfolders(of: outer)[0].id
+        #expect(runtime.movePin(id, toFolder: inner))
+        let committed = commits.count
+        #expect(!runtime.moveFolder(outer, toParent: inner))
+        #expect(commits.count == committed)
+        #expect(runtime.dissolveFolder(inner))
+        #expect(runtime.state.currentWorkspace.folder(outer)?.pinIDs == [id])
+        #expect(runtime.moveFolder(outer, toParent: nil) == false)
+        #expect(engine.created.count == 1)
+        #expect(engine.closes.isEmpty)
+    }
+
     @Test func folderMetadataCommitsBeforePublishingAndNeverTouchesEngine() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: start, title: "Pin")
