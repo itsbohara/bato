@@ -457,13 +457,13 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     }
     /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
     private func blockingMenuItems() -> [NSMenuItem] {
-        guard let service = BlockingHost.shared.service else { return [] }
-        let controls = BlockingControls(service: service, activePage: { [weak self] in
+        guard BlockingHost.shared.profiles != nil else { return [] }
+        let controls = BlockingControls(serviceForProfile: { BlockingHost.shared.service(forProfile: $0) }, activePage: { [weak self] in
             guard let self, let controller = self.controller, let engine = self.engine,
                   let entryID = controller.runtime.state.currentWorkspace.activeEntryID,
                   let url = controller.runtime.state.visibleEntries.first(where: { $0.id == entryID })?.lastURL,
-                  let id = engine.pages.first(where: { $0.value.entryID == entryID })?.key else { return nil }
-            return BlockingControls.ActivePage(url: url, browserID: id)
+                  let (id, page) = engine.pages.first(where: { $0.value.entryID == entryID }) else { return nil }
+            return BlockingControls.ActivePage(url: url, browserID: id, profileKey: page.profileID.uuidString)
         }, reload: { [weak self] id in
             guard let self, let page = self.engine?.pages[id],
                   let url = self.controller?.runtime.state.visibleEntries.first(where: { $0.id == page.entryID })?.lastURL else { return }

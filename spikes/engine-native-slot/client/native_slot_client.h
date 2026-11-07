@@ -1,5 +1,6 @@
 #ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 #define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
+#include <string>
 #include <vector>
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
@@ -16,6 +17,11 @@ void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
                                         const std::vector<CefString>& urls);
 void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
+// The Bato Profile key (its UUID string) of the browser's request context, for request
+// filtering. Any thread. "default" when workspace mode is off; empty when the browser is
+// unknown or is the launch Profile's before Swift has named it, which callers treat as
+// unfiltered.
+std::string BatoWorkspaceBlockingProfileKey(int browser_id);
 // Drops the client's references to Profile request contexts and any outstanding window
 // request. Called when the application starts quitting: held contexts must not outlive the
 // browsers, and a later Profile window recreates its context on the same storage.

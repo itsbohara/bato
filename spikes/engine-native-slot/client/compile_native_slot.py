@@ -25,7 +25,7 @@ def main():
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
                                            'ArcSourceReader.swift', 'ImportTransaction.swift']),
-                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
+                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
                            ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
                                               'ArcImportController.swift', 'BlockingControls.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]

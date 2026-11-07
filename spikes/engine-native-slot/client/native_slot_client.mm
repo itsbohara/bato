@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cmath>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -323,6 +324,49 @@ bool ContextPathIs(CefRefPtr<CefRequestContext> context, const std::string& path
   return context && !path.empty() && ResolvePath(context->GetCachePath().ToString()) == path;
 }
 
+// Request filtering runs on the IO thread, where the slot tables (main-thread only) are off
+// limits, so each browser's Profile key is recorded here when it is created. The launch
+// Profile's browsers have no key of their own: their value is empty and resolves to the key
+// Swift last used for the launch Profile. Intentionally leaked like the other process tables.
+struct BrowserProfileKeys {
+  std::mutex mutex;
+  std::map<int, std::string> by_browser;
+  std::string launch_key;
+};
+BrowserProfileKeys& ProfileKeys() {
+  static auto* keys = new BrowserProfileKeys;
+  return *keys;
+}
+
+void RememberLaunchProfileKey(const std::string& key) {
+  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+  ProfileKeys().launch_key = key;
+}
+
+// The Profile directory name of a request context path under the cache root: empty for the
+// launch Profile (<root>/Default), the key for <root>/<key>. False for any other location.
+bool ProfileKeyOfContext(CefRefPtr<CefRequestContext> context, std::string* key) {
+  const auto root = CacheRoot();
+  if (!context || root.empty()) return false;
+  const auto path = ResolvePath(context->GetCachePath().ToString());
+  if (path == root + "/Default") {
+    key->clear();
+    return true;
+  }
+  if (path.size() <= root.size() + 1 || path.compare(0, root.size() + 1, root + "/") != 0) return false;
+  const auto name = path.substr(root.size() + 1);
+  if (name.find('/') != std::string::npos) return false;
+  *key = name;
+  return true;
+}
+
+void RecordBrowserProfileKey(CefRefPtr<CefBrowser> browser) {
+  std::string key;
+  if (!ProfileKeyOfContext(browser->GetHost()->GetRequestContext(), &key)) return;
+  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+  ProfileKeys().by_browser[browser->GetIdentifier()] = key;
+}
+
 void PostProfileWindowResult(uint64_t token, const std::string& key, bool ok) {
   if (!g_swift_profile_ready) return;
   CefPostTask(TID_UI, base::BindOnce(
@@ -538,6 +582,7 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url, const char* utf8_p
   const std::string profile_key = utf8_profile_key ? utf8_profile_key : "";
   if (!WindowMatchesProfile(token, *slot, profile_key, launch != 0))
     return reject(WorkspaceRejection::kProfileMismatch);
+  if (launch != 0) RememberLaunchProfileKey(profile_key);
   // Copy URL and retain the same-window peer/context across Chrome callbacks.
   const CefString url(utf8_url);
   CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
@@ -862,6 +907,7 @@ int OpenProfileWindow(const char* utf8_key, int launch) {
   if (!ValidProfileKey(key) || !PendingWindow().key.empty()) return 0;
   CefRefPtr<CefRequestContext> context;
   if (launch) {
+    RememberLaunchProfileKey(key);
     context = CefRequestContext::GetGlobalContext();
     if (!ContextPathIs(context, ExpectedProfilePath("", true))) {
       LogProfileRefusal("launch-context-not-default");
@@ -968,9 +1014,18 @@ int BatoWorkspacePeekEnd(uint64_t token, uint64_t generation, int restore_parent
   return result;
 }
 
+std::string BatoWorkspaceBlockingProfileKey(int browser_id) {
+  if (!g_workspace_enabled) return "default";
+  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+  const auto found = ProfileKeys().by_browser.find(browser_id);
+  if (found == ProfileKeys().by_browser.end()) return "";
+  return found->second.empty() ? ProfileKeys().launch_key : found->second;
+}
+
 void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
   if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
   const int identifier = browser->GetIdentifier();
+  RecordBrowserProfileKey(browser);
   if (g_initial_browser_id == 0) g_initial_browser_id = identifier;
   if (identifier != g_initial_browser_id && PendingWindow().key.empty()) return;
   // OnAfterCreated precedes SetBrowser/tab-strip attachment. Only the posted
@@ -1045,6 +1100,10 @@ void BatoWorkspaceBrowserTitleChanged(CefRefPtr<CefBrowser> browser,
 void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser) {
   if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
   const int identifier = browser->GetIdentifier();
+  {
+    std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
+    ProfileKeys().by_browser.erase(identifier);
+  }
   for (auto& [token, slot] : WorkspaceSlots()) {
     if (slot.anchor && slot.anchor->IsSame(browser)) {
       slot.anchor = nullptr;

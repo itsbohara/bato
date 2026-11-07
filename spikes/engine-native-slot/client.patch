@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,49 @@
+@@ -2313,6 +2317,50 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -115,6 +115,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
 +      "tests/cefsimple/bato/BatoBlocking/BlockedCounters.swift",
 +      "tests/cefsimple/bato/BatoBlocking/BlockingHostExports.swift",
++      "tests/cefsimple/bato/BatoBlocking/BlockingProfiles.swift",
 +      "tests/cefsimple/bato/BatoBlocking/BlockingService.swift",
 +      "tests/cefsimple/bato/BatoBlocking/BlockingSettings.swift",
 +      "tests/cefsimple/bato/BatoBlocking/BlockingSettingsStore.swift",
@@ -145,7 +146,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2383,19 @@
+@@ -2336,12 +2384,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -168,12 +169,13 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1264 @@
+@@ -0,0 +1,1323 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
 +#include <cmath>
 +#include <map>
++#include <mutex>
 +#include <set>
 +#include <string>
 +#include <vector>
@@ -494,6 +496,49 @@
 +  return context && !path.empty() && ResolvePath(context->GetCachePath().ToString()) == path;
 +}
 +
++// Request filtering runs on the IO thread, where the slot tables (main-thread only) are off
++// limits, so each browser's Profile key is recorded here when it is created. The launch
++// Profile's browsers have no key of their own: their value is empty and resolves to the key
++// Swift last used for the launch Profile. Intentionally leaked like the other process tables.
++struct BrowserProfileKeys {
++  std::mutex mutex;
++  std::map<int, std::string> by_browser;
++  std::string launch_key;
++};
++BrowserProfileKeys& ProfileKeys() {
++  static auto* keys = new BrowserProfileKeys;
++  return *keys;
++}
++
++void RememberLaunchProfileKey(const std::string& key) {
++  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++  ProfileKeys().launch_key = key;
++}
++
++// The Profile directory name of a request context path under the cache root: empty for the
++// launch Profile (<root>/Default), the key for <root>/<key>. False for any other location.
++bool ProfileKeyOfContext(CefRefPtr<CefRequestContext> context, std::string* key) {
++  const auto root = CacheRoot();
++  if (!context || root.empty()) return false;
++  const auto path = ResolvePath(context->GetCachePath().ToString());
++  if (path == root + "/Default") {
++    key->clear();
++    return true;
++  }
++  if (path.size() <= root.size() + 1 || path.compare(0, root.size() + 1, root + "/") != 0) return false;
++  const auto name = path.substr(root.size() + 1);
++  if (name.find('/') != std::string::npos) return false;
++  *key = name;
++  return true;
++}
++
++void RecordBrowserProfileKey(CefRefPtr<CefBrowser> browser) {
++  std::string key;
++  if (!ProfileKeyOfContext(browser->GetHost()->GetRequestContext(), &key)) return;
++  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++  ProfileKeys().by_browser[browser->GetIdentifier()] = key;
++}
++
 +void PostProfileWindowResult(uint64_t token, const std::string& key, bool ok) {
 +  if (!g_swift_profile_ready) return;
 +  CefPostTask(TID_UI, base::BindOnce(
@@ -709,6 +754,7 @@
 +  const std::string profile_key = utf8_profile_key ? utf8_profile_key : "";
 +  if (!WindowMatchesProfile(token, *slot, profile_key, launch != 0))
 +    return reject(WorkspaceRejection::kProfileMismatch);
++  if (launch != 0) RememberLaunchProfileKey(profile_key);
 +  // Copy URL and retain the same-window peer/context across Chrome callbacks.
 +  const CefString url(utf8_url);
 +  CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
@@ -1033,6 +1079,7 @@
 +  if (!ValidProfileKey(key) || !PendingWindow().key.empty()) return 0;
 +  CefRefPtr<CefRequestContext> context;
 +  if (launch) {
++    RememberLaunchProfileKey(key);
 +    context = CefRequestContext::GetGlobalContext();
 +    if (!ContextPathIs(context, ExpectedProfilePath("", true))) {
 +      LogProfileRefusal("launch-context-not-default");
@@ -1139,9 +1186,18 @@
 +  return result;
 +}
 +
++std::string BatoWorkspaceBlockingProfileKey(int browser_id) {
++  if (!g_workspace_enabled) return "default";
++  std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++  const auto found = ProfileKeys().by_browser.find(browser_id);
++  if (found == ProfileKeys().by_browser.end()) return "";
++  return found->second.empty() ? ProfileKeys().launch_key : found->second;
++}
++
 +void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser) {
 +  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
 +  const int identifier = browser->GetIdentifier();
++  RecordBrowserProfileKey(browser);
 +  if (g_initial_browser_id == 0) g_initial_browser_id = identifier;
 +  if (identifier != g_initial_browser_id && PendingWindow().key.empty()) return;
 +  // OnAfterCreated precedes SetBrowser/tab-strip attachment. Only the posted
@@ -1216,6 +1272,10 @@
 +void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser) {
 +  if (!g_workspace_enabled || !CefCurrentlyOn(TID_UI)) return;
 +  const int identifier = browser->GetIdentifier();
++  {
++    std::lock_guard<std::mutex> lock(ProfileKeys().mutex);
++    ProfileKeys().by_browser.erase(identifier);
++  }
 +  for (auto& [token, slot] : WorkspaceSlots()) {
 +    if (slot.anchor && slot.anchor->IsSame(browser)) {
 +      slot.anchor = nullptr;
@@ -1435,9 +1495,10 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,36 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
++#include <string>
 +#include <vector>
 +#include "include/cef_browser.h"
 +#include "include/cef_command_line.h"
@@ -1454,6 +1515,11 @@
 +void BatoWorkspaceBrowserFaviconChanged(CefRefPtr<CefBrowser> browser,
 +                                        const std::vector<CefString>& urls);
 +void BatoWorkspaceBrowserClosed(CefRefPtr<CefBrowser> browser);
++// The Bato Profile key (its UUID string) of the browser's request context, for request
++// filtering. Any thread. "default" when workspace mode is off; empty when the browser is
++// unknown or is the launch Profile's before Swift has named it, which callers treat as
++// unfiltered.
++std::string BatoWorkspaceBlockingProfileKey(int browser_id);
 +// Drops the client's references to Profile request contexts and any outstanding window
 +// request. Called when the application starts quitting: held contexts must not outlive the
 +// browsers, and a later Profile window recreates its context on the same storage.
@@ -1496,7 +1562,7 @@
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
-+                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
++                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
@@ -2136,13 +2202,13 @@
 +    }
 +    /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
 +    private func blockingMenuItems() -> [NSMenuItem] {
-+        guard let service = BlockingHost.shared.service else { return [] }
-+        let controls = BlockingControls(service: service, activePage: { [weak self] in
++        guard BlockingHost.shared.profiles != nil else { return [] }
++        let controls = BlockingControls(serviceForProfile: { BlockingHost.shared.service(forProfile: $0) }, activePage: { [weak self] in
 +            guard let self, let controller = self.controller, let engine = self.engine,
 +                  let entryID = controller.runtime.state.currentWorkspace.activeEntryID,
 +                  let url = controller.runtime.state.visibleEntries.first(where: { $0.id == entryID })?.lastURL,
-+                  let id = engine.pages.first(where: { $0.value.entryID == entryID })?.key else { return nil }
-+            return BlockingControls.ActivePage(url: url, browserID: id)
++                  let (id, page) = engine.pages.first(where: { $0.value.entryID == entryID }) else { return nil }
++            return BlockingControls.ActivePage(url: url, browserID: id, profileKey: page.profileID.uuidString)
 +        }, reload: { [weak self] id in
 +            guard let self, let page = self.engine?.pages[id],
 +                  let url = self.controller?.runtime.state.visibleEntries.first(where: { $0.id == page.entryID })?.lastURL else { return }
@@ -2586,7 +2652,7 @@
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
-@@ -3,16 +3,29 @@
+@@ -3,16 +3,31 @@
  // can be found in the LICENSE file.
 
  #include "tests/cefsimple/simple_handler.h"
@@ -2599,9 +2665,11 @@
 +
 +#include <algorithm>
 +#include <atomic>
++#include <cctype>
 +#include <chrono>
  #include <cstdio>
 +#include <fstream>
++#include <map>
 +#include <memory>
 +#include <mutex>
  #include <sstream>
@@ -2617,17 +2685,21 @@
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  #include "include/wrapper/cef_closure_task.h"
-@@ -33,12 +46,402 @@
+@@ -33,12 +48,475 @@
               .ToString();
  }
 
 +// Built-in blocking. The Rust engine is loaded with dlopen so the GN build needs no Rust
-+// inputs. It runs when a blocking directory is known (--bato-blocking-dir, else
-+// <--bato-workspace-state>/blocking/default); --bato-no-blocking turns it off. The directory
-+// holds blocking-settings.json and lists/*.txt, both written atomically by the Swift side.
-+// A background task polls their stamps and builds a new engine off the IO thread; requests
-+// are allowed until the first engine is ready. Engines are immutable and shared_ptr-held, so
-+// a replaced engine stays alive for checks already running on the IO thread.
++// inputs. It runs when a blocking root is known (--bato-blocking-dir, else
++// <--bato-workspace-state>/blocking); --bato-no-blocking turns it off. The root holds the
++// filter lists shared by every Profile (lists/*.txt) and one settings directory per Profile
++// (<root>/<ProfileKey>/blocking-settings.json), all written atomically by the Swift side.
++// Each request resolves its browser to a Profile key, so a Profile's enabled flag and
++// exceptions never apply to another Profile. A background task polls file stamps and builds
++// engines off the IO thread, one per distinct list set (every Profile uses the shared one
++// today); requests are allowed until a Profile's settings and its engine are ready. Engines
++// are immutable and shared_ptr-held, so a replaced engine stays alive for checks already
++// running on the IO thread.
 +typedef void* (*BlockingCreate)(const char*);
 +typedef int (*BlockingCheck)(const void*, const char*, const char*, const char*);
 +typedef void (*BlockingFree)(void*);
@@ -2648,8 +2720,32 @@
 +  std::vector<std::string> exceptions;
 +};
 +
++// A directory of lists and the engine built from it. An empty directory means only the
++// --bato-blocking list.
++struct ListSet {
++  explicit ListSet(std::string directory) : directory(std::move(directory)) {}
++  const std::string directory;
++  // Touched only by the background refresh task.
++  std::string stamp;
++  // Guarded by BlockingState::mutex.
++  std::shared_ptr<const BlockingEngine> engine;
++};
++
++struct ProfileBlocking {
++  ProfileBlocking(std::string directory, std::shared_ptr<ListSet> lists)
++      : directory(std::move(directory)), lists(std::move(lists)) {}
++  // Empty without a blocking root: the default settings then apply.
++  const std::string directory;
++  const std::shared_ptr<ListSet> lists;
++  // Guarded by BlockingState::mutex. Null until the file is first read, which fails open.
++  std::shared_ptr<const BlockingSettings> settings;
++  // Touched only by the background refresh task.
++  bool settings_read = false;
++  std::string settings_stamp;
++};
++
 +struct BlockingState {
-+  std::string directory;
++  std::string root;
 +  std::string extra_list;
 +  bool log_blocked = false;
 +  BlockingCreate create = nullptr;
@@ -2658,11 +2754,8 @@
 +  BlockingBrowserHook page_started = nullptr;
 +  BlockingBrowserHook blocked = nullptr;
 +  std::mutex mutex;
-+  std::shared_ptr<const BlockingEngine> engine;
-+  std::shared_ptr<const BlockingSettings> settings;
-+  // Touched only by the background refresh task.
-+  std::string settings_stamp;
-+  std::string lists_stamp;
++  std::map<std::string, std::shared_ptr<ListSet>> list_sets;
++  std::map<std::string, std::shared_ptr<ProfileBlocking>> profiles;
 +};
 +
 +// Intentionally leaked: handlers and the refresh task outlive static destruction.
@@ -2821,16 +2914,17 @@
 +  return false;
 +}
 +
-+void RefreshBlockingSettings(BlockingState* state) {
-+  if (state->directory.empty()) {
++void RefreshProfileSettings(ProfileBlocking* profile) {
++  if (profile->directory.empty()) {
 +    return;
 +  }
-+  const std::string path = state->directory + "/blocking-settings.json";
++  const std::string path = profile->directory + "/blocking-settings.json";
 +  const std::string stamp = FileStamp(path);
-+  if (stamp == state->settings_stamp) {
++  if (profile->settings_read && stamp == profile->settings_stamp) {
 +    return;
 +  }
-+  state->settings_stamp = stamp;
++  profile->settings_read = true;
++  profile->settings_stamp = stamp;
 +  std::shared_ptr<const BlockingSettings> settings;
 +  std::string json;
 +  if (stamp.empty()) {
@@ -2843,29 +2937,29 @@
 +    LogBlockingEvent("settings-rejected", "", "");
 +    return;
 +  }
-+  std::lock_guard<std::mutex> lock(state->mutex);
-+  state->settings = std::move(settings);
++  std::lock_guard<std::mutex> lock(g_blocking->mutex);
++  profile->settings = std::move(settings);
 +}
 +
-+void RefreshBlockingEngine(BlockingState* state) {
-+  const std::string lists = state->directory + "/lists";
++void RefreshListSet(BlockingState* state, ListSet* lists) {
++  const std::string directory = lists->directory + "/lists";
 +  const std::vector<std::string> names =
-+      state->directory.empty() ? std::vector<std::string>() : ListFiles(lists);
++      lists->directory.empty() ? std::vector<std::string>() : ListFiles(directory);
 +  std::string stamp;
 +  for (const std::string& name : names) {
-+    stamp += name + "=" + FileStamp(lists + "/" + name) + ";";
++    stamp += name + "=" + FileStamp(directory + "/" + name) + ";";
 +  }
 +  if (!state->extra_list.empty()) {
 +    stamp += "extra=" + FileStamp(state->extra_list);
 +  }
-+  if (stamp == state->lists_stamp) {
++  if (stamp == lists->stamp) {
 +    return;
 +  }
-+  state->lists_stamp = stamp;
++  lists->stamp = stamp;
 +  std::string text;
 +  for (const std::string& name : names) {
 +    std::string part;
-+    if (ReadFile(lists + "/" + name, &part)) {
++    if (ReadFile(directory + "/" + name, &part)) {
 +      text += part + "\n";
 +    }
 +  }
@@ -2886,7 +2980,7 @@
 +                                                        state->release);
 +  {
 +    std::lock_guard<std::mutex> lock(state->mutex);
-+    state->engine = std::move(holder);
++    lists->engine = std::move(holder);
 +  }
 +  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
 +      std::chrono::steady_clock::now() - started);
@@ -2895,13 +2989,25 @@
 +          static_cast<long long>(elapsed.count()), text.size());
 +}
 +
-+// File thread. Reschedules itself for the life of the process.
++// File thread. Reschedules itself for the life of the process. Settings are cheap and
++// refresh first so a new Profile is not held up by an engine build.
 +void RefreshBlocking() {
 +  if (g_blocking_stopping) {
 +    return;
 +  }
-+  RefreshBlockingSettings(g_blocking);
-+  RefreshBlockingEngine(g_blocking);
++  std::vector<std::shared_ptr<ProfileBlocking>> profiles;
++  std::vector<std::shared_ptr<ListSet>> list_sets;
++  {
++    std::lock_guard<std::mutex> lock(g_blocking->mutex);
++    for (const auto& entry : g_blocking->profiles) profiles.push_back(entry.second);
++    for (const auto& entry : g_blocking->list_sets) list_sets.push_back(entry.second);
++  }
++  for (const auto& profile : profiles) {
++    RefreshProfileSettings(profile.get());
++  }
++  for (const auto& lists : list_sets) {
++    RefreshListSet(g_blocking, lists.get());
++  }
 +  if (g_blocking_stopping) {
 +    return;
 +  }
@@ -2909,18 +3015,49 @@
 +                     kBlockingPollMs);
 +}
 +
++// Keys name directories, so only the characters of a UUID or a plain name are accepted.
++bool ValidBlockingProfileKey(const std::string& key) {
++  if (key.empty() || key.size() > 64 || key == "lists") {
++    return false;
++  }
++  return std::all_of(key.begin(), key.end(), [](unsigned char c) {
++    return std::isalnum(c) || c == '-' || c == '_';
++  });
++}
++
++// IO thread. The Profile's blocking state, created on its first request.
++std::shared_ptr<ProfileBlocking> BlockingProfileFor(const std::string& key) {
++  std::lock_guard<std::mutex> lock(g_blocking->mutex);
++  auto found = g_blocking->profiles.find(key);
++  if (found != g_blocking->profiles.end()) {
++    return found->second;
++  }
++  const std::string lists_root = g_blocking->root;
++  auto& lists = g_blocking->list_sets[lists_root];
++  if (!lists) {
++    lists = std::make_shared<ListSet>(lists_root);
++  }
++  auto profile = std::make_shared<ProfileBlocking>(
++      lists_root.empty() ? "" : lists_root + "/" + key, lists);
++  if (profile->directory.empty()) {
++    profile->settings = std::make_shared<BlockingSettings>();
++  }
++  g_blocking->profiles[key] = profile;
++  return profile;
++}
++
 +void InitializeBlocking() {
 +  auto command_line = CefCommandLine::GetGlobalCommandLine();
 +  if (g_blocking || command_line->HasSwitch("bato-no-blocking")) {
 +    return;
 +  }
-+  std::string directory = command_line->GetSwitchValue("bato-blocking-dir");
-+  if (directory.empty() && command_line->HasSwitch("bato-workspace-state")) {
-+    directory = command_line->GetSwitchValue("bato-workspace-state").ToString() +
-+                "/blocking/default";
++  std::string root = command_line->GetSwitchValue("bato-blocking-dir");
++  if (root.empty() && command_line->HasSwitch("bato-workspace-state")) {
++    root = command_line->GetSwitchValue("bato-workspace-state").ToString() +
++           "/blocking";
 +  }
 +  const std::string extra_list = command_line->GetSwitchValue("bato-blocking");
-+  if (directory.empty() && extra_list.empty()) {
++  if (root.empty() && extra_list.empty()) {
 +    return;
 +  }
 +  std::string library_path = command_line->GetSwitchValue("bato-blocking-lib");
@@ -2945,13 +3082,12 @@
 +    return;
 +  }
 +  auto* state = new BlockingState;
-+  state->directory = directory;
++  state->root = root;
 +  state->extra_list = extra_list;
 +  state->log_blocked = command_line->HasSwitch("bato-blocking-log");
 +  state->create = create;
 +  state->check = check;
 +  state->release = release;
-+  state->settings = std::make_shared<BlockingSettings>();
 +  // Optional Swift hooks: list updates and per-page blocked counts.
 +  state->page_started = reinterpret_cast<BlockingBrowserHook>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftBlockingPageStarted"));
@@ -2959,8 +3095,8 @@
 +      dlsym(RTLD_DEFAULT, "BatoSwiftBlockingRequestBlocked"));
 +  auto start = reinterpret_cast<BlockingStart>(
 +      dlsym(RTLD_DEFAULT, "BatoSwiftBlockingStart"));
-+  if (start && !directory.empty()) {
-+    start(directory.c_str());
++  if (start && !root.empty()) {
++    start(root.c_str());
 +  }
 +  g_blocking = state;
 +  CefPostTask(TID_FILE_USER_VISIBLE, base::BindOnce(&RefreshBlocking));
@@ -2968,12 +3104,16 @@
 +
 +class BlockingResourceHandler : public CefResourceRequestHandler {
 + public:
-+  BlockingResourceHandler(std::string source_url, std::string page_host)
-+      : source_url_(std::move(source_url)), page_host_(std::move(page_host)) {}
++  BlockingResourceHandler(std::shared_ptr<ProfileBlocking> profile,
++                          std::string source_url,
++                          std::string page_host)
++      : profile_(std::move(profile)),
++        source_url_(std::move(source_url)),
++        page_host_(std::move(page_host)) {}
 +
 +  // IO thread. Exceptions are checked here, before the engine, so a toggle needs
-+  // no list recompile. Fails open: no engine yet, an exception, an invalid URL or an
-+  // engine error never blocks.
++  // no list recompile. Fails open: no settings or engine yet, an exception, an invalid URL
++  // or an engine error never blocks.
 +  ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser> browser,
 +                                   CefRefPtr<CefFrame> frame,
 +                                   CefRefPtr<CefRequest> request,
@@ -2982,10 +3122,10 @@
 +    std::shared_ptr<const BlockingSettings> settings;
 +    {
 +      std::lock_guard<std::mutex> lock(g_blocking->mutex);
-+      engine = g_blocking->engine;
-+      settings = g_blocking->settings;
++      engine = profile_->lists->engine;
++      settings = profile_->settings;
 +    }
-+    if (!engine || !settings->enabled ||
++    if (!engine || !settings || !settings->enabled ||
 +        HostHasException(*settings, page_host_)) {
 +      return RV_CONTINUE;
 +    }
@@ -3005,6 +3145,7 @@
 +  }
 +
 + private:
++  const std::shared_ptr<ProfileBlocking> profile_;
 +  const std::string source_url_;
 +  const std::string page_host_;
 +  IMPLEMENT_REFCOUNTING(BlockingResourceHandler);
@@ -3020,7 +3161,7 @@
  }
 
  SimpleHandler::~SimpleHandler() {
-@@ -59,6 +462,7 @@
+@@ -59,6 +537,7 @@
      int command_id,
      cef_window_open_disposition_t disposition) {
    CEF_REQUIRE_UI_THREAD();
@@ -3028,7 +3169,7 @@
    if (!NativeQuitExperimentEnabled() ||
        command_id != cef_id_for_command_id_name("IDC_EXIT")) {
      return false;
-@@ -90,6 +494,7 @@
+@@ -90,6 +569,7 @@
      bool& active;
      ~ScopedRequestReset() { active = false; }
    } reset{quit_request_in_progress_};
@@ -3036,7 +3177,7 @@
    const int command = cef_id_for_command_id_name("IDC_EXIT");
    for (const auto& browser : browser_list_) {
      auto host = browser->GetHost();
-@@ -103,9 +508,17 @@
+@@ -103,9 +583,17 @@
    fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
  }
 
@@ -3054,7 +3195,7 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -117,6 +530,12 @@
+@@ -117,6 +605,12 @@
      // Set the title of the window using platform APIs.
      PlatformTitleChange(browser, title);
    }
@@ -3067,7 +3208,7 @@
  }
 
  void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-@@ -133,6 +552,7 @@
+@@ -133,6 +627,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -3075,7 +3216,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +573,7 @@
+@@ -153,6 +648,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -3083,7 +3224,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -173,8 +594,55 @@
+@@ -173,8 +669,62 @@
      if (NativeQuitExperimentEnabled()) {
        fprintf(stderr, "{\"event\":\"sample-quit-message-loop-requested\"}\n");
      }
@@ -3135,7 +3276,14 @@
 +    page_url = source;
 +  }
 +  const std::string page_host = HostOfUrl(page_url);
-+  return new BlockingResourceHandler(std::move(source), page_host);
++  // The browser's Profile selects whose settings apply. An unresolved browser is not filtered.
++  const std::string key =
++      BatoWorkspaceBlockingProfileKey(browser ? browser->GetIdentifier() : 0);
++  if (!ValidBlockingProfileKey(key)) {
++    return nullptr;
++  }
++  return new BlockingResourceHandler(BlockingProfileFor(key), std::move(source),
++                                     page_host);
  }
 
  void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
@@ -3197,7 +3345,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1013 @@
+@@ -0,0 +1,1096 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -3252,12 +3400,22 @@
 +    public var id: UUID
 +    public var name: String
 +    public var favorites: [PageEntry]
++    /// Badge color in the switcher. Absent in documents saved before Profiles could be colored.
++    public var color: String?
 +
-+    public init(id: UUID = UUID(), name: String, favorites: [PageEntry] = []) {
++    public init(id: UUID = UUID(), name: String, favorites: [PageEntry] = [], color: String? = nil) {
 +        self.id = id
 +        self.name = name
 +        self.favorites = favorites
++        self.color = color
 +    }
++}
++
++/// One switcher section: a Profile and its workspaces in global workspace order.
++public struct ProfileGroup: Equatable, Sendable {
++    public var profile: BrowserProfile
++    public var isLaunch: Bool
++    public var workspaces: [Workspace]
 +}
 +
 +/// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
@@ -3414,6 +3572,7 @@
 +    case invalidColor
 +    case duplicateIdentity
 +    case missingProfile
++    case duplicateProfileName
 +    case missingWorkspace
 +    case invalidEntryOwnership
 +    case invalidSavedURL
@@ -3431,6 +3590,7 @@
 +        case .invalidColor: "The workspace color must be a six-digit hex color."
 +        case .duplicateIdentity: "The organization contains duplicate identifiers."
 +        case .missingProfile: "The workspace's Profile could not be found."
++        case .duplicateProfileName: "Another Profile already has that name."
 +        case .missingWorkspace: "The selected workspace could not be found."
 +        case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
 +        case .invalidSavedURL: "The saved page destination is invalid."
@@ -3541,6 +3701,7 @@
 +        for profile in profiles {
 +            try claim(profile.id)
 +            try Self.validateName(profile.name)
++            if let color = profile.color { try Self.validateColor(color) }
 +            for entry in profile.favorites { try validateEntry(entry, kind: .favorite) }
 +        }
 +        let profileIDs = Set(profiles.map(\.id))
@@ -3548,9 +3709,7 @@
 +            try claim(workspace.id)
 +            try Self.validateName(workspace.name)
 +            guard profileIDs.contains(workspace.profileID) else { throw BrowserStateError.missingProfile }
-+            guard workspace.color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
-+                throw BrowserStateError.invalidColor
-+            }
++            try Self.validateColor(workspace.color)
 +            for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
 +            for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
 +            let pinIDs = Set(workspace.pins.map(\.id))
@@ -3615,6 +3774,71 @@
 +            draft.profiles.append(profile)
 +            return profile.id
 +        }
++    }
++
++    /// Adds a Profile and its first workspace together; an invalid name or color leaves both absent.
++    /// Selection is unchanged so callers choose whether to enter the new Profile.
++    @discardableResult
++    public mutating func createProfile(name: String, color: String, workspaceName: String) throws
++        -> (profileID: UUID, workspaceID: UUID) {
++        try transact { draft in
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            let workspaceName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateName(name)
++            try Self.validateName(workspaceName)
++            try Self.validateColor(color)
++            guard draft.isProfileNameAvailable(name) else { throw BrowserStateError.duplicateProfileName }
++            let profile = BrowserProfile(name: name, color: color.uppercased())
++            let workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
++            draft.profiles.append(profile)
++            draft.workspaces.append(workspace)
++            return (profile.id, workspace.id)
++        }
++    }
++
++    /// Renaming never changes the Profile's identity, so its engine storage stays attached.
++    public mutating func updateProfile(_ id: UUID, name: String, color: String) throws {
++        try transact { draft in
++            guard let index = draft.profiles.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingProfile
++            }
++            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
++            try Self.validateName(name)
++            try Self.validateColor(color)
++            guard draft.isProfileNameAvailable(name, excluding: id) else { throw BrowserStateError.duplicateProfileName }
++            draft.profiles[index].name = name
++            draft.profiles[index].color = color.uppercased()
++        }
++    }
++
++    /// Names are compared after trimming, ignoring case, so two Profiles cannot look identical in the switcher.
++    public func isProfileNameAvailable(_ name: String, excluding id: UUID? = nil) -> Bool {
++        let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines)
++        return !profiles.contains { $0.id != id && $0.name.caseInsensitiveCompare(wanted) == .orderedSame }
++    }
++
++    public var hasMultipleProfiles: Bool { profiles.count > 1 }
++
++    /// Workspaces grouped under their Profile, Profiles in creation order.
++    public var profileGroups: [ProfileGroup] {
++        profiles.map { profile in
++            ProfileGroup(profile: profile, isLaunch: profile.id == launchProfileID,
++                         workspaces: workspaces.filter { $0.profileID == profile.id })
++        }
++    }
++
++    /// Switcher order, which numbered shortcuts follow: grouped by Profile, so it can differ from `workspaces`.
++    public var switcherWorkspaceIDs: [UUID] { profileGroups.flatMap { $0.workspaces.map(\.id) } }
++
++    /// `number` is 1-based, like the shortcut digit.
++    public func switcherWorkspaceID(forShortcut number: Int) -> UUID? {
++        let ids = switcherWorkspaceIDs
++        return ids.indices.contains(number - 1) ? ids[number - 1] : nil
++    }
++
++    /// The Profile's own color, else its first workspace's, so imported Profiles still get a badge.
++    public func displayColor(of profile: BrowserProfile) -> String {
++        profile.color ?? workspaces.first { $0.profileID == profile.id }?.color ?? "#B47879"
 +    }
 +
 +    @discardableResult
@@ -4015,13 +4239,14 @@
 +    }
 +
 +    /// Engine callbacks may update an entry in an inactive workspace without changing selection.
++    /// Only temporary tabs follow the page title; a Favorite or pin keeps the title it was saved with.
 +    public mutating func recordNavigation(entryID: UUID, url: URL, title: String) throws {
 +        try transact { draft in
 +            try Self.validateURL(url)
 +            guard draft.allEntries.contains(where: { $0.id == entryID }) else { throw BrowserStateError.missingEntry }
 +            draft.updateEntry(entryID) { entry in
 +                entry.lastURL = url
-+                entry.title = title
++                if entry.kind == .temporary { entry.title = title }
 +            }
 +        }
 +    }
@@ -4203,6 +4428,12 @@
 +
 +    private static func validateName(_ name: String) throws {
 +        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BrowserStateError.emptyName }
++    }
++
++    private static func validateColor(_ color: String) throws {
++        guard color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
++            throw BrowserStateError.invalidColor
++        }
 +    }
 +
 +    private static func validateURL(_ url: URL) throws {
@@ -4482,7 +4713,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,737 @@
+@@ -0,0 +1,754 @@
 +import Foundation
 +import BatoCore
 +
@@ -4705,6 +4936,23 @@
 +    @discardableResult
 +    public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
 +        change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
++    }
++
++    /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine
++    /// cannot open is never saved.
++    @discardableResult
++    public func createProfile(name: String, color: String, workspaceName: String,
++                              deferPageSelection: Bool = false) -> Bool {
++        change(reconcileSelection: !deferPageSelection) { candidate in
++            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
++            try candidate.activateWorkspace(created.workspaceID)
++        }
++    }
++
++    /// Metadata only: the visible page and the Profile's engine context are untouched.
++    @discardableResult
++    public func updateProfile(_ id: UUID, name: String, color: String) -> Bool {
++        change(reconcileSelection: false) { try $0.updateProfile(id, name: name, color: color) }
 +    }
 +
 +    /// Workspace ordering must not change active pages or pending close operations.
@@ -5342,7 +5590,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,1823 @@
+@@ -0,0 +1,2103 @@
 +import AppKit
 +import BatoCore
 +import BatoPersistence
@@ -5370,8 +5618,8 @@
 +    private let workspaceActions = NSButton(frame: .zero)
 +    private let sidebarToggle = NSButton(frame: .zero)
 +    private var trafficLightClearanceWidth: NSLayoutConstraint?
-+    private let profileLabel = NSTextField(labelWithString: "")
-+    private let spaceLabel = NSTextField(labelWithString: "")
++    private let profileButton = NSButton(frame: .zero)
++    private let switcherButton = NSButton(frame: .zero)
 +    private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
 +    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
@@ -5385,6 +5633,7 @@
 +    private var sheetObserver: NSObjectProtocol?
 +    private var workspaceEditor: WorkspaceEditor?
 +    private var folderEditor: FolderEditor?
++    private var profileEditor: ProfileEditor?
 +    private var pageFinder: PageFinder?
 +    private let organizationStore: OrganizationStore<BrowserState>
 +    private var arcImport: ArcImportController?
@@ -5639,6 +5888,7 @@
 +            view.closeSelection = { [weak self] in self?.closeSelection() }
 +            view.editAddress = { [weak self] in self?.editAddress() ?? false }
 +            view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
++            view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
 +        }
 +
 +        let workspaceEdit = ActionButton(title: "") { [weak self] in self?.editWorkspace() }
@@ -5660,14 +5910,22 @@
 +        let clearanceWidth = trafficLightClearance.widthAnchor.constraint(equalToConstant: SidebarMetrics.trafficLightClearance)
 +        clearanceWidth.isActive = true
 +        self.trafficLightClearanceWidth = clearanceWidth
-+        spaceLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-+        spaceLabel.textColor = .labelColor
-+        spaceLabel.lineBreakMode = .byTruncatingTail
-+        spaceLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-+        spaceLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        spaceLabel.setAccessibilityLabel("Current workspace")
-+        spaceLabel.setAccessibilityIdentifier("bato-space-name")
-+        let heading = NSStackView(views: [trafficLightClearance, spaceLabel, sidebarToggle, workspaceEdit, workspaceActions])
++        switcherButton.target = self
++        switcherButton.action = #selector(showWorkspaceSwitcher)
++        switcherButton.isBordered = false
++        switcherButton.bezelStyle = .recessed
++        switcherButton.font = .systemFont(ofSize: 13, weight: .semibold)
++        switcherButton.contentTintColor = .labelColor
++        switcherButton.alignment = .left
++        switcherButton.lineBreakMode = .byTruncatingTail
++        switcherButton.imagePosition = .imageLeading
++        switcherButton.imageHugsTitle = true
++        switcherButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        switcherButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        switcherButton.setAccessibilityLabel("Current workspace")
++        switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
++        switcherButton.setAccessibilityIdentifier("bato-space-name")
++        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceEdit, workspaceActions])
 +        heading.orientation = .horizontal
 +        heading.alignment = .centerY
 +        heading.distribution = .fill
@@ -5741,17 +5999,21 @@
 +        let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
 +        workspaceRow.orientation = .horizontal
 +        workspaceRow.spacing = 6
-+        let profileIcon = NSImageView(image: sidebarSymbol("person.crop.circle", size: 13))
-+        profileIcon.contentTintColor = .secondaryLabelColor
-+        profileIcon.setAccessibilityElement(false)
-+        profileLabel.font = .systemFont(ofSize: 11)
-+        profileLabel.textColor = .secondaryLabelColor
-+        profileLabel.lineBreakMode = .byTruncatingTail
-+        profileLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        let profileRow = NSStackView(views: [profileIcon, profileLabel])
-+        profileRow.orientation = .horizontal
-+        profileRow.spacing = 6
-+        let footer = NSStackView(views: [workspaceRow, profileRow])
++        profileButton.target = self
++        profileButton.action = #selector(showProfileMenu)
++        profileButton.isBordered = false
++        profileButton.bezelStyle = .recessed
++        profileButton.font = .systemFont(ofSize: 11)
++        profileButton.contentTintColor = .secondaryLabelColor
++        profileButton.alignment = .left
++        profileButton.lineBreakMode = .byTruncatingTail
++        profileButton.imagePosition = .imageLeading
++        profileButton.imageHugsTitle = true
++        profileButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        profileButton.setAccessibilityLabel("Profile")
++        profileButton.setAccessibilityHelp("Switch, create or rename Profiles")
++        profileButton.setAccessibilityIdentifier("bato-profile-button")
++        let footer = NSStackView(views: [workspaceRow, profileButton])
 +        footer.orientation = .vertical
 +        footer.alignment = .leading
 +        footer.spacing = 8
@@ -5779,7 +6041,7 @@
 +            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            workspaceRow.widthAnchor.constraint(equalTo: footer.widthAnchor),
-+            profileRow.widthAnchor.constraint(equalTo: footer.widthAnchor),
++            profileButton.widthAnchor.constraint(equalTo: footer.widthAnchor),
 +            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 36)
 +        ])
@@ -5827,9 +6089,11 @@
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
 +        (root as? WorkspaceRoot)?.accent = accent
-+        spaceLabel.stringValue = workspace.name
-+        spaceLabel.toolTip = workspace.name
-+        spaceLabel.setAccessibilityValue(workspace.name)
++        let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
++        switcherButton.title = workspace.name
++        switcherButton.image = colorDot(workspaceColor(workspace.color))
++        switcherButton.toolTip = "\(workspace.name) · Profile \(currentProfile?.name ?? "")"
++        switcherButton.setAccessibilityValue("\(workspace.name), Profile \(currentProfile?.name ?? "")")
 +        let focusedControl = pageControls.first { _, controls in
 +            root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
 +        }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -5873,7 +6137,10 @@
 +        workspacePicker.removeAllItems()
 +        workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
 +        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
-+        profileLabel.stringValue = state.profiles.first(where: { $0.id == workspace.profileID })?.name ?? ""
++        profileButton.title = currentProfile?.name ?? ""
++        profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
++        profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
++        profileButton.setAccessibilityValue(currentProfile?.name ?? "")
 +        pageFinder?.refresh()
 +        let peek = runtime.peekSession.preview
 +        peekRow.isHidden = peek == nil
@@ -6592,6 +6859,136 @@
 +        editor.focusName()
 +    }
 +
++    private func switchWorkspace(_ id: UUID) {
++        guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
++              id != runtime.state.activeWorkspaceID else { return }
++        perform { runtime.activateWorkspace(id) }
++    }
++
++    /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
++    @objc private func showWorkspaceSwitcher() {
++        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        requestNativeFocus?()
++        let state = runtime.state
++        let currentProfileID = state.currentWorkspace.profileID
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        var number = 1
++        for group in state.profileGroups {
++            if state.hasMultipleProfiles {
++                let own = group.profile.id == currentProfileID
++                menu.addItem(profileHeader(own ? group.profile.name : "\(group.profile.name) · opens in its own window",
++                                           color: state.displayColor(of: group.profile)))
++            }
++            for workspace in group.workspaces {
++                let item = ActionMenuItem(title: workspace.name) { [weak self] in self?.switchWorkspace(workspace.id) }
++                item.image = colorDot(workspaceColor(workspace.color))
++                item.state = workspace.id == state.activeWorkspaceID ? .on : .off
++                item.toolTip = "\(workspace.name) · Profile \(group.profile.name)"
++                if number <= 9 {
++                    item.keyEquivalent = "\(number)"
++                    item.keyEquivalentModifierMask = .control
++                }
++                menu.addItem(item)
++                number += 1
++            }
++        }
++        menu.addItem(.separator())
++        menu.addItem(ActionMenuItem(title: "New Workspace") { [weak self] in
++            guard let self else { return }
++            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
++        })
++        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
++        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
++        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: switcherButton.bounds.maxY + 4), in: switcherButton)
++    }
++
++    @objc private func showProfileMenu() {
++        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        requestNativeFocus?()
++        let state = runtime.state
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        for group in state.profileGroups {
++            let item = ActionMenuItem(title: group.profile.name) { [weak self] in
++                // A Profile opens on its first workspace; other workspaces are in the switcher.
++                if let first = group.workspaces.first { self?.switchWorkspace(first.id) }
++            }
++            item.image = colorDot(workspaceColor(state.displayColor(of: group.profile)))
++            item.state = group.profile.id == state.currentWorkspace.profileID ? .on : .off
++            item.isEnabled = !group.workspaces.isEmpty
++            menu.addItem(item)
++        }
++        menu.addItem(.separator())
++        menu.addItem(ActionMenuItem(title: "New Profile…") { [weak self] in self?.editProfile(creating: true) })
++        menu.addItem(ActionMenuItem(title: "Rename Profile…") { [weak self] in self?.editProfile(creating: false) })
++        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: profileButton.bounds.minY - 4), in: profileButton)
++    }
++
++    private func profileHeader(_ title: String, color: String) -> NSMenuItem {
++        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
++        item.isEnabled = false
++        item.image = colorDot(workspaceColor(color))
++        item.attributedTitle = NSAttributedString(string: title, attributes: [
++            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
++        return item
++    }
++
++    private func editProfile(creating: Bool) {
++        guard hasStarted, profileEditor == nil, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        let state = runtime.state
++        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }) else { return }
++        requestNativeFocus?()
++        func failure() -> String {
++            runtime.lastError == .saveFailed ? "Changes couldn’t be saved. Reopen Bato to reload organization."
++                : "The Profile couldn’t be saved. Check its name and try again."
++        }
++        let duplicate = "Another Profile already has that name."
++        let editor: ProfileEditor
++        if creating {
++            let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
++            let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
++            editor = ProfileEditor(creating: true, name: "", color: color) { [weak self] name, color, workspaceName in
++                guard let self else { return "Bato is no longer available." }
++                guard self.runtime.state.isProfileNameAvailable(name) else { return duplicate }
++                guard self.runtime.createProfile(name: name, color: color, workspaceName: workspaceName.isEmpty ? name : workspaceName,
++                                                 deferPageSelection: true) else { return failure() }
++                self.render()
++                return nil
++            }
++        } else {
++            let profileID = profile.id
++            editor = ProfileEditor(creating: false, name: profile.name, color: state.displayColor(of: profile)) { [weak self] name, color, _ in
++                guard let self else { return "Bato is no longer available." }
++                guard self.runtime.state.isProfileNameAvailable(name, excluding: profileID) else { return duplicate }
++                guard self.runtime.updateProfile(profileID, name: name, color: color) else { return failure() }
++                self.render()
++                return nil
++            }
++        }
++        profileEditor = editor
++        guard let sheet = editor.window else { profileEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] response in
++            guard let self else { return }
++            self.profileEditor = nil
++            guard creating, response == .OK else { return }
++            // The new Profile's workspace was selected with its page work deferred; finish it after the sheet.
++            DispatchQueue.main.async { [weak self, weak window] in
++                guard let self, let window, self.root.window === window else { return }
++                if let request = self.requestPagePresentation { request() } else { self.resumeCommittedSelection() }
++            }
++        }
++        editor.focusName()
++    }
++
++    /// Control-1…9 follow the switcher's order, which groups workspaces by Profile.
++    private func switchToShortcut(_ number: Int) -> Bool {
++        guard hasStarted, let id = runtime.state.switcherWorkspaceID(forShortcut: number) else { return false }
++        switchWorkspace(id)
++        return true
++    }
++
 +    @objc private func workspaceChanged() {
 +        let index = workspacePicker.indexOfSelectedItem
 +        guard workspaceIDs.indices.contains(index) else { return }
@@ -6738,6 +7135,7 @@
 +    var closeSelection: (() -> Void)?
 +    var editAddress: (() -> Bool)?
 +    var copyLink: (() -> Bool)?
++    var switchToWorkspace: ((Int) -> Bool)?
 +    override var isFlipped: Bool { true }
 +    override func isAccessibilityElement() -> Bool { true }
 +    override func accessibilityRole() -> NSAccessibility.Role? { .group }
@@ -6751,6 +7149,8 @@
 +        case (.command, "w"): closeSelection?(); return true
 +        case (.command, "l"): if editAddress?() == true { return true }
 +        case ([.command, .shift], "c"): if copyLink?() == true { return true }
++        case (.control, let digit?) where digit.count == 1 && "123456789".contains(digit):
++            if switchToWorkspace?(Int(digit)!) == true { return true }
 +        default: break
 +        }
 +        return super.performKeyEquivalent(with: event)
@@ -6785,6 +7185,19 @@
 +    @objc private func runAction() { invoke() }
 +}
 +
++private let sidebarColorPalette: [(name: String, hex: String)] = [
++    ("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
++    ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
++
++@MainActor
++private func colorDot(_ color: NSColor, size: CGFloat = 9) -> NSImage {
++    NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
++        color.setFill()
++        NSBezierPath(ovalIn: rect).fill()
++        return true
++    }
++}
++
 +/// Uses a sheet-local draft: Cancel never publishes organization changes.
 +@MainActor
 +private final class WorkspaceEditor: NSWindowController {
@@ -6807,9 +7220,7 @@
 +        nameField.cell?.sendsActionOnEndEditing = false
 +        colorPicker.setAccessibilityLabel("Workspace color")
 +        colorPicker.setAccessibilityIdentifier("bato-workspace-color")
-+        let palette = [("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
-+                       ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
-+        for (title, value) in palette {
++        for (title, value) in sidebarColorPalette {
 +            colorPicker.addItem(withTitle: title)
 +            colors.append(value)
 +        }
@@ -7165,6 +7576,123 @@
 +    return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
 +                   green: CGFloat((value >> 8) & 255) / 255,
 +                   blue: CGFloat(value & 255) / 255, alpha: 1)
++}
++
++/// Sheet-local draft for a new or renamed Profile; Cancel publishes nothing.
++@MainActor
++private final class ProfileEditor: NSWindowController {
++    private let nameField = NSTextField(string: "")
++    private let workspaceField = NSTextField(string: "")
++    private let colorPicker = NSPopUpButton(frame: .zero, pullsDown: false)
++    private let errorLabel = NSTextField(wrappingLabelWithString: "")
++    private let save: (String, String, String) -> String?
++    private var colors: [String] = []
++
++    init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
++        self.save = save
++        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: creating ? 330 : 240),
++                              styleMask: [.titled], backing: .buffered, defer: false)
++        window.title = creating ? "New Profile" : "Rename Profile"
++        window.isReleasedWhenClosed = false
++        super.init(window: window)
++        nameField.stringValue = name
++        nameField.setAccessibilityLabel("Profile name")
++        nameField.setAccessibilityIdentifier("bato-profile-name")
++        nameField.cell?.sendsActionOnEndEditing = false
++        workspaceField.placeholderString = "Same as Profile name"
++        workspaceField.setAccessibilityLabel("First workspace name")
++        workspaceField.setAccessibilityIdentifier("bato-profile-first-workspace")
++        colorPicker.setAccessibilityLabel("Profile color")
++        colorPicker.setAccessibilityIdentifier("bato-profile-color")
++        for (title, value) in sidebarColorPalette {
++            colorPicker.addItem(withTitle: title)
++            colorPicker.lastItem?.image = colorDot(workspaceColor(value))
++            colors.append(value)
++        }
++        if let index = colors.firstIndex(where: { $0.caseInsensitiveCompare(color) == .orderedSame }) {
++            colorPicker.selectItem(at: index)
++        } else {
++            colorPicker.addItem(withTitle: "Current color (\(color))")
++            colorPicker.lastItem?.image = colorDot(workspaceColor(color))
++            colors.append(color)
++            colorPicker.selectItem(at: colors.count - 1)
++        }
++        let note = NSTextField(wrappingLabelWithString: creating
++            ? "A Profile keeps its own logins, cookies and site data, and opens in its own window."
++            : "Renaming keeps this Profile’s logins and site data.")
++        note.font = .systemFont(ofSize: 11)
++        note.textColor = .secondaryLabelColor
++        errorLabel.font = .systemFont(ofSize: 11)
++        errorLabel.textColor = .systemRed
++        errorLabel.setAccessibilityIdentifier("bato-profile-error")
++        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
++        cancel.keyEquivalent = "\u{1b}"
++        cancel.setAccessibilityIdentifier("bato-profile-cancel")
++        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
++        apply.keyEquivalent = "\r"
++        apply.setAccessibilityIdentifier("bato-profile-save")
++        window.defaultButtonCell = apply.cell as? NSButtonCell
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let buttons = NSStackView(views: [spacer, cancel, apply])
++        buttons.orientation = .horizontal
++        buttons.spacing = 8
++        var rows: [NSView] = [NSTextField(labelWithString: "Name"), nameField,
++                              NSTextField(labelWithString: "Color"), colorPicker]
++        if creating { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
++        rows += [note, errorLabel, buttons]
++        let stack = NSStackView(views: rows)
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 8
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        window.contentView?.addSubview(stack)
++        if let content = window.contentView {
++            var constraints = [
++                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
++                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
++                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
++                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
++                nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                note.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
++                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
++            ]
++            if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
++            NSLayoutConstraint.activate(constraints)
++        }
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func focusName() {
++        window?.makeFirstResponder(nameField)
++        nameField.selectText(nil)
++    }
++
++    private func saveDraft() {
++        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !name.isEmpty else {
++            errorLabel.stringValue = "Enter a Profile name."
++            focusName()
++            return
++        }
++        let index = colorPicker.indexOfSelectedItem
++        guard colors.indices.contains(index) else { return }
++        let workspaceName = workspaceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        if let error = save(name, colors[index], workspaceName) {
++            errorLabel.stringValue = error
++        } else {
++            dismiss(.OK)
++        }
++    }
++
++    private func dismiss(_ response: NSApplication.ModalResponse) {
++        guard let window, let parent = window.sheetParent else { return }
++        parent.endSheet(window, returnCode: response)
++        window.orderOut(nil)
++    }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
@@ -7994,7 +8522,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoImport/ImportPlan.swift
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,225 @@
 +import BatoCore
 +import CryptoKit
 +import Foundation
@@ -8045,7 +8573,10 @@
 +        }
 +    }
 +
++    /// Profiles the import creates.
 +    public var profiles: Int
++    /// Profiles of the imported spaces that already existed and are reused.
++    public var reusedProfiles: Int
 +    public var workspaces: Int
 +    public var favorites: Int
 +    public var spaces: [Space]
@@ -8055,6 +8586,22 @@
 +    public var folders: Int { spaces.reduce(0) { $0 + $1.folders } }
 +    public var tabs: Int { spaces.reduce(0) { $0 + $1.tabs } }
 +    public var splits: Int { spaces.reduce(0) { $0 + $1.splits } }
++
++    /// "3 workspaces as copies in 2 new Profiles (separate from the originals)", "1 workspace in 1 existing Profile".
++    /// Copies always get Profiles of their own: their identifiers differ from the first import's.
++    public func workspaceDescription(asCopies: Bool) -> String {
++        var scopes: [String] = []
++        if profiles > 0 { scopes.append(Self.count(profiles, "new Profile")) }
++        if reusedProfiles > 0 { scopes.append(Self.count(reusedProfiles, "existing Profile")) }
++        var text = Self.count(workspaces, "workspace") + (asCopies ? " as copies" : "")
++        if !scopes.isEmpty { text += " in " + scopes.joined(separator: " and ") }
++        if asCopies && profiles > 0 { text += " (separate from the originals)" }
++        return text
++    }
++
++    private static func count(_ count: Int, _ noun: String) -> String {
++        "\(count) \(noun)\(count == 1 ? "" : "s")"
++    }
 +}
 +
 +public extension ImportPlan {
@@ -8119,7 +8666,7 @@
 +        let included = Set(spaces.map(\.id))
 +        let warnings = staging.warnings.filter { $0.spaceID.map(included.contains) ?? true }
 +        let summary = ImportSummary(
-+            profiles: profiles.count, workspaces: workspaces.count,
++            profiles: profiles.count, reusedProfiles: usedProfiles.count - profiles.count, workspaces: workspaces.count,
 +            favorites: profiles.reduce(0) { $0 + $1.favorites.count },
 +            spaces: zip(spaces, workspaces).map { ImportSummary.Space(arcID: $0.id, workspace: $1) },
 +            warningCounts: warnings.reduce(into: [:]) { $0[$1.kind, default: 0] += 1 })
@@ -8595,13 +9142,13 @@
 +        let plan = selected.isEmpty ? nil :
 +            try? ImportPlan.make(staging, options: options(salt: importAgain ? "preview" : ""), into: currentState())
 +        guard let plan else {
-+            totals.stringValue = describeTotals(workspaces: 0, profiles: 0, pins: 0, folders: 0, favorites: 0, tabs: 0)
++            totals.stringValue = describeTotals(workspaces: "0 workspaces", pins: 0, folders: 0, favorites: 0, tabs: 0)
 +            unsupported.stringValue = ""
 +            importButton?.isEnabled = false
 +            return
 +        }
 +        let s = plan.summary
-+        totals.stringValue = describeTotals(workspaces: s.workspaces, profiles: s.profiles, pins: s.pins,
++        totals.stringValue = describeTotals(workspaces: s.workspaceDescription(asCopies: importAgain), pins: s.pins,
 +                                            folders: s.folders, favorites: s.favorites, tabs: s.tabs)
 +        let notes = s.warningCounts.compactMap { kind, count in Self.describe(kind, count) }.sorted()
 +        unsupported.stringValue = notes.isEmpty ? "Nothing unsupported." :
@@ -8609,8 +9156,8 @@
 +        importButton?.isEnabled = true
 +    }
 +
-+    private func describeTotals(workspaces: Int, profiles: Int, pins: Int, folders: Int, favorites: Int, tabs: Int) -> String {
-+        "\(plural(workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(profiles, "new Profile")) · " +
++    private func describeTotals(workspaces: String, pins: Int, folders: Int, favorites: Int, tabs: Int) -> String {
++        "\(workspaces) · " +
 +            "\(plural(pins, "pin")) · \(plural(folders, "folder")) · \(plural(favorites, "favorite")) · " +
 +            "\(plural(tabs, "tab"))"
 +    }
@@ -8636,7 +9183,7 @@
 +    private func showResult(_ summary: ImportSummary) {
 +        content.arrangedSubviews.forEach { $0.removeFromSuperview() }
 +        add(label("Import complete", size: 15, weight: .semibold))
-+        add(label("Added \(plural(summary.workspaces, "workspace")) \(importAgain ? "as copies " : "")in \(plural(summary.profiles, "new Profile")): " +
++        add(label("Added \(summary.workspaceDescription(asCopies: importAgain)): " +
 +                  "\(plural(summary.pins, "pin")), \(plural(summary.folders, "folder")), " +
 +                  "\(plural(summary.favorites, "favorite")), \(plural(summary.tabs, "tab")).", secondary: false))
 +        if summary.profiles > 0 {
@@ -8815,74 +9362,163 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingHostExports.swift
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,45 @@
 +import Foundation
 +
-+/// The process-wide service the browser host talks to.
++/// The process-wide registry the browser host talks to.
 +public final class BlockingHost: @unchecked Sendable {
 +    public static let shared = BlockingHost()
 +
 +    private let lock = NSLock()
-+    private var current: BlockingService?
++    private var current: BlockingProfiles?
 +
-+    public var service: BlockingService? { lock.withLock { current } }
++    public var profiles: BlockingProfiles? { lock.withLock { current } }
 +
-+    func install(_ service: BlockingService) {
-+        lock.withLock { current = service }
++    /// The blocking state of the Profile with this key (its Profile UUID string).
++    public func service(forProfile key: String) -> BlockingService? { profiles?.service(forProfile: key) }
++
++    func install(_ profiles: BlockingProfiles) {
++        lock.withLock { current = profiles }
 +    }
 +}
 +
 +// Optional hooks the browser host resolves with dlsym; absent hooks leave blocking silent.
 +
-+/// Starts list updates for the blocking directory the host is filtering from. Returns 1 on success.
++/// Starts list updates for the blocking root directory the host is filtering from
++/// (`<state>/blocking`: shared `lists/` plus one settings directory per Profile). Returns 1 on success.
 +@_cdecl("BatoSwiftBlockingStart")
 +public func batoSwiftBlockingStart(_ directory: UnsafePointer<CChar>?) -> Int32 {
 +    guard let directory else { return 0 }
 +    let url = URL(fileURLWithPath: String(cString: directory), isDirectory: true)
 +    guard url.path.hasPrefix("/") else { return 0 }
-+    let service = BlockingService(directory: url)
-+    BlockingHost.shared.install(service)
-+    service.startPeriodicUpdates()
++    let profiles = BlockingProfiles(rootDirectory: url)
++    BlockingHost.shared.install(profiles)
++    profiles.startPeriodicUpdates()
 +    return 1
 +}
 +
 +/// A top-level navigation began in this browser.
 +@_cdecl("BatoSwiftBlockingPageStarted")
 +public func batoSwiftBlockingPageStarted(_ browserID: Int32) {
-+    BlockingHost.shared.service?.counters.pageStarted(browserID)
++    BlockingHost.shared.profiles?.counters.pageStarted(browserID)
 +}
 +
 +/// One request was blocked for this browser.
 +@_cdecl("BatoSwiftBlockingRequestBlocked")
 +public func batoSwiftBlockingRequestBlocked(_ browserID: Int32) {
-+    BlockingHost.shared.service?.counters.recordBlocked(browserID)
++    BlockingHost.shared.profiles?.counters.recordBlocked(browserID)
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingProfiles.swift
+@@ -0,0 +1,73 @@
++import Foundation
++
++/// Blocking for every Profile of one browser process.
++///
++/// Filter lists are the same for every Profile, so one updater keeps one copy in
++/// `<root>/lists` and the host builds one engine from it. Settings and exceptions are
++/// per Profile in `<root>/<profileKey>`. Blocked counts are keyed by browser, and browser
++/// identifiers are process-wide, so one counters object serves all Profiles.
++public final class BlockingProfiles: @unchecked Sendable {
++    public let rootDirectory: URL
++    public let counters = BlockedCounters()
++    private let updater: FilterListUpdater
++    private let lock = NSLock()
++    private var services: [String: BlockingService] = [:]
++    private var updateTask: Task<Void, Never>?
++
++    public init(rootDirectory: URL, sources: [FilterListSource] = FilterListSource.defaults,
++                fetcher: FilterListFetching = URLSessionListFetcher()) {
++        self.rootDirectory = rootDirectory
++        updater = FilterListUpdater(directory: rootDirectory, sources: sources, fetcher: fetcher)
++    }
++
++    /// `<state>/blocking`.
++    public static func rootDirectory(stateDirectory: URL) -> URL {
++        stateDirectory.appendingPathComponent("blocking")
++    }
++
++    /// Keys become directory names, so they are limited to the characters of a UUID or name,
++    /// and `lists` is the shared lists directory.
++    public static func isValidKey(_ key: String) -> Bool {
++        !key.isEmpty && key.count <= 64 && key != "lists"
++            && key.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
++    }
++
++    public func service(forProfile key: String) -> BlockingService? {
++        guard Self.isValidKey(key) else { return nil }
++        return lock.withLock {
++            if let existing = services[key] { return existing }
++            let service = BlockingService(directory: rootDirectory.appendingPathComponent(key),
++                                          updater: updater, counters: counters)
++            services[key] = service
++            return service
++        }
++    }
++
++    public var listStatus: [String: ListStatus] { get async { await updater.status() } }
++
++    /// Checks lists now and then every `interval`; lists checked more recently are skipped.
++    public func startPeriodicUpdates(interval: TimeInterval = BlockingService.defaultUpdateInterval) {
++        lock.withLock {
++            updateTask?.cancel()
++            let updater = updater
++            updateTask = Task.detached(priority: .utility) {
++                while !Task.isCancelled {
++                    await updater.update(maxAge: interval)
++                    try? await Task.sleep(for: .seconds(interval))
++                }
++            }
++        }
++    }
++
++    public func stopUpdates() {
++        lock.withLock {
++            updateTask?.cancel()
++            updateTask = nil
++        }
++    }
++
++    @discardableResult
++    public func updateListsNow() async -> [String: ListUpdateOutcome] {
++        await updater.update()
++    }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBlocking/BlockingService.swift
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,91 @@
 +import Foundation
 +
-+/// One Profile's blocking state: settings, per-page counts and list updates.
++/// One Profile's blocking state: settings and exceptions, per-page counts and list updates.
++/// Profiles created by `BlockingProfiles` share one list updater and one counters object.
 +public final class BlockingService: @unchecked Sendable {
 +    public static let defaultUpdateInterval: TimeInterval = 24 * 60 * 60
 +
 +    public let directory: URL
-+    public let counters = BlockedCounters()
++    public let counters: BlockedCounters
 +    private let store: BlockingSettingsStore
 +    private let updater: FilterListUpdater
 +    private let lock = NSLock()
 +    private var updateTask: Task<Void, Never>?
 +
-+    public init(directory: URL, sources: [FilterListSource] = FilterListSource.defaults,
-+                fetcher: FilterListFetching = URLSessionListFetcher()) {
++    init(directory: URL, updater: FilterListUpdater, counters: BlockedCounters) {
 +        self.directory = directory
++        self.counters = counters
++        self.updater = updater
 +        store = BlockingSettingsStore(directory: directory)
-+        updater = FilterListUpdater(directory: directory, sources: sources, fetcher: fetcher)
 +    }
 +
-+    /// `<state>/blocking/<profileKey>`. The engine has one bound Profile today, keyed `default`.
++    /// A standalone service that downloads its own lists into `directory/lists`.
++    public convenience init(directory: URL, sources: [FilterListSource] = FilterListSource.defaults,
++                            fetcher: FilterListFetching = URLSessionListFetcher()) {
++        self.init(directory: directory,
++                  updater: FilterListUpdater(directory: directory, sources: sources, fetcher: fetcher),
++                  counters: BlockedCounters())
++    }
++
++    /// `<state>/blocking/<profileKey>`: the Profile's settings and exceptions.
 +    public static func directory(stateDirectory: URL, profileKey: String = "default") -> URL {
-+        stateDirectory.appendingPathComponent("blocking").appendingPathComponent(profileKey)
++        BlockingProfiles.rootDirectory(stateDirectory: stateDirectory).appendingPathComponent(profileKey)
 +    }
 +
 +    public var settings: BlockingSettings { store.current() }
@@ -9310,11 +9946,12 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/BlockingControls.swift
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,82 @@
 +import AppKit
 +import BatoBlocking
 +
 +/// "Blocking: On/Off for this site" plus the blocked count for the active page, as menu items.
++/// Both act on the Profile of the active page, whose key selects the service at each use.
 +///
 +/// The host watches `blocking-settings.json`, so a change reaches the request filter within a
 +/// polling tick; `reload` therefore runs after `reloadDelay` rather than immediately.
@@ -9323,10 +9960,12 @@
 +    public struct ActivePage {
 +        public let url: URL
 +        public let browserID: Int32
++        public let profileKey: String
 +
-+        public init(url: URL, browserID: Int32) {
++        public init(url: URL, browserID: Int32, profileKey: String) {
 +            self.url = url
 +            self.browserID = browserID
++            self.profileKey = profileKey
 +        }
 +    }
 +
@@ -9335,14 +9974,14 @@
 +        case count
 +    }
 +
-+    private let service: BlockingService
++    private let serviceForProfile: (String) -> BlockingService?
 +    private let activePage: () -> ActivePage?
 +    private let reload: (Int32) -> Void
 +    private let reloadDelay: TimeInterval
 +
-+    public init(service: BlockingService, activePage: @escaping () -> ActivePage?,
++    public init(serviceForProfile: @escaping (String) -> BlockingService?, activePage: @escaping () -> ActivePage?,
 +                reload: @escaping (Int32) -> Void, reloadDelay: TimeInterval = 0.5) {
-+        self.service = service
++        self.serviceForProfile = serviceForProfile
 +        self.activePage = activePage
 +        self.reload = reload
 +        self.reloadDelay = reloadDelay
@@ -9360,15 +9999,21 @@
 +
 +    public func validateMenuItem(_ item: NSMenuItem) -> Bool {
 +        let page = activePage()
++        let service = page.flatMap { serviceForProfile($0.profileKey) }
 +        switch Tag(rawValue: item.tag) {
 +        case .toggle:
++            guard let service else {
++                item.title = "Blocking"
++                item.state = .off
++                return false
++            }
 +            let enabled = service.settings.enabled
 +            let blocking = page.map { service.isBlocking(pageURL: $0.url) } ?? enabled
 +            item.title = enabled ? "Blocking: \(blocking ? "On" : "Off") for this site" : "Blocking: Off for all sites"
 +            item.state = blocking ? .on : .off
 +            return enabled && page.flatMap { BlockingSettings.host(of: $0.url) } != nil
 +        case .count:
-+            let count = page.map { service.counters.count(for: $0.browserID) } ?? 0
++            let count = page.flatMap { page in service?.counters.count(for: page.browserID) } ?? 0
 +            item.title = "\(count) blocked on this page"
 +            return false
 +        case nil:
@@ -9377,7 +10022,7 @@
 +    }
 +
 +    @objc private func toggleForSite() {
-+        guard let page = activePage() else { return }
++        guard let page = activePage(), let service = serviceForProfile(page.profileKey) else { return }
 +        let blocking = service.isBlocking(pageURL: page.url)
 +        guard (try? service.setBlocking(!blocking, forPageURL: page.url)) != nil else { return }
 +        let reload = reload
