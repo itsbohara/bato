@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "6c82be97333d19727e63593fd983ec81b76dfa724fb243b449316ce9299e8151",
+  "patch_sha256": "74fe579f2d1f60b7f975bc9e1d2ac5d5891ec5b9f62d34861d6e65abb5bad1f5",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "de4a51bf818aa3996b9b996e925a2d9ecbb06ab9ad5dc1c935b9984e0034cd56"
+      "patched_sha256": "adaafd89c104d0eed02ebfbd41bb17c1f45da1d70fd67b9ff6f75c392c98daa4"
     },
     {
       "root": "cef",
@@ -86,19 +86,19 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "f1399d4703989987aa3767fcba782227a25e153f8afed6a5c5bfeb9684ccfa7a"
+      "patched_sha256": "be1ab9d5eb5412135e4220212954a89f01e2404c50cea59353a870eb9d97c07e"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/CommandBar.swift",
       "original_sha256": null,
-      "patched_sha256": "edb536e55ee1acf4f53a251ad0097bbe408377793e47d8224ae56fca106a07e5"
+      "patched_sha256": "6788acff90a35b7e87bdee5a1d86e8fe043f1ece1a5bf5dceff6d1e9bd163869"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
       "original_sha256": null,
-      "patched_sha256": "4ec849a81766444010ea675b9e423494efc1b6f85831bddaa71d614cb8a02838"
+      "patched_sha256": "52660e1086a0ec612ae0661265c0f50c4956d040efb841ddffe84c42bac950bb"
     },
     {
       "root": "cef",
@@ -212,13 +212,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
       "original_sha256": null,
-      "patched_sha256": "4ea30e7b9e5eb3a8ac915f23a5b1450ac64b6c589d957e69685d73a7bc1ad29b"
+      "patched_sha256": "58b3e7d4d8680de51b2759d13c9fccbd1145dc7f4de2b518feafed7f1c85c5f3"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
       "original_sha256": null,
-      "patched_sha256": "e25d414ed91164c4b02548de71c9c177a0dd3119523c6661d780c89dcf42bba1"
+      "patched_sha256": "416b753c78302acb9fba02b242e674ebc56fb378429c74bf457267e193901a5d"
     }
   ],
   "source_mirrors": {

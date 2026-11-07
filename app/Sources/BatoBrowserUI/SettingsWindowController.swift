@@ -25,7 +25,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     init(hooks: SettingsHooks) {
         self.hooks = hooks
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 540),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700),
                           styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         super.init()
@@ -58,7 +58,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let column = NSStackView(views: [heading(pane.title)] + content(for: pane))
         column.orientation = .vertical
         column.alignment = .leading
-        column.spacing = 16
+        column.spacing = 20
         column.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(column)
         scroll.documentView = document
@@ -69,9 +69,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             scroll.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 54),
-            column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 28),
-            column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -28),
+            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 60),
+            column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 40),
+            column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -40),
             column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
         ])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -87,7 +87,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         rail.translatesAutoresizingMaskIntoConstraints = false
         sidebarStack.orientation = .vertical
         sidebarStack.alignment = .leading
-        sidebarStack.spacing = 2
+        sidebarStack.spacing = 4
         sidebarStack.translatesAutoresizingMaskIntoConstraints = false
         for candidate in SettingsPane.allCases {
             let button = SettingsSidebarButton(title: candidate.title, symbol: candidate.symbolName) { [weak self] in
@@ -108,10 +108,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             rail.topAnchor.constraint(equalTo: root.topAnchor),
             rail.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             rail.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            rail.widthAnchor.constraint(equalToConstant: 200),
-            sidebarStack.topAnchor.constraint(equalTo: rail.topAnchor, constant: 52),
-            sidebarStack.leadingAnchor.constraint(equalTo: rail.leadingAnchor, constant: 10),
-            sidebarStack.trailingAnchor.constraint(equalTo: rail.trailingAnchor, constant: -10),
+            rail.widthAnchor.constraint(equalToConstant: 270),
+            sidebarStack.topAnchor.constraint(equalTo: rail.topAnchor, constant: 60),
+            sidebarStack.leadingAnchor.constraint(equalTo: rail.leadingAnchor, constant: 14),
+            sidebarStack.trailingAnchor.constraint(equalTo: rail.trailingAnchor, constant: -14),
             contentHost.topAnchor.constraint(equalTo: root.topAnchor),
             contentHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             contentHost.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
@@ -208,20 +208,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func heading(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 20, weight: .semibold)
+        label.font = .systemFont(ofSize: 26, weight: .semibold)
         return label
     }
 
     private func caption(_ text: String) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: 12)
+        label.font = .systemFont(ofSize: 15)
         label.textColor = .secondaryLabelColor
         return label
     }
 
     private func keyLabel(_ keys: String) -> NSTextField {
         let label = NSTextField(labelWithString: keys)
-        label.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        label.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
         label.textColor = .secondaryLabelColor
         return label
     }
@@ -257,23 +257,28 @@ private final class SettingsSidebarButton: NSControl {
         icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 8
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        icon.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+        layer?.cornerRadius = 10
+        label.font = .systemFont(ofSize: 17, weight: .medium)
+        icon.symbolConfiguration = .init(pointSize: 17, weight: .regular)
         let stack = NSStackView(views: [icon, label])
-        stack.spacing = 10
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 32),
-            icon.widthAnchor.constraint(equalToConstant: 20),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            heightAnchor.constraint(equalToConstant: 44),
+            icon.widthAnchor.constraint(equalToConstant: 26),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(title)
         updateAppearance()
     }
+
+    /// The rail must work on the first click even while another window is key.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func accessibilityPerformPress() -> Bool { handler(); return true }
 
     required init?(coder: NSCoder) { fatalError("Not used") }
 
@@ -295,7 +300,7 @@ private final class SettingsGroup: NSView {
     init(rows: [NSView]) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = 16
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.spacing = 0
@@ -305,7 +310,7 @@ private final class SettingsGroup: NSView {
                 let line = NSBox()
                 line.boxType = .separator
                 stack.addArrangedSubview(line)
-                line.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+                line.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
             }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -338,32 +343,36 @@ private final class SettingsRow: NSView {
         keepAlive = keeping
         super.init(frame: .zero)
         let name = NSTextField(labelWithString: title)
-        name.font = .systemFont(ofSize: 14)
+        name.font = .systemFont(ofSize: 17)
         name.lineBreakMode = .byTruncatingTail
         let text = NSStackView(views: [name])
         text.orientation = .vertical
         text.alignment = .leading
-        text.spacing = 2
+        text.spacing = 4
         if let detail {
             let sub = NSTextField(wrappingLabelWithString: detail)
-            sub.font = .systemFont(ofSize: 11.5)
+            sub.font = .systemFont(ofSize: 14)
             sub.textColor = .secondaryLabelColor
             text.addArrangedSubview(sub)
         }
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        text.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing?.setContentHuggingPriority(.required, for: .horizontal)
+        trailing?.setContentCompressionResistancePriority(.required, for: .horizontal)
         let row = NSStackView(views: [leading, text, trailing].compactMap { $0 })
-        row.spacing = 12
+        row.spacing = 14
         row.alignment = .centerY
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
         ])
     }
 
@@ -378,6 +387,8 @@ private final class SettingsPillButton: NSButton {
         super.init(frame: .zero)
         self.title = title
         bezelStyle = .rounded
+        controlSize = .large
+        font = .systemFont(ofSize: 15)
         target = handlerTarget
         action = #selector(ActionTarget.fire)
     }
@@ -389,11 +400,11 @@ private final class ColorDot: NSView {
     init(hex: String) {
         super.init(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
         wantsLayer = true
-        layer?.cornerRadius = 7
+        layer?.cornerRadius = 9
         layer?.backgroundColor = NSColor(hexString: hex).cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 14).isActive = true
-        heightAnchor.constraint(equalToConstant: 14).isActive = true
+        widthAnchor.constraint(equalToConstant: 18).isActive = true
+        heightAnchor.constraint(equalToConstant: 18).isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }
@@ -403,16 +414,16 @@ private final class SymbolTile: NSView {
     init(symbol: String, color: NSColor) {
         super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
         wantsLayer = true
-        layer?.cornerRadius = 7
+        layer?.cornerRadius = 9
         layer?.backgroundColor = color.cgColor
         let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         image.contentTintColor = .white
-        image.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
+        image.symbolConfiguration = .init(pointSize: 17, weight: .semibold)
         image.translatesAutoresizingMaskIntoConstraints = false
         addSubview(image)
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 28), heightAnchor.constraint(equalToConstant: 28),
+            widthAnchor.constraint(equalToConstant: 36), heightAnchor.constraint(equalToConstant: 36),
             image.centerXAnchor.constraint(equalTo: centerXAnchor), image.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

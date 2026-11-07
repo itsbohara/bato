@@ -12,7 +12,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
     private let table = CommandBarTable()
     private let hint = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private let openButton = NSButton(title: "Open", target: nil, action: nil)
+    private let openButton = GoPillButton()
     private let resultsForQuery: (String) -> [CommandBarResult]
     private var results: [CommandBarResult] = []
     private(set) var chosenAction: CommandBarAction?
@@ -25,7 +25,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         self.provider = provider
         self.providerChanged = providerChanged
         resultsForQuery = results
-        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 410),
+        let panel = CommandBarPanel(contentRect: NSRect(origin: .zero, size: SidebarStyle.commandBarSize),
                                     styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.title = "New Tab"
@@ -43,8 +43,10 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         panel.contentView = surface
         field.stringValue = query
         field.placeholderString = "Search or enter a URL"
-        field.font = .systemFont(ofSize: 20, weight: .regular)
+        field.font = .systemFont(ofSize: 22, weight: .regular)
         field.controlSize = .large
+        field.isBezeled = false
+        field.drawsBackground = false
         field.focusRingType = .none
         field.setAccessibilityLabel("Command bar search or address")
         field.setAccessibilityIdentifier("bato-command-bar-input")
@@ -58,10 +60,11 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         providerPicker.setAccessibilityLabel("Web search provider")
         providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
         providerPicker.toolTip = "Search provider for this session"
-        let inputRow = NSStackView(views: [field, providerPicker])
-        inputRow.spacing = 12
+        providerPicker.isBordered = false
+        providerPicker.controlSize = .small
+        providerPicker.font = .systemFont(ofSize: 12)
+        let inputRow = NSStackView(views: [field])
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        providerPicker.setContentCompressionResistancePriority(.required, for: .horizontal)
         table.dataSource = self
         table.delegate = self
         table.headerView = nil
@@ -95,38 +98,35 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         errorLabel.textColor = .systemRed
         errorLabel.stringValue = error ?? ""
         errorLabel.setAccessibilityIdentifier("bato-command-bar-error")
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelBar))
-        cancel.bezelStyle = .rounded
-        cancel.keyEquivalent = "\u{1b}"
-        cancel.setAccessibilityIdentifier("bato-command-bar-cancel")
         openButton.target = self
         openButton.action = #selector(openSelected)
-        openButton.bezelStyle = .rounded
         openButton.keyEquivalent = "\r"
+        openButton.setAccessibilityLabel("Go")
         openButton.setAccessibilityIdentifier("bato-command-bar-open")
         panel.defaultButtonCell = openButton.cell as? NSButtonCell
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [hint, spacer, cancel, openButton])
-        footer.spacing = 8
+        let footer = NSStackView(views: [providerPicker, hint, spacer, openButton])
+        footer.spacing = 12
+        footer.alignment = .centerY
         let divider = NSBox()
         divider.boxType = .separator
         let stack = NSStackView(views: [inputRow, divider, scroll, errorLabel, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
         surface.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -18),
             inputRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            field.heightAnchor.constraint(equalToConstant: 36),
+            field.heightAnchor.constraint(equalToConstant: 40),
             divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
             errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
@@ -154,7 +154,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
             hint.stringValue = message
         } else {
-            hint.stringValue = "↑↓ to choose · Return to open · Esc to cancel"
+            hint.stringValue = "↑↓ choose · Esc cancel"
         }
     }
 
@@ -200,20 +200,20 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         case .command: symbol = "command"
         }
         let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+        image.symbolConfiguration = .init(pointSize: 15, weight: .regular)
         image.contentTintColor = .secondaryLabelColor
         let title = NSTextField(labelWithString: result.title)
-        title.font = .systemFont(ofSize: 14)
+        title.font = .systemFont(ofSize: 15)
         title.lineBreakMode = .byTruncatingTail
         let detail = NSTextField(labelWithString: result.subtitle)
-        detail.font = .systemFont(ofSize: 11)
+        detail.font = .systemFont(ofSize: 13)
         detail.textColor = .secondaryLabelColor
         detail.lineBreakMode = .byTruncatingMiddle
-        let labels = NSStackView(views: [title, detail])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 1
-        let rowView = NSStackView(views: [image, labels])
-        rowView.spacing = 12
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        let rowView = NSStackView(views: [image, title, detail])
+        rowView.spacing = 10
+        rowView.alignment = .firstBaseline
         rowView.translatesAutoresizingMaskIntoConstraints = false
         let cell = NSTableCellView()
         cell.textField = title
@@ -222,9 +222,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
             rowView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
             rowView.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
             rowView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 20),
-            title.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            detail.widthAnchor.constraint(equalTo: labels.widthAnchor)
+            image.widthAnchor.constraint(equalToConstant: 20)
         ])
         return cell
     }
@@ -247,6 +245,33 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window, returnCode: response)
         window.orderOut(nil)
+    }
+}
+
+/// The "Go" pill: a light capsule with dark text, as in Dia, instead of a stock push button.
+@MainActor
+private final class GoPillButton: NSButton {
+    init() {
+        super.init(frame: .zero)
+        title = "Go  ⏎"
+        isBordered = false
+        font = .systemFont(ofSize: 15, weight: .semibold)
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        focusRingType = .none
+        heightAnchor.constraint(equalToConstant: 30).isActive = true
+        widthAnchor.constraint(equalToConstant: 78).isActive = true
+        refreshColors()
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
+    override func viewDidChangeEffectiveAppearance() { refreshColors() }
+    private func refreshColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.88).cgColor
+            attributedTitle = NSAttributedString(string: title, attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
+        }
     }
 }
 
