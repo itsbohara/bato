@@ -266,6 +266,10 @@ public struct BrowserState: Codable, Equatable, Sendable {
         return BrowserState(profiles: [profile], workspaces: [workspace], activeWorkspaceID: workspace.id)
     }
 
+    /// The Profile whose data lives in the engine's original context. Profiles are only ever appended,
+    /// so the first one stays the same whichever workspace was selected when the app started.
+    public var launchProfileID: UUID? { profiles.first?.id }
+
     /// Use only after validation, including immediately after decoding persisted state.
     public var currentWorkspace: Workspace {
         guard let workspace = workspaces.first(where: { $0.id == activeWorkspaceID }) else {

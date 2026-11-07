@@ -48,6 +48,11 @@ public enum PeekEndResult: Sendable {
 @MainActor
 public protocol PageEngine: AnyObject {
     var supportedProfileIDs: Set<UUID> { get }
+    /// Whether pages of this Profile can be opened now. An engine that creates contexts lazily
+    /// answers true for a Profile it has not bound yet; the runtime asks again on every change.
+    func supportsProfile(_ id: UUID) -> Bool
+    /// The Profile of the selection about to be shown, so a nil selection hides the right context.
+    func activateProfile(_ id: UUID)
     var supportsSplits: Bool { get }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool
     func separateSplit() -> Bool
@@ -70,6 +75,8 @@ public protocol PageEngine: AnyObject {
 }
 
 public extension PageEngine {
+    func supportsProfile(_ id: UUID) -> Bool { supportedProfileIDs.contains(id) }
+    func activateProfile(_ id: UUID) {}
     var supportsSplits: Bool { false }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
     func separateSplit() -> Bool { true }
@@ -143,7 +150,7 @@ public final class PageRuntime {
     public init(state: BrowserState, engine: any PageEngine,
                 commit: @escaping (BrowserState) throws -> Void) throws {
         try state.validate()
-        guard engine.supportedProfileIDs.contains(state.currentWorkspace.profileID) else {
+        guard engine.supportsProfile(state.currentWorkspace.profileID) else {
             throw PageRuntimeError.unsupportedProfile
         }
         self.state = state
@@ -621,7 +628,7 @@ public final class PageRuntime {
                 lastError = .invalidCommand
                 return false
             }
-            guard engine.supportedProfileIDs.contains(candidate.currentWorkspace.profileID) else {
+            guard engine.supportsProfile(candidate.currentWorkspace.profileID) else {
                 lastError = .unsupportedProfile
                 return false
             }
@@ -678,10 +685,11 @@ public final class PageRuntime {
 
     private func showSelection() -> Bool {
         let workspace = state.currentWorkspace
-        guard engine.supportedProfileIDs.contains(workspace.profileID) else {
+        guard engine.supportsProfile(workspace.profileID) else {
             lastError = .unsupportedProfile
             return false
         }
+        engine.activateProfile(workspace.profileID)
         if let pair = state.currentSplit {
             guard supportsSplits else { lastError = .invalidCommand; return false }
             guard let left = ensurePage(pair.leftEntryID, profileID: workspace.profileID),
