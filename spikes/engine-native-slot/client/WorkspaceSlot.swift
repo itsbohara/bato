@@ -799,6 +799,47 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     }
 }
 
+/// Chromium titles a window "<page> - Chromium" from a resource string; the title is shortened here
+/// instead of rebuilding the engine's resources.
+@MainActor private enum WindowTitleBranding {
+    private static var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
+    private static var notifications: [NSObjectProtocol] = []
+    private static let suffix = " - Chromium"
+
+    static func install() {
+        track(NSApp.windows)
+        guard notifications.isEmpty else { return }
+        let center = NotificationCenter.default
+        notifications = [
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
+                MainActor.assumeIsolated { if let window = note.object as? NSWindow { track([window]) } }
+            },
+            center.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
+                MainActor.assumeIsolated { if let window = note.object as? NSWindow { observations[ObjectIdentifier(window)] = nil } }
+            },
+        ]
+    }
+
+    static func brandedTitle(_ title: String) -> String {
+        if title == "Chromium" { return "Bato" }
+        return title.hasSuffix(suffix) ? String(title.dropLast(suffix.count)) : title
+    }
+
+    private static func track(_ windows: [NSWindow]) {
+        for window in windows where observations[ObjectIdentifier(window)] == nil {
+            rebrand(window)
+            observations[ObjectIdentifier(window)] = window.observe(\.title) { window, _ in
+                MainActor.assumeIsolated { rebrand(window) }
+            }
+        }
+    }
+
+    private static func rebrand(_ window: NSWindow) {
+        let branded = brandedTitle(window.title)
+        if branded != window.title { window.title = branded }
+    }
+}
+
 /// Route physical T/W before Chromium's page-focused key-equivalent path.
 /// Leave Chromium's menu items intact for untracked tabs and menu commands.
 @MainActor private final class WorkspaceKeyRouter: NSObject {
@@ -874,6 +915,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             pageMenuItem = item
         }
         MenuBranding.install()
+        WindowTitleBranding.install()
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
                 // AppKit delivers local event monitors on the main thread.

@@ -1,6 +1,6 @@
 --- a/cef/tests/cefsimple/cefsimple_mac.mm
 +++ b/cef/tests/cefsimple/cefsimple_mac.mm
-@@ -4,12 +4,16 @@
+@@ -4,19 +4,22 @@
  // found in the LICENSE file.
 
  #import <Cocoa/Cocoa.h>
@@ -17,7 +17,42 @@
  #include "tests/cefsimple/simple_handler.h"
 
  // Receives notifications from the application.
-@@ -160,6 +164,49 @@
+ @interface SimpleAppDelegate : NSObject <NSApplicationDelegate>
+
+ - (void)createApplication:(id)object;
+-- (void)batoQuitApplication:(id)sender;
+ - (void)tryToTerminateApplication:(NSApplication*)app;
+ @end
+
+@@ -105,27 +108,6 @@
+     // preserves Chrome's controller and normal menu created during startup.
+     [[NSApplication sharedApplication] setDelegate:self];
+   }
+-  if (CefCommandLine::GetGlobalCommandLine()->HasSwitch("bato-native-quit")) {
+-    NSMenu* file_menu = [[NSApp.mainMenu itemWithTitle:@"File"] submenu];
+-    if (file_menu) {
+-      NSMenuItem* item = [[NSMenuItem alloc]
+-          initWithTitle:@"Bato Quit application"
+-                 action:@selector(batoQuitApplication:)
+-          keyEquivalent:@""];
+-      item.target = self;
+-      [file_menu addItem:item];
+-#if !__has_feature(objc_arc)
+-      [item release];
+-#endif
+-      fprintf(stderr, "{\"event\":\"sample-native-quit-menu-ready\"}\n");
+-    }
+-  }
+-}
+-
+-- (void)batoQuitApplication:(id)sender {
+-  if (SimpleHandler* handler = SimpleHandler::GetInstance()) {
+-    handler->RequestApplicationQuit();
+-  }
+ }
+
+ - (void)tryToTerminateApplication:(NSApplication*)app {
+@@ -160,6 +142,64 @@
  }
  @end
 
@@ -64,15 +99,28 @@
 +    "IPH_SupervisedUserProfileSignin",
 +};
 +
++// The SSD namespace is for test Profiles and requires the mock keychain. Bato's Application Support
++// Profiles directory holds real data, so there the mock keychain is refused: cookies encrypted
++// under the mock key would be unreadable by a later real-keychain launch.
++static BOOL BatoProfileStorageAllowed(NSString* profile, BOOL mock_keychain) {
++  if (mock_keychain) {
++    return [profile hasPrefix:@"/Volumes/Mahesh/personal/bato-build/runtime/profiles/"] &&
++           [[NSFileManager defaultManager]
++               fileExistsAtPath:@"/Volumes/Mahesh/personal/bato-build/.bato-engine-workspace.json"];
++  }
++  NSString* real = [NSHomeDirectory()
++      stringByAppendingPathComponent:@"Library/Application Support/Bato/Profiles"]
++      .stringByResolvingSymlinksInPath;
++  return [profile isEqualToString:real] || [profile hasPrefix:[real stringByAppendingString:@"/"]];
++}
++
  // Entry point function for the browser process.
  int main(int argc, char* argv[]) {
    // Load the CEF framework library at runtime instead of linking directly
-@@ -167,6 +214,68 @@
-   CefScopedLibraryLoader library_loader;
-   if (!library_loader.LoadInMain()) {
+@@ -169,6 +209,68 @@
      return 1;
-+  }
-+
+   }
+
 +  // Workspace mode pins what Chrome would otherwise choose or enable for itself:
 +  // - Chrome opens the Profile named by Local State's last_used and CEF's global request
 +  //   context follows it, but the Bato launch Profile must always be the Default directory.
@@ -133,10 +181,40 @@
 +    pinned_args.push_back(nullptr);
 +    argc = static_cast<int>(pinned_args.size()) - 1;
 +    argv = pinned_args.data();
-   }
-
++  }
++
    // Provide CEF with command-line arguments.
-@@ -220,6 +329,15 @@
+   CefMainArgs main_args(argc, argv);
+
+@@ -187,21 +289,18 @@
+     command_line->InitFromArgv(argc, argv);
+
+     // Specify CEF global settings here.
+-    // Bato source-build sample: dedicated synthetic Profiles and mock key
+-    // provider only. Never fall back to default or personal browser storage.
+-    if (!command_line->HasSwitch("use-mock-keychain") ||
+-        !command_line->HasSwitch("cache-path")) {
+-      fprintf(stderr, "Bato engine sample requires an explicit mock test Profile\n");
++    // Storage is only ever the SSD test namespace (mock keychain) or Bato's own Application
++    // Support directory (real keychain); never the default or a personal browser's storage.
++    if (!command_line->HasSwitch("cache-path")) {
++      fprintf(stderr, "Bato engine sample requires an explicit Profile path\n");
+       return 1;
+     }
+     const std::string supplied_path =
+         command_line->GetSwitchValue("cache-path").ToString();
+     NSString* profile = [NSString stringWithUTF8String:supplied_path.c_str()];
+     profile = profile.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+-    if (![profile hasPrefix:@"/Volumes/Mahesh/personal/bato-build/runtime/profiles/"] ||
+-        ![[NSFileManager defaultManager] fileExistsAtPath:
+-            @"/Volumes/Mahesh/personal/bato-build/.bato-engine-workspace.json"]) {
+-      fprintf(stderr, "Bato engine sample refuses storage outside its SSD test namespace\n");
++    if (!BatoProfileStorageAllowed(profile, command_line->HasSwitch("use-mock-keychain"))) {
++      fprintf(stderr, "Bato engine refuses this storage location or keychain mode\n");
+       return 1;
+     }
+     CefSettings settings;
+@@ -220,6 +319,15 @@
      // CEF has initialized.
      CefRefPtr<SimpleApp> app(new SimpleApp);
 
@@ -165,7 +243,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,71 @@
+@@ -2313,6 +2317,72 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -181,6 +259,7 @@
 +      "tests/cefsimple/bato/BatoCore/CommandBar.swift",
 +      "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
 +      "tests/cefsimple/bato/BatoPersistence/BackupStore.swift",
++      "tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift",
 +      "tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift",
 +      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
@@ -237,7 +316,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2405,19 @@
+@@ -2336,12 +2406,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -1844,7 +1923,7 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
-+                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
++                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
@@ -2032,7 +2111,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1127 @@
+@@ -0,0 +1,1169 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2834,6 +2913,47 @@
 +    }
 +}
 +
++/// Chromium titles a window "<page> - Chromium" from a resource string; the title is shortened here
++/// instead of rebuilding the engine's resources.
++@MainActor private enum WindowTitleBranding {
++    private static var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
++    private static var notifications: [NSObjectProtocol] = []
++    private static let suffix = " - Chromium"
++
++    static func install() {
++        track(NSApp.windows)
++        guard notifications.isEmpty else { return }
++        let center = NotificationCenter.default
++        notifications = [
++            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
++                MainActor.assumeIsolated { if let window = note.object as? NSWindow { track([window]) } }
++            },
++            center.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
++                MainActor.assumeIsolated { if let window = note.object as? NSWindow { observations[ObjectIdentifier(window)] = nil } }
++            },
++        ]
++    }
++
++    static func brandedTitle(_ title: String) -> String {
++        if title == "Chromium" { return "Bato" }
++        return title.hasSuffix(suffix) ? String(title.dropLast(suffix.count)) : title
++    }
++
++    private static func track(_ windows: [NSWindow]) {
++        for window in windows where observations[ObjectIdentifier(window)] == nil {
++            rebrand(window)
++            observations[ObjectIdentifier(window)] = window.observe(\.title) { window, _ in
++                MainActor.assumeIsolated { rebrand(window) }
++            }
++        }
++    }
++
++    private static func rebrand(_ window: NSWindow) {
++        let branded = brandedTitle(window.title)
++        if branded != window.title { window.title = branded }
++    }
++}
++
 +/// Route physical T/W before Chromium's page-focused key-equivalent path.
 +/// Leave Chromium's menu items intact for untracked tabs and menu commands.
 +@MainActor private final class WorkspaceKeyRouter: NSObject {
@@ -2909,6 +3029,7 @@
 +            pageMenuItem = item
 +        }
 +        MenuBranding.install()
++        WindowTitleBranding.install()
 +        if keyMonitor == nil {
 +            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
 +                // AppKit delivers local event monitors on the main thread.
@@ -4076,7 +4197,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1290 @@
+@@ -0,0 +1,1329 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4153,6 +4274,8 @@
 +        return tabs.remove(at: tabs.count - 1 - offset)
 +    }
 +    public var isEmpty: Bool { tabs.isEmpty }
++
++    public mutating func removeTabs(inWorkspace id: UUID) { tabs.removeAll { $0.workspaceID == id } }
 +
 +    public mutating func push(_ tab: ClosedTab) {
 +        tabs.append(tab)
@@ -4361,6 +4484,7 @@
 +    case missingProfile
 +    case duplicateProfileName
 +    case launchProfileProtected
++    case lastWorkspaceInProfile
 +    case missingWorkspace
 +    case invalidEntryOwnership
 +    case invalidSavedURL
@@ -4380,6 +4504,7 @@
 +        case .missingProfile: "The workspace's Profile could not be found."
 +        case .duplicateProfileName: "Another Profile already has that name."
 +        case .launchProfileProtected: "The Profile Bato started with cannot be deleted."
++        case .lastWorkspaceInProfile: "A Profile keeps at least one workspace."
 +        case .missingWorkspace: "The selected workspace could not be found."
 +        case .invalidEntryOwnership: "A page is stored in the wrong sidebar section."
 +        case .invalidSavedURL: "The saved page destination is invalid."
@@ -4667,6 +4792,41 @@
 +                    throw BrowserStateError.missingWorkspace
 +                }
 +                draft.activeWorkspaceID = next.id
++            }
++        }
++    }
++
++    public struct WorkspaceLoss: Equatable, Sendable {
++        public let pages: Int
++        public let archived: Int
++    }
++
++    public func lossOfDeleting(workspace id: UUID) -> WorkspaceLoss? {
++        guard let workspace = workspaces.first(where: { $0.id == id }) else { return nil }
++        return WorkspaceLoss(pages: workspace.pins.count + workspace.tabs.count,
++                             archived: archive.records.filter { $0.workspaceID == id }.count)
++    }
++
++    /// A Profile always keeps one workspace, so the last one in each Profile is never offered for deletion.
++    public func canDeleteWorkspace(_ id: UUID) -> Bool {
++        guard let workspace = workspaces.first(where: { $0.id == id }) else { return false }
++        return workspaces.filter { $0.profileID == workspace.profileID }.count > 1
++    }
++
++    /// Selection moves to the nearest remaining workspace of the same Profile when the current one goes away.
++    public mutating func deleteWorkspace(_ id: UUID) throws {
++        try transact { draft in
++            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            let profileID = draft.workspaces[index].profileID
++            guard draft.canDeleteWorkspace(id) else { throw BrowserStateError.lastWorkspaceInProfile }
++            let siblings = draft.workspaces.enumerated().filter { $0.element.profileID == profileID && $0.element.id != id }
++            draft.workspaces.remove(at: index)
++            draft.archive.records.removeAll { $0.workspaceID == id }
++            if draft.activeWorkspaceID == id {
++                let nearest = siblings.first { $0.offset > index } ?? siblings.last
++                draft.activeWorkspaceID = nearest!.element.id
 +            }
 +        }
 +    }
@@ -5662,7 +5822,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,970 @@
+@@ -0,0 +1,1020 @@
 +import Foundation
 +import BatoCore
 +
@@ -5762,6 +5922,7 @@
 +    case creationRejected
 +    case saveFailed
 +    case invalidCommand
++    case peekAlreadyOpen
 +}
 +
 +/// Coordinates committed organization with an engine, without serializing engine
@@ -5961,6 +6122,47 @@
 +        pagesWithUncommittedNavigation = pagesWithUncommittedNavigation.filter { $0.key.profileID != id }
 +        closedTabs.removeValue(forKey: id)
 +        pendingArchive = pendingArchive.filter { entry, _ in state.visibleEntries.contains { $0.id == entry } }
++        lastError = nil
++        onStateChange?(state)
++        if wasCurrent { _ = showSelection() }
++        return true
++    }
++
++    /// Deletes a workspace and closes its live pages. Like Profile delete, the previous document is kept as a
++    /// snapshot first. Closing the pages is not confirmed: before-unload dialogs are not offered.
++    @discardableResult
++    public func deleteWorkspace(_ id: UUID) -> Bool {
++        guard let doomed = state.workspaces.first(where: { $0.id == id }), state.canDeleteWorkspace(id) else {
++            lastError = .invalidCommand
++            return false
++        }
++        var candidate = state
++        do { try candidate.deleteWorkspace(id); try candidate.validate() } catch {
++            lastError = .invalidCommand
++            return false
++        }
++        guard engine.supportsProfile(candidate.currentWorkspace.profileID) else {
++            lastError = .unsupportedProfile
++            return false
++        }
++        let entryIDs = Set((doomed.pins + doomed.tabs).map(\.id))
++        let wasCurrent = state.activeWorkspaceID == id
++        do {
++            try (snapshotCommit ?? commit)(candidate)
++        } catch {
++            lastError = .saveFailed
++            return false
++        }
++        state = candidate
++        tearDownPeek()
++        for entry in entryIDs {
++            guard let page = livePages.removeValue(forKey: entry) else { continue }
++            pendingClose.remove(page)
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
++            engine.requestClose(page)
++        }
++        closedTabs[doomed.profileID]?.removeTabs(inWorkspace: id)
++        pendingArchive = pendingArchive.filter { !entryIDs.contains($0.key) }
 +        lastError = nil
 +        onStateChange?(state)
 +        if wasCurrent { _ = showSelection() }
@@ -6273,6 +6475,10 @@
 +    /// Previews the destination above the current live page without touching organization.
 +    @discardableResult
 +    public func openPeek(url: URL) -> Bool {
++        guard peekSession.preview == nil else {
++            lastError = .peekAlreadyOpen
++            return false
++        }
 +        guard canOpenPeek, let parentID = state.currentWorkspace.activeEntryID, let parent = livePages[parentID] else {
 +            lastError = .invalidCommand
 +            return false
@@ -6295,6 +6501,10 @@
 +    /// Revalidates the parent and destination: the page state may have changed since a link trigger fired.
 +    @discardableResult
 +    public func openPeek(from parent: LivePage, url: URL) -> Bool {
++        guard peekSession.preview == nil else {
++            lastError = .peekAlreadyOpen
++            return false
++        }
 +        guard canOpenPeek(from: parent, url: url) else {
 +            lastError = .invalidCommand
 +            return false
@@ -6755,7 +6965,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2325 @@
+@@ -0,0 +1,2377 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -6816,7 +7026,8 @@
 +            if let request = requestPagePresentation { request() } else { resumeCommittedSelection() }
 +        })
 +    private var commandBar: CommandBarController?
-+    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
++    private let preferences: AppPreferencesStore
++    private var commandBarSearchProvider: CommandBarSearchProvider { preferences.current().searchProvider }
 +    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
 +    private weak var pendingCommandBarWindow: NSWindow?
 +    private var commandBarNavigationTarget: LivePage?
@@ -6844,6 +7055,7 @@
 +        }
 +        let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
 +        organizationStore = store
++        preferences = AppPreferencesStore(directory: directory)
 +        self.recovery = recovery
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
 +        runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
@@ -7003,9 +7215,16 @@
 +            recovery: recovery,
 +            setArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($0) },
 +            setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
-+            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } }))
++            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } },
++            searchProvider: { [weak self] in self?.commandBarSearchProvider ?? .default },
++            setSearchProvider: { [weak self] in self?.setSearchProvider($0) }))
 +        settingsWindow = window
 +        window.show(pane)
++    }
++
++    private func setSearchProvider(_ provider: CommandBarSearchProvider) {
++        try? preferences.update { $0.searchProvider = provider }
++        settingsWindow?.reload()
 +    }
 +
 +    /// Sheets and pages belong to the browser window, so Settings actions bring it forward first.
@@ -7022,7 +7241,7 @@
 +        commandBarNavigationTarget = target
 +        let bar = CommandBarController(query: query, error: error,
 +                                       provider: commandBarSearchProvider,
-+                                       providerChanged: { [weak self] in self?.commandBarSearchProvider = $0 }) { [weak self] query in
++                                       providerChanged: { [weak self] in self?.setSearchProvider($0) }) { [weak self] query in
 +            guard let self else { return [] }
 +            return CommandBarResults.make(query: query, state: self.runtime.state,
 +                                          provider: self.commandBarSearchProvider,
@@ -7260,10 +7479,14 @@
 +        let promote = ActionButton(title: "Open as Tab") { [weak self] in self?.promotePeek() }
 +        configureTextAction(promote, symbol: "arrow.up.left.and.arrow.down.right")
 +        promote.setAccessibilityIdentifier("bato-peek-promote")
++        promote.setAccessibilityLabel("Open Peek as tab")
++        promote.setAccessibilityHelp("Keeps the previewed page as a tab in this workspace. Option-Command-Return.")
 +        let closePeek = ActionButton(title: "Close") { [weak self] in self?.dismissPeek() }
 +        configureTextAction(closePeek, symbol: "xmark")
 +        closePeek.toolTip = "Close Peek (Esc)"
 +        closePeek.setAccessibilityIdentifier("bato-peek-close")
++        closePeek.setAccessibilityLabel("Close Peek")
++        closePeek.setAccessibilityHelp("Dismisses the preview and returns to the page beneath. Escape.")
 +        let peekActions = NSStackView(views: [promote, closePeek])
 +        peekActions.orientation = .horizontal
 +        peekActions.distribution = .fillEqually
@@ -7273,6 +7496,8 @@
 +        peekRow.alignment = .leading
 +        peekRow.spacing = 4
 +        peekRow.isHidden = true
++        peekRow.setAccessibilityRole(.group)
++        peekRow.setAccessibilityLabel("Peek")
 +        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +
@@ -7488,6 +7713,8 @@
 +            statusLabel.stringValue = "Changes couldn’t be saved. Reopen Bato to reload organization."
 +        case .invalidCommand:
 +            statusLabel.stringValue = "This action couldn’t be completed."
++        case .peekAlreadyOpen:
++            statusLabel.stringValue = "A Peek is already open. Close it or open it as a tab first."
 +        }
 +        statusLabel.isHidden = statusLabel.stringValue.isEmpty
 +    }
@@ -8108,6 +8335,10 @@
 +        }
 +        moveDown.isEnabled = runtime.state.canMoveWorkspace(id, direction: .down)
 +        menu.addItem(moveDown)
++        menu.addItem(.separator())
++        let delete = ActionMenuItem(title: "Delete Workspace…") { [weak self] in self?.confirmDeleteWorkspace(id) }
++        delete.isEnabled = runtime.state.canDeleteWorkspace(id)
++        menu.addItem(delete)
 +        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workspaceActions.bounds.minY), in: workspaceActions)
 +    }
 +
@@ -8295,6 +8526,37 @@
 +            return
 +        }
 +        BlockingHost.shared.profiles?.removeProfile(id.uuidString)
++        render()
++    }
++
++    /// Asks before deleting a workspace, saying what goes with it. A Profile's last workspace is never offered.
++    private func confirmDeleteWorkspace(_ id: UUID) {
++        guard hasStarted, runtime.state.canDeleteWorkspace(id), let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil,
++              let workspace = runtime.state.workspaces.first(where: { $0.id == id }),
++              let loss = runtime.state.lossOfDeleting(workspace: id) else { return }
++        requestNativeFocus?()
++        func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
++        let body = "This removes the workspace’s \(count(loss.pages, "pin and tab")) and \(count(loss.archived, "archived tab")) "
++            + "and closes its open pages without asking. Browsing history and logins stay with the Profile. "
++            + "The sidebar organization is backed up first."
++        RecoverySheet.present(on: window, symbol: "trash", title: "Delete the workspace “\(workspace.name)”?", body: body,
++                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Delete Workspace", isDefault: false)],
++                              cancelIndex: 0) { [weak self] index in
++            guard index == 1 else { return }
++            DispatchQueue.main.async { [weak self] in self?.deleteWorkspace(id) }
++        }
++    }
++
++    private func deleteWorkspace(_ id: UUID) {
++        guard runtime.deleteWorkspace(id) else {
++            render()
++            guard let window = root.window, window.attachedSheet == nil else { return }
++            RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The workspace couldn’t be deleted",
++                                  body: "Nothing was removed. Try again.",
++                                  buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
++            return
++        }
 +        render()
 +    }
 +
@@ -9083,7 +9345,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,177 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -9093,19 +9355,24 @@
 +    case invalid(String)
 +}
 +
-+/// Provider selection is owned by the UI; DuckDuckGo is the alpha default.
-+public enum CommandBarSearchProvider: String, CaseIterable, Sendable {
-+    case duckDuckGo, google
++/// The chosen provider is persisted app-wide by `AppPreferencesStore`; DuckDuckGo is the default.
++public enum CommandBarSearchProvider: String, CaseIterable, Codable, Sendable {
++    case duckDuckGo, google, brave, bing
++    public static let `default`: CommandBarSearchProvider = .duckDuckGo
 +    public var title: String {
 +        switch self {
 +        case .duckDuckGo: "DuckDuckGo"
 +        case .google: "Google"
++        case .brave: "Brave Search"
++        case .bing: "Bing"
 +        }
 +    }
 +    public var endpoint: URL {
 +        switch self {
 +        case .duckDuckGo: URL(string: "https://duckduckgo.com/")!
 +        case .google: URL(string: "https://www.google.com/search")!
++        case .brave: URL(string: "https://search.brave.com/search")!
++        case .bing: URL(string: "https://www.bing.com/search")!
 +        }
 +    }
 +}
@@ -9325,7 +9592,7 @@
 +        providerPicker.action = #selector(changeProvider)
 +        providerPicker.setAccessibilityLabel("Web search provider")
 +        providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
-+        providerPicker.toolTip = "Search provider for this session"
++        providerPicker.toolTip = "Search provider (also in Settings > General)"
 +        providerPicker.isBordered = false
 +        providerPicker.controlSize = .small
 +        providerPicker.font = .systemFont(ofSize: 12)
@@ -11679,31 +11946,35 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/SettingsModel.swift
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,94 @@
 +import Foundation
 +
 +public enum SettingsPane: String, CaseIterable, Sendable {
-+    case profiles, privacy, archive, importData, shortcuts, advanced
++    case general, profiles, privacy, archive, importData, shortcuts, advanced, about
 +
 +    public var title: String {
 +        switch self {
++        case .general: "General"
 +        case .profiles: "Profiles"
 +        case .privacy: "Privacy"
 +        case .archive: "Archive"
 +        case .importData: "Import"
 +        case .shortcuts: "Shortcuts"
 +        case .advanced: "Advanced"
++        case .about: "About"
 +        }
 +    }
 +
 +    public var symbolName: String {
 +        switch self {
++        case .general: "magnifyingglass"
 +        case .profiles: "person.crop.circle"
 +        case .privacy: "hand.raised"
 +        case .archive: "archivebox"
 +        case .importData: "square.and.arrow.down"
 +        case .shortcuts: "keyboard"
 +        case .advanced: "gearshape.2"
++        case .about: "info.circle"
 +        }
 +    }
 +}
@@ -11749,6 +12020,27 @@
 +        ShortcutRow(title: "Settings", keys: "⌘,"),
 +    ]
 +}
++
++public struct AboutInfo: Equatable, Sendable {
++    public static let developmentVersion = "development"
++    public static let noticesURL = URL(string: "https://github.com/itsbohara/bato/blob/main/NOTICES.md")!
++
++    public let version: String
++    public let build: String?
++
++    /// The packaged app carries the repo's `VERSION` file as its bundle version; a bare VERSION file is the
++    /// fallback for unpackaged runs. Blank values count as missing.
++    public init(bundleVersion: String?, bundleBuild: String?, versionFileText: String?) {
++        func clean(_ text: String?) -> String? {
++            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
++            return trimmed?.isEmpty == false ? trimmed : nil
++        }
++        version = clean(bundleVersion) ?? clean(versionFileText) ?? Self.developmentVersion
++        build = clean(bundleBuild)
++    }
++
++    public var displayVersion: String { build.map { "\(version) (\($0))" } ?? version }
++}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift
 @@ -0,0 +1,22 @@
@@ -11776,7 +12068,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,670 @@
+@@ -0,0 +1,719 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -11796,6 +12088,8 @@
 +    let setArchivePeriod: (ArchivePeriod) -> Void
 +    let setWorkspaceArchivePeriod: (UUID, ArchivePeriod?) -> Void
 +    let openArchive: () -> Void
++    let searchProvider: () -> CommandBarSearchProvider
++    let setSearchProvider: (CommandBarSearchProvider) -> Void
 +}
 +
 +extension DefaultBrowser {
@@ -11975,16 +12269,42 @@
 +
 +    private func content(for pane: SettingsPane) -> [NSView] {
 +        switch pane {
++        case .general: generalPane()
 +        case .profiles: profilesPane()
 +        case .privacy: privacyPane()
 +        case .archive: archivePane()
 +        case .importData: importPane()
 +        case .shortcuts: shortcutsPane()
 +        case .advanced: advancedPane()
++        case .about: aboutPane()
 +        }
 +    }
 +
 +    // MARK: Panes
++
++    private func generalPane() -> [NSView] {
++        let picker = SearchProviderPicker(selected: hooks.searchProvider()) { [weak self] in self?.hooks.setSearchProvider($0) }
++        let row = SettingsRow(leading: SymbolTile(symbol: "magnifyingglass", color: .systemBlue),
++                              title: "Search engine",
++                              detail: "Used when you type a search in the command bar. Chromium’s own search engine setting is separate.",
++                              trailing: picker)
++        return [sectionHeading("Search"), SettingsGroup(rows: [row])]
++    }
++
++    private func aboutPane() -> [NSView] {
++        let info = AboutInfo(
++            bundleVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
++            bundleBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
++            versionFileText: Bundle.main.url(forResource: "VERSION", withExtension: nil).flatMap { try? String(contentsOf: $0, encoding: .utf8) })
++        let version = SettingsRow(leading: SymbolTile(symbol: "info.circle.fill", color: .systemTeal),
++                                  title: "Bato", detail: "Version \(info.displayVersion). Released under the MIT License.", trailing: nil)
++        let notices = SettingsRow(leading: nil, title: "Open source notices",
++                                  detail: "Chromium, the Chromium Embedded Framework, adblock-rust and the filter lists Bato can download.",
++                                  trailing: SettingsPillButton(title: "View Notices") {
++                                      NSWorkspace.shared.open(Bundle.main.url(forResource: "NOTICES", withExtension: "md") ?? AboutInfo.noticesURL)
++                                  })
++        return [SettingsGroup(rows: [version, notices])]
++    }
 +
 +    private func profilesPane() -> [NSView] {
 +        let note = caption("Each Profile keeps its own history, downloads, logins, cookies and extensions.")
@@ -12399,6 +12719,27 @@
 +        target = handler
 +        action = #selector(ActionTarget.fire)
 +        setAccessibilityLabel("Archive period")
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private final class SearchProviderPicker: NSPopUpButton {
++    private let handler: ActionTarget
++
++    init(selected: CommandBarSearchProvider, choose: @escaping (CommandBarSearchProvider) -> Void) {
++        let providers = CommandBarSearchProvider.allCases
++        var picker: (() -> Int)?
++        handler = ActionTarget { choose(providers[picker?() ?? 0]) }
++        super.init(frame: .zero, pullsDown: false)
++        picker = { [unowned self] in indexOfSelectedItem }
++        addItems(withTitles: providers.map(\.title))
++        selectItem(at: providers.firstIndex(of: selected) ?? 0)
++        controlSize = .large
++        target = handler
++        action = #selector(ActionTarget.fire)
++        setAccessibilityLabel("Search engine")
++        setAccessibilityIdentifier("bato-settings-search-provider")
 +    }
 +
 +    required init?(coder: NSCoder) { fatalError("Not used") }
@@ -12838,6 +13179,77 @@
 +        } catch let error as BackupError {
 +            throw error
 +        } catch { throw BackupError.writeFailed }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift
+@@ -0,0 +1,68 @@
++import BatoCore
++import Foundation
++
++public struct AppPreferences: Equatable, Sendable {
++    public var searchProvider: CommandBarSearchProvider = .default
++    public init() {}
++}
++
++extension AppPreferences: Codable {
++    private enum CodingKeys: String, CodingKey { case searchProvider }
++
++    /// An unknown provider name, e.g. from a newer build, falls back to the default instead of dropping the file.
++    public init(from decoder: any Decoder) throws {
++        let values = try decoder.container(keyedBy: CodingKeys.self)
++        let name = try values.decodeIfPresent(String.self, forKey: .searchProvider)
++        searchProvider = name.flatMap(CommandBarSearchProvider.init(rawValue:)) ?? .default
++    }
++}
++
++/// App-wide preferences in `preferences.json`, shared by every Profile and window. Saves replace the whole file.
++public final class AppPreferencesStore {
++    public static let fileName = "preferences.json"
++
++    public enum StoreError: Error, Equatable { case saveFailed }
++
++    private let directory: URL
++    private var cached: AppPreferences?
++
++    public init(directory: URL) {
++        self.directory = directory
++    }
++
++    public var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
++
++    public func current() -> AppPreferences {
++        if let cached { return cached }
++        let loaded = readFromDisk()
++        cached = loaded
++        return loaded
++    }
++
++    @discardableResult
++    public func update(_ change: (inout AppPreferences) -> Void) throws -> AppPreferences {
++        var next = current()
++        change(&next)
++        guard next != cached else { return next }
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++        do {
++            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++            try encoder.encode(next).write(to: fileURL, options: .atomic)
++        } catch {
++            throw StoreError.saveFailed
++        }
++        cached = next
++        return next
++    }
++
++    /// An unreadable file is set aside as `preferences.json.corrupt` and defaults are used.
++    private func readFromDisk() -> AppPreferences {
++        guard let bytes = try? Data(contentsOf: fileURL) else { return AppPreferences() }
++        if let preferences = try? JSONDecoder().decode(AppPreferences.self, from: bytes) { return preferences }
++        let quarantine = fileURL.appendingPathExtension("corrupt")
++        try? FileManager.default.removeItem(at: quarantine)
++        try? FileManager.default.moveItem(at: fileURL, to: quarantine)
++        return AppPreferences()
 +    }
 +}
 --- /dev/null
