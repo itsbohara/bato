@@ -149,6 +149,21 @@ bool ValidDestination(const char* utf8_url) {
       parts.username.length == 0 && parts.password.length == 0;
 }
 
+// Page creation also accepts the exact Chromium pages Bato offers as browser essentials.
+// Navigation, Peek and icon requests keep the web-only rule.
+bool ValidCreateDestination(const char* utf8_url) {
+  if (ValidDestination(utf8_url)) return true;
+  if (!utf8_url) return false;
+  CefURLParts parts;
+  if (!CefParseURL(CefString(utf8_url), parts)) return false;
+  const auto scheme = CefString(&parts.scheme).ToString();
+  const auto host = CefString(&parts.host).ToString();
+  const auto path = CefString(&parts.path).ToString();
+  return scheme == "chrome" && (host == "history" || host == "downloads" || host == "settings") &&
+      (path.empty() || path == "/") && parts.username.length == 0 && parts.password.length == 0 &&
+      parts.query.length == 0;
+}
+
 bool SameWindow(CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
   NSView* first_view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(first->GetHost()->GetWindowHandle());
   NSView* second_view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(second->GetHost()->GetWindowHandle());
@@ -572,7 +587,7 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url, const char* utf8_p
     LogWorkspaceRejection("create-page", reason);
     return 0;
   };
-  if (!ValidDestination(utf8_url))
+  if (!ValidCreateDestination(utf8_url))
     return reject(WorkspaceRejection::kDestinationInvalid);
   if (!g_new_tab)
     return reject(WorkspaceRejection::kNewTabCallbackUnavailable);
@@ -1155,6 +1170,9 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB")) command = 1;
   if (command_id == cef_id_for_command_id_name("IDC_CLOSE_TAB")) command = 2;
   if (command_id == cef_id_for_command_id_name("IDC_DEV_TOOLS_INSPECT") && IsCopyUrlChord()) command = 4;
+  if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
+  if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
+  if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
   if (!command || !browser || !browser->IsValid()) return false;
   for (const auto& [token, slot] : WorkspaceSlots()) {
     auto* available = AvailableSlot(token);

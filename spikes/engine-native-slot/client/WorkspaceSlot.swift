@@ -605,6 +605,9 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     if command == 3 { controller.resumeCommittedSelection() }
     if command == 1 { controller.newTab() }
     if command == 4 { controller.copyCurrentLink() }
+    if command == 5 { controller.openEssential(.history) }
+    if command == 6 { controller.openEssential(.downloads) }
+    if command == 7 { controller.showSettings() }
     if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
         controller.dismissPeek()
     } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
