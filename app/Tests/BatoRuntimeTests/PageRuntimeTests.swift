@@ -1059,7 +1059,7 @@ struct PageRuntimeTests {
         runtime.receive(.navigation(page, url: next, title: "Next"))
         #expect(runtime.canUpdateSavedURL(id))
         let before = runtime.state
-        for address in ["chrome://settings", "https://user:secret@example.invalid/"] {
+        for address in ["chrome://flags", "https://user:secret@example.invalid/"] {
             runtime.receive(.navigation(page, url: URL(string: address)!, title: "Unsupported"))
             #expect(!runtime.canUpdateSavedURL(id))
             let count = saves
@@ -1083,14 +1083,14 @@ struct PageRuntimeTests {
         #expect(runtime.state.visibleEntries[0].savedURL == next)
 
         // The rejection belongs to this generation, not a later reload.
-        runtime.receive(.navigation(page, url: URL(string: "chrome://settings")!, title: "Unsupported"))
+        runtime.receive(.navigation(page, url: URL(string: "chrome://flags")!, title: "Unsupported"))
         runtime.receive(.unloaded(page))
         #expect(!runtime.canUpdateSavedURL(id))
         #expect(runtime.selectEntry(id))
         let fresh = try #require(runtime.livePages[id])
         #expect(fresh != page)
         #expect(runtime.canUpdateSavedURL(id))
-        runtime.receive(.navigation(page, url: URL(string: "chrome://settings")!, title: "Stale"))
+        runtime.receive(.navigation(page, url: URL(string: "chrome://flags")!, title: "Stale"))
         #expect(runtime.canUpdateSavedURL(id))
     }
 
@@ -1103,7 +1103,7 @@ struct PageRuntimeTests {
         runtime.start()
         let page = try #require(runtime.livePages[id])
         runtime.onStateChange = { _ in
-            runtime.receive(.navigation(page, url: URL(string: "chrome://settings")!, title: "Internal"))
+            runtime.receive(.navigation(page, url: URL(string: "chrome://flags")!, title: "Internal"))
         }
         runtime.receive(.navigation(page, url: next, title: "Next"))
         #expect(runtime.state.visibleEntries[0].lastURL == next)
