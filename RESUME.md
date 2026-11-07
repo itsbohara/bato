@@ -4,6 +4,10 @@ Updated 2026-11-02. Read AGENTS.md and PROGRESS.md. This is the active handoff; 
 
 ## Current checkpoint
 
+2026-11-07: PR #1 merged (85ac56e). Multi-Profile: one Chrome window/request context per Bato Profile at <cache-path>/<ProfileUUID>; Bato adds --profile-directory=Default and --disable-features=OmniboxEverywhere in workspace mode (Chrome otherwise opens the launch window in Local State last_used and OmniboxEverywhere's keep-alive blocks quit). Client refuses/logs profile-*-refused/mismatch if a window or page context path differs from its Profile's. Traffic lights centered on 46pt row; full-height sidebar with workspace label and tint. Real host profiles-v6..v9 (logs/profiles-v*, runtime/profiles-state-v*) passed isolation, relaunch persistence and natural 3-window quit. keep-alive-state quit diagnostic retained in engine.patch. Open: pin title overwritten by page title (D5), copies wording (D6), process-wide blocking. 245 Swift tests.
+
+## Previous checkpoint (blocking + import)
+
 2026-11-07 later: Blocking milestone 2 and Arc import preview/apply committed (6cf9d72..5d8a2ee). Blocking is default-on whenever a workspace state dir exists (`--bato-no-blocking` disables; `--bato-blocking=<list>` adds a list; `--bato-blocking-log` logs blocked URLs); lists under <state>/blocking/default/; native_slot.py copies libbato_adblock_ffi.dylib (cargo, CARGO_TARGET_DIR SSD cargo-target) into the app after build. Real host integrate-v2/v3 (logs/integrate-v*, runtime/integrate-state-v{2,3}) passed lists, 20/20 fixture rows, toggle; Arc import preview/import/Undo/duplicate passed with tmp/arc-fixture. 236 Swift tests. Open: imported Profiles cannot open pages (single engine Profile), import sheet blank space and all-imported state, cosmetic filtering. Next: multi-Profile engine contexts; visual polish (traffic-light centering, Dia sidebar top/tint).
 
 ## Previous checkpoint (compact top)
