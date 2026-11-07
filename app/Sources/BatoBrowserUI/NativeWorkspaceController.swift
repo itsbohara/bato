@@ -48,6 +48,14 @@ public final class NativeWorkspaceController: NSObject {
     private let recovery: RecoveryController
     private var arcImport: ArcImportController?
     private var settingsWindow: SettingsWindowController?
+    private lazy var archiveController = ArchiveController(
+        runtime: runtime, window: { [weak self] in self?.root.window },
+        canPresent: { [weak self] in self?.canOpenBrowserPage ?? false },
+        restored: { [weak self] in
+            guard let self else { return }
+            render()
+            if let request = requestPagePresentation { request() } else { resumeCommittedSelection() }
+        })
     private var commandBar: CommandBarController?
     private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
@@ -110,6 +118,16 @@ public final class NativeWorkspaceController: NSObject {
         render()
         recovery.confirmLaunchSoon()
         if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
+        archiveController.start()
+        offerUBlockListsOnFirstRun()
+    }
+
+    /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
+    private func offerUBlockListsOnFirstRun() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, canOpenBrowserPage, let window = root.window else { return }
+            UBlockOffer.offerIfDue(on: window)
+        }
     }
 
     /// Marks this session as ended cleanly; the next launch then offers no recovery.
@@ -221,7 +239,10 @@ public final class NativeWorkspaceController: NSObject {
             importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
             openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } },
             defaultBrowser: .system(),
-            recovery: recovery))
+            recovery: recovery,
+            setArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($0) },
+            setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
+            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } }))
         settingsWindow = window
         window.show(pane)
     }
@@ -248,6 +269,7 @@ public final class NativeWorkspaceController: NSObject {
                 switch result.action {
                 case .command(.toggleSidebar): return self.requestSidebarToggle != nil
                 case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
+                case .command(.archiveTab): return self.selectedTemporaryTabID != nil
                 case .peek: return self.runtime.canOpenPeek
                 default: return true
                 }
@@ -304,6 +326,8 @@ public final class NativeWorkspaceController: NSObject {
             case .findPage: findPage()
             case .toggleSidebar: requestSidebarToggle?()
             case .closePage: closeSelection()
+            case .archiveTab: selectedTemporaryTabID.map { id in perform { runtime.archiveTab(id) } }
+            case .openArchive: archiveController.show()
             case .openHistory: openEssential(.history)
             case .openDownloads: openEssential(.downloads)
             case .openSettings: showSettings()
@@ -357,6 +381,11 @@ public final class NativeWorkspaceController: NSObject {
         guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
         FileHandle.standardError.write(data)
         FileHandle.standardError.write(Data([0x0A]))
+    }
+
+    private var selectedTemporaryTabID: UUID? {
+        let workspace = runtime.state.currentWorkspace
+        return workspace.tabs.first { $0.id == workspace.activeEntryID }?.id
     }
 
     public func closeSelection() {
@@ -963,6 +992,10 @@ public final class NativeWorkspaceController: NSObject {
             menu.addItem(ActionMenuItem(title: "Add to Favorites") { [weak self] in
                 guard let self else { return }
                 self.perform { self.runtime.favoriteEntry(page.id) }
+            })
+            menu.addItem(ActionMenuItem(title: "Archive Tab") { [weak self] in
+                guard let self else { return }
+                self.perform { self.runtime.archiveTab(page.id) }
             })
             select.menu = menu
         } else {

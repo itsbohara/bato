@@ -13,6 +13,9 @@ struct SettingsHooks {
     let openEssential: (BrowserEssential) -> Void
     let defaultBrowser: DefaultBrowser
     let recovery: RecoveryController
+    let setArchivePeriod: (ArchivePeriod) -> Void
+    let setWorkspaceArchivePeriod: (UUID, ArchivePeriod?) -> Void
+    let openArchive: () -> Void
 }
 
 extension DefaultBrowser {
@@ -138,6 +141,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         switch pane {
         case .profiles: profilesPane()
         case .privacy: privacyPane()
+        case .archive: archivePane()
         case .importData: importPane()
         case .shortcuts: shortcutsPane()
         case .advanced: advancedPane()
@@ -178,7 +182,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
                                    title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
                                    trailing: toggle, keeping: handler)
-        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking])]
+        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
         views += sitePermissions(forProfile: profile.name)
         let exceptions = service.exceptions
         views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
@@ -191,6 +195,53 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             }))
         }
         return views
+    }
+
+    private func uBlockListsRow() -> NSView {
+        let tile = SymbolTile(symbol: "shield.lefthalf.filled", color: .systemOrange)
+        let title = "uBlock Origin filter lists"
+        guard let blocking = BlockingHost.shared.profiles else {
+            return SettingsRow(leading: tile, title: title, detail: "Available once content blocking has started.", trailing: nil)
+        }
+        if blocking.uBlockChoice == .enabled {
+            return SettingsRow(leading: tile, title: title,
+                               detail: "Added for every Profile and updated daily.",
+                               trailing: SettingsPillButton(title: "Remove") { [weak self] in
+                                   UBlockOffer.remove(blocking: blocking) { self?.reload() }
+                               })
+        }
+        return SettingsRow(leading: tile, title: title,
+                           detail: "More filters from the uBlock Origin project. Downloaded only if you add them.",
+                           trailing: SettingsPillButton(title: "Add…") { [weak self] in
+                               guard let self else { return }
+                               UBlockOffer.present(on: window, blocking: blocking) { [weak self] in self?.reload() }
+                           })
+    }
+
+    private func archivePane() -> [NSView] {
+        let state = hooks.state()
+        let global = SettingsRow(leading: SymbolTile(symbol: "archivebox.fill", color: .systemIndigo),
+                                 title: "Archive tabs", detail: "Temporary tabs you haven’t used move to the Archive. Pins and Favorites stay.",
+                                 trailing: ArchivePeriodPicker(selected: state.archive.period, includeDefault: false) { [weak self] in
+                                     self?.hooks.setArchivePeriod($0 ?? .never)
+                                     self?.reload()
+                                 })
+        var views: [NSView] = [SettingsGroup(rows: [global])]
+        let profileID = state.currentWorkspace.profileID
+        let rows = state.workspaces.filter { $0.profileID == profileID }.map { workspace in
+            SettingsRow(leading: ColorDot(hex: workspace.color), title: workspace.name,
+                        detail: workspace.archivePeriod == nil ? "Uses the setting above" : nil,
+                        trailing: ArchivePeriodPicker(selected: workspace.archivePeriod, includeDefault: true) { [weak self] in
+                            self?.hooks.setWorkspaceArchivePeriod(workspace.id, $0)
+                            self?.reload()
+                        })
+        }
+        if rows.count > 1 { views += [caption("Workspaces"), SettingsGroup(rows: rows)] }
+        let count = state.archive.records(inProfile: profileID).count
+        let open = SettingsRow(leading: nil, title: "Archived tabs",
+                               detail: count == 0 ? "Nothing is archived yet." : "\(count) archived in this Profile.",
+                               trailing: SettingsPillButton(title: "Open Archive…") { [weak self] in self?.hooks.openArchive() })
+        return views + [caption("Restore"), SettingsGroup(rows: [open])]
     }
 
     private func sitePermissions(forProfile name: String) -> [NSView] {
@@ -453,6 +504,27 @@ private final class SettingsPillButton: NSButton {
         font = .systemFont(ofSize: 15)
         target = handlerTarget
         action = #selector(ActionTarget.fire)
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not used") }
+}
+
+private final class ArchivePeriodPicker: NSPopUpButton {
+    private let handler: ActionTarget
+
+    /// `nil` stands for "follow the global setting" when `includeDefault` is set.
+    init(selected: ArchivePeriod?, includeDefault: Bool, choose: @escaping (ArchivePeriod?) -> Void) {
+        let periods: [ArchivePeriod?] = (includeDefault ? [nil] : []) + ArchivePeriod.allCases.map { Optional($0) }
+        var picker: (() -> Int)?
+        handler = ActionTarget { choose(periods[picker?() ?? 0]) }
+        super.init(frame: .zero, pullsDown: false)
+        picker = { [unowned self] in indexOfSelectedItem }
+        addItems(withTitles: periods.map { $0?.title ?? "Use default" })
+        selectItem(at: periods.firstIndex(of: selected) ?? 0)
+        controlSize = .large
+        target = handler
+        action = #selector(ActionTarget.fire)
+        setAccessibilityLabel("Archive period")
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }

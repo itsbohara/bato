@@ -178,7 +178,7 @@ private final class DownloadRow: NSView, NSDraggingSource {
         name.lineBreakMode = .byTruncatingMiddle
         let status = NSTextField(labelWithString: DownloadFormat.status(item))
         status.font = .systemFont(ofSize: 11)
-        status.textColor = item.state == .failed ? .systemRed : .secondaryLabelColor
+        status.textColor = item.state == .failed || item.warning != .none ? .systemRed : .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
         var text: [NSView] = [name, status]
         if item.state.isActive {
@@ -192,13 +192,22 @@ private final class DownloadRow: NSView, NSDraggingSource {
             if bar.isIndeterminate { bar.startAnimation(nil) }
             text.insert(bar, at: 1)
         }
+        if item.warning != .none {
+            let decision = NSStackView(views: [
+                DownloadTextButton(title: "Keep", id: "bato-download-keep") { [act] in act(.keep) },
+                DownloadTextButton(title: "Discard", id: "bato-download-discard") { [act] in act(.discard) }
+            ])
+            decision.orientation = .horizontal
+            decision.spacing = 6
+            text.append(decision)
+        }
         let textStack = NSStackView(views: text)
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        text.forEach { $0.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true }
+        text.filter { !($0 is NSStackView) }.forEach { $0.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true }
 
         actions.orientation = .horizontal
         actions.spacing = 2
@@ -224,7 +233,8 @@ private final class DownloadRow: NSView, NSDraggingSource {
     }
 
     private func actionSpecs() -> [(action: DownloadAction, symbol: String, label: String)] {
-        switch item.state {
+        if item.warning != .none { return [] }
+        return switch item.state {
         case .inProgress: [(.pause, "pause.fill", "Pause"), (.cancel, "xmark", "Cancel")]
         case .paused: [(.resume, "play.fill", "Resume"), (.cancel, "xmark", "Cancel")]
         case .completed where item.canOpen: [(.showInFinder, "magnifyingglass", "Show in Finder"), (.remove, "xmark", "Remove from list")]
@@ -251,6 +261,25 @@ private final class DownloadActionButton: NSButton {
         action = #selector(run)
         widthAnchor.constraint(equalToConstant: 24).isActive = true
         heightAnchor.constraint(equalToConstant: 24).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+    @objc private func run() { invoke() }
+}
+
+private final class DownloadTextButton: NSButton {
+    private let invoke: () -> Void
+
+    init(title: String, id: String, invoke: @escaping () -> Void) {
+        self.invoke = invoke
+        super.init(frame: .zero)
+        self.title = title
+        bezelStyle = .rounded
+        controlSize = .small
+        font = .systemFont(ofSize: 11, weight: .medium)
+        target = self
+        action = #selector(run)
+        setAccessibilityIdentifier(id)
     }
 
     required init?(coder: NSCoder) { fatalError("Not supported") }
