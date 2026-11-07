@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "773b1bae2545cbe666b26225db1f75209659be164271fcce1cf8b6994518f6d5",
+  "patch_sha256": "32a1ba906549fac487dc209137b45e78caa69e645003b79c33871805843c61f6",
   "files": [
     {
       "root": "cef",
@@ -75,6 +75,12 @@
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
       "patched_sha256": "b2ad41787a298cccda2d0b21c7ac1af14deffed23d79d2a60189962ef12b6ff3"
+    },
+    {
+      "root": "cef",
+      "path": "libcef/browser/main_runner.cc",
+      "original_sha256": "ae8fdbcb4950d052b74f79ba275ab00825c86271490baf7dd39ebb222ac42fea",
+      "patched_sha256": "408718fd7b5ecb53946fe4887472f4916128efba5c0a30d85d1746f279ca23cf"
     }
   ]
 }

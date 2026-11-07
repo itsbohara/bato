@@ -1801,3 +1801,61 @@
 +}
 +#endif
 +#endif
+--- a/cef/libcef/browser/main_runner.cc
++++ b/cef/libcef/browser/main_runner.cc
+@@ -5,11 +5,16 @@
+
+ #include "cef/libcef/browser/main_runner.h"
+
++#include <sstream>
++
+ #include "base/base_switches.h"
+ #include "base/command_line.h"
++#include "base/functional/bind.h"
+ #include "base/debug/debugger.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/run_loop.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/time/time.h"
+ #include "base/synchronization/waitable_event.h"
+ #include "cef/libcef/browser/browser_message_loop.h"
+ #include "cef/libcef/browser/chrome/chrome_content_browser_client_cef.h"
+@@ -23,6 +28,7 @@
+ #include "chrome/common/chrome_result_codes.h"
+ #include "chrome/common/profiler/main_thread_stack_sampling_profiler.h"
+ #include "components/crash/core/app/crash_switches.h"
++#include "components/keep_alive_registry/keep_alive_registry.h"
+ #include "components/keep_alive_registry/keep_alive_types.h"
+ #include "components/metrics/persistent_system_profile.h"
+ #include "content/app/content_main_runner_impl.h"
+@@ -155,9 +161,30 @@
+   run_loop.Run();
+ }
+
++namespace {
++
++// Quit waits for Chrome's keep-alive registry to empty, so a Quit that never finishes is
++// diagnosed by which origins remain. Only logs under the native Quit experiment switch.
++void LogKeepAlives(const char* phase) {
++  std::ostringstream state;
++  state << *KeepAliveRegistry::GetInstance();
++  fprintf(stderr, "{\"event\":\"keep-alive-state\",\"phase\":\"%s\",\"state\":\"%s\"}\n", phase,
++          state.str().c_str());
++}
++
++}  // namespace
++
+ void CefMainRunner::QuitMessageLoop() {
+   if (!quit_callback_.is_null()) {
+     if (HandleMainMessageLoopQuit()) {
++      if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-quit")) {
++        LogKeepAlives("quit-requested");
++        auto runner = base::SingleThreadTaskRunner::GetCurrentDefault();
++        runner->PostDelayedTask(FROM_HERE, base::BindOnce(&LogKeepAlives, "pending-3s"),
++                                base::Seconds(3));
++        runner->PostDelayedTask(FROM_HERE, base::BindOnce(&LogKeepAlives, "pending-10s"),
++                                base::Seconds(10));
++      }
+       return;
+     }
+     std::move(quit_callback_).Run();
