@@ -1,0 +1,18 @@
+{
+  "run": "compact-folders-v1",
+  "date": "2026-11-07",
+  "launch": {"wrapper": "tmp/launch-compact-folders-v1.py", "state": "runtime/compact-folders-state-v1 (fresh clone of split-pairs-state-v1)", "mockKeychain": true},
+  "exit": {"code": 0, "nativeSlotDetached": 1, "cefMessageLoopExited": 1, "cefShutdownComplete": 1, "preQuitEqualsFinalOrganization": true},
+  "checks": {
+    "compactTop": {"result": "pass-with-deltas", "toolbarSameRowAsTrafficLights": true, "emptyTitleRow": false, "dockedToolbarStartsAtSidebarEdge": true, "hiddenToolbarStartsAfterTrafficLights": true, "toolbarHeightPoints": 46, "trafficLightsVerticallyCenteredWithToolbar": false, "windowDragFromEmptySpace": "not demonstrated (synthetic CGEvent drag from 9 points, incl. sidebar strip, did not move window)", "fullscreenRoundTrip": "restores; Chromium horizontal tab strip visible in fullscreen"},
+    "sidebarTopRow": {"result": "pass", "controls": ["toggle", "edit workspace", "workspace actions"], "cmdLPrefilledCurrentUrl": true, "enterNavigatesCurrent": true, "newOrganizationEntry": false, "backForwardActOnActiveSide": true, "peek": "Peek refused while split; after Separate, Peek shows peeked page URL in omnibox, back disabled"},
+    "nestedFolders": {"result": "pass", "levels": 4, "newSubfolderDisabledAtDepth4": true, "moveIntoFolderSelfExcluded": true, "descendantsDisabled": true, "currentParentDisabled": true, "indentPointsPerLevel": 12.5, "collapsePersistedInFile": true, "renameAtDepth": true, "dissolveAtDepth": "children and pins move up one level, order kept", "versionBeforeNesting": 1, "versionAfterNesting": 2, "moveIntoFolderExecuted": false},
+    "defects": [
+      "Omnibox shows 'or ' instead of URL/site info until first navigation",
+      "Traffic lights sit about 16 points above toolbar vertical center",
+      "Sidebar keeps a ~46pt empty strip beside traffic lights above its toggle row",
+      "Window drag from empty toolbar/sidebar strip not observed",
+      "Stock Chromium tab strip visible in fullscreen"
+    ]
+  }
+}

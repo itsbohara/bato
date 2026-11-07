@@ -5,18 +5,18 @@ Updated 2026-11-02. Rough planning estimate: **45% of a usable V1**, with the po
 | Area | Current state | Remaining |
 | --- | --- | --- |
 | Chromium foundation | Pinned source build; native Swift hosting; real pages and bounded focus/close checks | Remaining window, split, modal, compatibility and production acceptance |
-| Organization | Persistent workspaces; shared Favorites; pins/tabs; ordered flat folders with collapse, membership and safe dissolve; entry/workspace ordering and transfers | Nested folders, broader workspace/Profile lifecycle and import mapping |
+| Organization | Persistent workspaces; shared Favorites; pins/tabs; ordered folders nested up to 4 levels with collapse, membership, move-into and safe dissolve; entry/workspace ordering and transfers | Folder drag-and-drop and interleaved ordering, broader workspace/Profile lifecycle and import UI |
 | Page coordination | Stable IDs; lazy creation; live-page reuse; saved/session URLs; confirmed/cancelled close; sidebar Copy Link | Broader crash/recovery and lifecycle coverage |
 | Find Page | Current-Profile search, atomic activation, unloaded opening and live reuse; integrated command-bar page results | Broader search/ranking polish |
-| Arc-style interface | Adaptive sidebar, Favorites, rounded content, engine-delivered site icons; duplicate horizontal tabs hidden in owned normal windows; sidebar navigation header (Back/Forward/Reload-Stop, host pill with loading bar, Cmd-L navigate-current, Page > Copy URL) | Toolbar row beside traffic lights, persistent load-failure state, Cmd-Shift-C chord (physical-key check), per-space tint, broader visual polish |
+| Arc-style interface | Adaptive sidebar, Favorites, rounded content, engine-delivered site icons; duplicate horizontal tabs hidden in owned normal windows; compact single toolbar row beside the traffic lights (Chromium owns navigation/origin); Cmd-L navigate-current, Page > Copy URL | Traffic-light vertical centering, Dia-style sidebar top/space label and tint, fullscreen stock tab strip, Cmd-Shift-C physical-key check, window drag confirmation |
 | Sidebar behavior | Coordinated dock/hide/reveal, Cmd+S, 220–400-point drag/keyboard resizing and accessible controls; bounded real-host checks passed | Persisted preferences, animation, broader window/transition acceptance |
 | Command bar | Floating native Cmd+T bar; URL/web search; current-Profile page switching; keyboard selection; browser commands; session-local provider choice | Persisted search settings, broader command coverage and acceptance |
 | Splits | Bato-owned native Chromium pairs; saved pair controls; lazy member opening/live reuse; menu-driven divider ratio; exact clean-quit persistence and same-binary restart | Pointer divider resizing, keyboard/focus acceptance and broader split compatibility |
 | Peek | Engine-owned inset preview over a backdrop (tab-owned, same window/context); Cmd-T "Open in Peek"; Escape/Cmd-W/Close dismissal with beforeunload Cancel/Leave; transactional Open as Tab without reload; workspace-switch teardown and split refusal; clean Quit ; live dimmed parent with input blocked, scrim-click dismissal, Shift-click links, Cmd-Option-Return/Peek menu promotion | Focus/AX polish, context-menu Open in Peek, real-host second-Peek refusal |
 | Profiles | Synthetic storage sharing/isolation demonstrated | Application context binding and Profile controls |
 | Extensions | Narrow installation/persistence/use checks recorded | Remaining acceptance; extensive testing deferred by user |
-| Blocking | Not implemented | Default blocking, controls and persistent site exceptions |
-| Import | Not implemented | Arc staging preview, organization mapping and transactional import |
+| Blocking | adblock-rust FFI spike and switch-gated CEF request hook (not yet runtime-verified) | Real-host fixture check, filter lists, controls, per-site exceptions, optional uBlock download |
+| Import | Arc StorableSidebar parser, staging model with typed warnings and validated import plan (synthetic fixtures) | Preview sheet, transactional apply with Undo, import-source identity |
 | Archive and browser essentials | Not implemented as product features | Archive/restore, settings, history, downloads and external-link handling |
 | Persistence and recovery | Atomic organization store, stale-write protection and previous-good backup | Migration, broader recovery and backup workflows |
 | Distribution | Developer source host only | Packaging, signing, updates, security/performance and daily-use readiness |
