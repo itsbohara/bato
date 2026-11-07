@@ -120,16 +120,26 @@ public enum CommandBarResults {
                 subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
         case .empty, .invalid: break
         }
-        results += state.searchPages(matching: text).map {
-            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
-                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
-        }
-        results += CommandBarCommand.allCases.filter {
+        let commands = CommandBarCommand.allCases.filter {
             text.isEmpty || $0.title.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }.map {
             CommandBarResult(id: "command:\($0.rawValue)", title: $0.title,
                 subtitle: "Browser command", action: .command($0))
         }
+        // An exact command name is a deliberate choice, so it outranks the web-search fallback.
+        let isExactCommand = { (result: CommandBarResult) in
+            result.title.compare(text, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        var remainingCommands = commands
+        if case .search = CommandBarInput.resolve(text, provider: provider) {
+            results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
+            remainingCommands.removeAll(where: isExactCommand)
+        }
+        results += state.searchPages(matching: text).map {
+            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
+                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
+        }
+        results += remainingCommands
         return results
     }
 }
