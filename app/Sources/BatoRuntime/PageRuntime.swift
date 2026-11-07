@@ -105,6 +105,10 @@ public final class PageRuntime {
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
     private var closedTabs: [UUID: ClosedTabStack] = [:]
+    /// Live pages being closed to archive their tab, with the time the archive was requested.
+    private var pendingArchive: [UUID: Date] = [:]
+    /// Time source for archive activity and records; tests replace it.
+    public var clock: () -> Date = { Date() }
     public var canReopenClosedTab: Bool {
         closedTabs[state.currentWorkspace.profileID]?.isEmpty == false
     }
@@ -448,6 +452,52 @@ public final class PageRuntime {
         return true
     }
 
+    /// Archives a temporary tab. A loaded page is archived once the engine has closed it, and stays
+    /// in the sidebar if the close is cancelled, like a normal close.
+    @discardableResult
+    public func archiveTab(_ id: UUID) -> Bool {
+        guard state.workspaces.contains(where: { $0.tabs.contains { $0.id == id } }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        let now = clock()
+        guard let page = livePages[id] else { return change { try $0.archiveTab(id, at: now) } }
+        guard pendingClose.insert(page).inserted else { return true }
+        pendingArchive[id] = now
+        engine.requestClose(page)
+        return true
+    }
+
+    /// Archives every temporary tab idle for its workspace's period. Returns how many were archived or
+    /// are closing to be archived.
+    @discardableResult
+    public func archiveIdleTabs() -> Int {
+        guard state.archivesIdleTabs else { return 0 }
+        _ = change(reconcileSelection: false) { _ in }
+        let idle = state.idleTabIDs(at: clock()).filter { id in !pendingClose.contains { $0.entryID == id } }
+        return idle.filter { archiveTab($0) }.count
+    }
+
+    @discardableResult
+    public func restoreArchivedTab(_ id: UUID, deferPageSelection: Bool = false) -> Bool {
+        change(reconcileSelection: !deferPageSelection) { _ = try $0.restoreArchivedTab(id) }
+    }
+
+    @discardableResult
+    public func deleteArchivedTab(_ id: UUID) -> Bool {
+        change(reconcileSelection: false) { try $0.deleteArchivedTab(id) }
+    }
+
+    @discardableResult
+    public func setArchivePeriod(_ period: ArchivePeriod) -> Bool {
+        change(reconcileSelection: false) { try $0.setArchivePeriod(period) }
+    }
+
+    @discardableResult
+    public func setArchivePeriod(_ period: ArchivePeriod?, forWorkspace id: UUID) -> Bool {
+        change(reconcileSelection: false) { try $0.setArchivePeriod(period, forWorkspace: id) }
+    }
+
     /// Opens a second temporary tab on the selected page's address.
     @discardableResult
     public func duplicateSelectedEntry() -> Bool {
@@ -700,6 +750,7 @@ public final class PageRuntime {
         case let .closeCancelled(page):
             guard livePages[page.entryID] == page else { return }
             pendingClose.remove(page)
+            pendingArchive.removeValue(forKey: page.entryID)
         case let .closed(page):
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)
@@ -709,6 +760,7 @@ public final class PageRuntime {
             // Apply close in its owner workspace, then restore current selection.
             var candidate = state
             let closedTab = candidate.closedTab(for: page.entryID)
+            let archivedAt = pendingArchive.removeValue(forKey: page.entryID)
             let active = candidate.activeWorkspaceID
             let successor = state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
                 ? state.entryID(afterClosing: page.entryID, skipping: { [pendingClose] id in
@@ -722,10 +774,11 @@ public final class PageRuntime {
                 try? candidate.activateWorkspace(owner.id)
             }
             do {
-                try candidate.closeEntry(page.entryID)
+                if let archivedAt { try candidate.archiveTab(page.entryID, at: archivedAt) }
+                else { try candidate.closeEntry(page.entryID) }
                 try candidate.activateWorkspace(active)
                 if let successor { try? candidate.selectEntry(successor) }
-                if save(candidate), let closedTab {
+                if save(candidate), let closedTab, archivedAt == nil {
                     closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
                 }
             } catch {
@@ -752,6 +805,8 @@ public final class PageRuntime {
     private func change(reconcileSelection: Bool = true,
                         _ mutate: (inout BrowserState) throws -> Void) -> Bool {
         var candidate = state
+        // Before the change, so a tab that stops being selected keeps the time it was last in use.
+        candidate.stampActivity(at: clock())
         do {
             try mutate(&candidate)
             try candidate.validate()
