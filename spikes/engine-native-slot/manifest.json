@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "f48fa244a2cbc035431a831b46c4510e102461f6f92a6905a2acd51be598163a",
+  "patch_sha256": "c72898d260067492b9dbf3b170b2c424656b08507167ee4ea804e3bc9a26749b",
   "files": [
     {
       "root": "cef",
@@ -87,6 +87,24 @@
       "path": "libcef/browser/main_runner.cc",
       "original_sha256": "ae8fdbcb4950d052b74f79ba275ab00825c86271490baf7dd39ebb222ac42fea",
       "patched_sha256": "408718fd7b5ecb53946fe4887472f4916128efba5c0a30d85d1746f279ca23cf"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/browser_commands.cc",
+      "original_sha256": "de20f2ef2252b2511e0a5a50dac1341e462b0be91beb6bc666dac515c603f10a",
+      "patched_sha256": "373793f5648d6f9b6e1dc288a5823db8a7b45a347a83f10b9db39a30dc2377ac"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/browser_tab_restorer.cc",
+      "original_sha256": "d2f6ae428ebb345581e4f0bb3e8c0fa95004c0302527b0ff1d1db45a240d568b",
+      "patched_sha256": "cc4e5d0476b3010235e753b5ebc4171c0716f059e74b57212097acf8ff563b27"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/browser_actions.cc",
+      "original_sha256": "597653c4ecd1805050afb6bb3efc8a2f9ec86423d01529952f0b54878c6039d0",
+      "patched_sha256": "135ce1329ba50bb938d10a175ba905d95e9b2c4b33e5fb8125bdf044c186d902"
     }
   ]
 }
