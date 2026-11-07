@@ -46,4 +46,21 @@ struct EssentialsRuntimeTests {
         #expect(runtime.openEssential(.history))
         #expect(engine.created.count == 2)
     }
+
+    @Test func siteSettingsOpenForThePageSiteAndAreReusedPerSite() throws {
+        let state = BrowserState.initial()
+        let engine = RecordingEngine([state.currentWorkspace.profileID])
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        let page = URL(string: "http://127.0.0.1:18765/permissions.html")!
+        #expect(runtime.openSiteSettings(for: page))
+        #expect(runtime.openSiteSettings(for: page))
+        #expect(runtime.openSiteSettings(for: URL(string: "https://example.test/")))
+        #expect(runtime.openSiteSettings(for: nil))
+        #expect(engine.created.map(\.1.absoluteString) == [
+            "chrome://settings/content/siteDetails?site=http%3A%2F%2F127.0.0.1%3A18765",
+            "chrome://settings/content/siteDetails?site=https%3A%2F%2Fexample.test",
+            "chrome://settings/content",
+        ])
+        #expect(runtime.state.currentWorkspace.tabs.count == 3)
+    }
 }

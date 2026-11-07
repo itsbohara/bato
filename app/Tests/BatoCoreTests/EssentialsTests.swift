@@ -17,6 +17,34 @@ final class EssentialsTests: XCTestCase {
         }
     }
 
+    func testSiteSettingsSubtreeIsAcceptedButNothingElseUnderSettings() {
+        for accepted in ["chrome://settings/content", "chrome://settings/content/all", "chrome://settings/content/notifications",
+                         "chrome://settings/content/siteDetails?site=http%3A%2F%2F127.0.0.1%3A18765",
+                         "chrome://settings/content/siteDetails?site=https%3A%2F%2Fexample.test"] {
+            XCTAssertTrue(BrowserEssential.accepts(URL(string: accepted)!), accepted)
+            XCTAssertEqual(BrowserEssential.matching(URL(string: accepted)!), .sitePermissions, accepted)
+        }
+        XCTAssertEqual(BrowserEssential.matching(URL(string: "chrome://settings/")!), .chromiumSettings)
+        for rejected in ["chrome://settings/privacy", "chrome://settings/content/../passwords", "chrome://settings/content/a.b",
+                         "chrome://settings/content?site=http%3A%2F%2Fa.test", "chrome://settings/content/siteDetails?site=javascript%3Aalert(1)",
+                         "chrome://settings/content/siteDetails?site=http%3A%2F%2Fa.test%2Fpath",
+                         "chrome://settings/content/siteDetails?site=http%3A%2F%2Fa.test&x=1", "chrome://settings/content#location",
+                         "chrome://history/content", "chrome://downloads/content/all"] {
+            XCTAssertFalse(BrowserEssential.accepts(URL(string: rejected)!), rejected)
+        }
+    }
+
+    func testSiteSettingsURLTargetsThePageOriginOrTheList() {
+        XCTAssertEqual(BrowserEssential.siteSettingsURL(for: URL(string: "http://127.0.0.1:18765/permissions.html?x=1")!).absoluteString,
+                       "chrome://settings/content/siteDetails?site=http%3A%2F%2F127.0.0.1%3A18765")
+        XCTAssertEqual(BrowserEssential.siteSettingsURL(for: URL(string: "https://example.test/a")!).absoluteString,
+                       "chrome://settings/content/siteDetails?site=https%3A%2F%2Fexample.test")
+        for page in [nil, URL(string: "chrome://history/"), URL(string: "file:///tmp/a.html")] {
+            XCTAssertEqual(BrowserEssential.siteSettingsURL(for: page), BrowserEssential.sitePermissions.url)
+        }
+        XCTAssertTrue(BrowserEssential.accepts(BrowserEssential.siteSettingsURL(for: URL(string: "http://localhost:8080/")!)))
+    }
+
     func testStateSavesEssentialTabsButStillRefusesOtherSchemes() throws {
         var state = BrowserState.initial()
         let id = try state.addTab(url: BrowserEssential.history.url, title: "History")

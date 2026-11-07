@@ -10,4 +10,13 @@ extension PageRuntime {
         if let existing = state.openEssentialEntry(essential) { return selectEntry(existing.id) }
         return addTab(url: essential.url, title: essential.title)
     }
+
+    /// Opens Chromium's site settings for the page, in a tab of the current Workspace. A repeat for
+    /// the same site returns to that tab.
+    @discardableResult
+    public func openSiteSettings(for page: URL?) -> Bool {
+        let url = BrowserEssential.siteSettingsURL(for: page)
+        if let existing = state.visibleEntries.first(where: { $0.lastURL == url }) { return selectEntry(existing.id) }
+        return addTab(url: url, title: BrowserEssential.sitePermissions.title)
+    }
 }
