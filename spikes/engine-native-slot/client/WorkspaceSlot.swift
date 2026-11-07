@@ -4,7 +4,7 @@ import BatoRuntime
 import BatoBrowserUI
 import BatoBlocking
 
-private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32
+private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 private typealias CommandID = @convention(c) (Int32) -> Int32
 private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
@@ -72,8 +72,16 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
         pending[page.profileID, default: []].append((page, url))
         return true
     }
+    /// The client refuses a window whose context is not this Profile's, so a page can never run in another Profile's storage.
+    private func createTab(_ token: UInt64, profileID: UUID, url: URL) -> Int32 {
+        url.absoluteString.withCString { address in
+            profileID.uuidString.withCString { key in
+                createPage?(token, address, key, profileID == launchProfileID ? 1 : 0) ?? 0
+            }
+        }
+    }
     private func createNow(_ token: UInt64, _ page: LivePage, _ url: URL) -> Bool {
-        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
+        let id = createTab(token, profileID: page.profileID, url: url)
         guard id > 0, pages[id] == nil else { return false }
         pages[id] = page
         return true
@@ -159,7 +167,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool {
         guard peek == nil, parent.profileID == preview.profileID, let token = windows[preview.profileID],
               let parentID = pages.first(where: { $0.value == parent })?.key else { return false }
-        let id = url.absoluteString.withCString { createPage?(token, $0) ?? 0 }
+        let id = createTab(token, profileID: preview.profileID, url: url)
         guard id > 0, pages[id] == nil, transient[id] == nil else { return false }
         transient[id] = preview
         let generation = presentPeekPages?(token, parentID, id) ?? 0
@@ -528,7 +536,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
 
 @_cdecl("BatoSwiftWorkspaceConfigure")
 @MainActor public func configureWorkspace(_ directory: UnsafePointer<CChar>?,
-    _ create: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?) -> Int32,
+    _ create: @escaping @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32,
     _ select: @escaping @convention(c) (UInt64, Int32) -> Int32,
     _ close: @escaping @convention(c) (UInt64, Int32) -> Int32,
     _ active: @escaping @convention(c) (UInt64) -> Int32,

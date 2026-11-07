@@ -26,7 +26,7 @@ extern "C" void BatoSwiftNativeSlotSetActions(int (*focus)(uint64_t),
                                               int (*advance)(uint64_t, int),
                                               int (*navigate)(uint64_t, const char*));
 extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
-    int (*create)(uint64_t, const char*), int (*select)(uint64_t, int),
+    int (*create)(uint64_t, const char*, const char*, int), int (*select)(uint64_t, int),
     int (*close)(uint64_t, int), int (*active)(uint64_t),
     int (*native_focus)(uint64_t), int (*command_id)(int),
     void (*schedule_selection)(uint64_t),
@@ -115,6 +115,7 @@ struct WorkspaceSlot {
 // blank anchor to this request, never by guessing from window order.
 struct WindowRequest {
   std::string key;
+  bool launch = false;
   CefRefPtr<CefRequestContext> context;
   uint64_t serial = 0;
 };
@@ -190,6 +191,8 @@ enum class WorkspaceRejection {
   kCreatedBrowserIsPeer,
   kCreatedWindowMismatch,
   kCreatedContextMismatch,
+  kProfileMismatch,
+  kCreatedProfileMismatch,
   kCreatedFrameInvalid,
   kPageAlreadyBound,
   kPageInsertionFailed,
@@ -263,6 +266,12 @@ void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
     case WorkspaceRejection::kCreatedWindowMismatch:
       value = "created-window-mismatch";
       break;
+    case WorkspaceRejection::kProfileMismatch:
+      value = "profile-mismatch";
+      break;
+    case WorkspaceRejection::kCreatedProfileMismatch:
+      value = "created-profile-mismatch";
+      break;
     case WorkspaceRejection::kCreatedContextMismatch:
       value = "created-context-mismatch";
       break;
@@ -287,6 +296,33 @@ void LogWorkspaceRejection(const char* operation, WorkspaceRejection reason) {
           operation, value);
 }
 
+void LogProfileRefusal(const char* reason) {
+  fprintf(stderr, "{\"event\":\"profile-window-refused\",\"reason\":\"%s\"}\n", reason);
+}
+
+std::string ResolvePath(const std::string& path) {
+  if (path.empty()) return "";
+  NSString* text = [NSString stringWithUTF8String:path.c_str()];
+  return std::string(text.stringByStandardizingPath.stringByResolvingSymlinksInPath.UTF8String ?: "");
+}
+
+// The --cache-path root, which is Chrome's user data dir and the parent of every Profile directory.
+std::string CacheRoot() {
+  return ResolvePath(CefCommandLine::GetGlobalCommandLine()->GetSwitchValue("cache-path").ToString());
+}
+
+// Where each Profile's context must live. The launch Profile is always <root>/Default, which
+// startup pins with --profile-directory; any other Profile is a direct child named by its key.
+std::string ExpectedProfilePath(const std::string& key, bool launch) {
+  const auto root = CacheRoot();
+  if (root.empty()) return "";
+  return launch ? root + "/Default" : root + "/" + key;
+}
+
+bool ContextPathIs(CefRefPtr<CefRequestContext> context, const std::string& path) {
+  return context && !path.empty() && ResolvePath(context->GetCachePath().ToString()) == path;
+}
+
 void PostProfileWindowResult(uint64_t token, const std::string& key, bool ok) {
   if (!g_swift_profile_ready) return;
   CefPostTask(TID_UI, base::BindOnce(
@@ -301,14 +337,30 @@ void PostProfileWindowResult(uint64_t token, const std::string& key, bool ok) {
 bool BindAnchor(uint64_t token, WorkspaceSlot& slot, CefRefPtr<CefBrowser> browser) {
   const int identifier = browser->GetIdentifier();
   auto context = browser->GetHost()->GetRequestContext();
-  if (identifier != g_initial_browser_id) {
-    if (PendingWindow().key.empty() || !context->IsSame(PendingWindow().context)) return false;
-    slot.profile_key = PendingWindow().key;
+  const bool initial = identifier == g_initial_browser_id;
+  if (!initial && (PendingWindow().key.empty() || !context->IsSame(PendingWindow().context))) return false;
+  // Absolute check: a window is only ever bound to the directory its Profile owns.
+  const bool launch = initial || PendingWindow().launch;
+  const auto expected = ExpectedProfilePath(initial ? "" : PendingWindow().key, launch);
+  if (!ContextPathIs(context, expected)) {
+    fprintf(stderr, "{\"event\":\"profile-window-refused\",\"reason\":\"anchor-context-path\",\"token\":%llu,"
+            "\"browser\":%d,\"context\":\"%s\",\"expected\":\"%s\"}\n",
+            static_cast<unsigned long long>(token), identifier,
+            context->GetCachePath().ToString().c_str(), expected.c_str());
+    return false;
+  }
+  if (!initial) {
+    // The launch Profile's window carries no key: it is the global context, never a Profile directory.
+    const std::string key = PendingWindow().key;
+    slot.profile_key = PendingWindow().launch ? "" : key;
     PendingWindow() = WindowRequest();
-    PostProfileWindowResult(token, slot.profile_key, true);
+    PostProfileWindowResult(token, key, true);
   }
   slot.anchor = browser;
   slot.context = context;
+  fprintf(stderr, "{\"event\":\"profile-window-bound\",\"token\":%llu,\"browser\":%d,\"key\":\"%s\",\"context\":\"%s\"}\n",
+          static_cast<unsigned long long>(token), identifier, slot.profile_key.c_str(),
+          context->GetCachePath().ToString().c_str());
   return true;
 }
 
@@ -444,7 +496,34 @@ class WorkspaceIconDownload final : public CefDownloadImageCallback {
   IMPLEMENT_REFCOUNTING(WorkspaceIconDownload);
 };
 
-int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
+// The context a page of this Profile must run in: the launch Profile (empty key) uses the global
+// context, every other Profile its own. Null when that context does not exist.
+CefRefPtr<CefRequestContext> ProfileContext(const std::string& key, bool launch) {
+  if (launch) return CefRequestContext::GetGlobalContext();
+  auto found = ProfileContexts().find(key);
+  return found == ProfileContexts().end() ? nullptr : found->second;
+}
+
+// A page may only be created in a window whose context is its Profile's. Diagnostic records carry
+// identifiers and cache paths only, never destinations or titles.
+bool WindowMatchesProfile(uint64_t token, const WorkspaceSlot& slot, const std::string& key, bool launch) {
+  auto expected = ProfileContext(key, launch);
+  const bool match = expected && slot.context && slot.context->IsSame(expected) &&
+      (launch ? slot.profile_key.empty() : slot.profile_key == key) &&
+      ContextPathIs(slot.context, ExpectedProfilePath(key, launch));
+  if (!match) {
+    fprintf(stderr,
+            "{\"event\":\"profile-window-mismatch\",\"token\":%llu,\"slot_key\":\"%s\",\"page_key\":\"%s\","
+            "\"launch\":%s,\"slot_context\":\"%s\",\"expected_context\":\"%s\"}\n",
+            static_cast<unsigned long long>(token), slot.profile_key.c_str(), key.c_str(),
+            launch ? "true" : "false",
+            slot.context ? slot.context->GetCachePath().ToString().c_str() : "",
+            expected ? expected->GetCachePath().ToString().c_str() : "");
+  }
+  return match;
+}
+
+int CreateWorkspacePage(uint64_t token, const char* utf8_url, const char* utf8_profile_key, int launch) {
   auto reject = [](WorkspaceRejection reason) {
     LogWorkspaceRejection("create-page", reason);
     return 0;
@@ -456,6 +535,9 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
   auto* slot = AvailableSlot(token);
   if (!slot)
     return reject(WorkspaceRejection::kAvailableSlotRejected);
+  const std::string profile_key = utf8_profile_key ? utf8_profile_key : "";
+  if (!WindowMatchesProfile(token, *slot, profile_key, launch != 0))
+    return reject(WorkspaceRejection::kProfileMismatch);
   // Copy URL and retain the same-window peer/context across Chrome callbacks.
   const CefString url(utf8_url);
   CefRefPtr<CefBrowser> peer = CurrentPeer(token, *slot);
@@ -479,6 +561,17 @@ int CreateWorkspacePage(uint64_t token, const char* utf8_url) {
     return reject(WorkspaceRejection::kCreatedWindowMismatch);
   if (!browser->GetHost()->GetRequestContext()->IsSame(context))
     return reject(WorkspaceRejection::kCreatedContextMismatch);
+  // The tab itself must also run in the Profile's context, whatever the slot believes.
+  auto expected = ProfileContext(profile_key, launch != 0);
+  if (!expected || !browser->GetHost()->GetRequestContext()->IsSame(expected) ||
+      !ContextPathIs(browser->GetHost()->GetRequestContext(), ExpectedProfilePath(profile_key, launch != 0))) {
+    fprintf(stderr, "{\"event\":\"profile-page-mismatch\",\"token\":%llu,\"browser\":%d,\"page_key\":\"%s\","
+            "\"page_context\":\"%s\"}\n", static_cast<unsigned long long>(token), identifier,
+            profile_key.c_str(),
+            browser->GetHost()->GetRequestContext()->GetCachePath().ToString().c_str());
+    browser->GetHost()->CloseBrowser(true);
+    return reject(WorkspaceRejection::kCreatedProfileMismatch);
+  }
   auto frame = browser->GetMainFrame();
   if (!frame || !frame->IsValid())
     return reject(WorkspaceRejection::kCreatedFrameInvalid);
@@ -757,31 +850,6 @@ bool ValidProfileKey(const std::string& key) {
   return true;
 }
 
-void LogProfileRefusal(const char* reason) {
-  fprintf(stderr, "{\"event\":\"profile-window-refused\",\"reason\":\"%s\"}\n", reason);
-}
-
-// The resolved --cache-path root, or empty when the global context is not its "Default" child.
-std::string ProfileRoot() {
-  auto resolve = [](const std::string& path) {
-    NSString* text = [NSString stringWithUTF8String:path.c_str()];
-    return std::string(text.stringByStandardizingPath.stringByResolvingSymlinksInPath.UTF8String ?: "");
-  };
-  const auto cache_switch = CefCommandLine::GetGlobalCommandLine()->GetSwitchValue("cache-path").ToString();
-  const auto global = CefRequestContext::GetGlobalContext()->GetCachePath().ToString();
-  if (cache_switch.empty() || global.empty()) {
-    LogProfileRefusal("cache-root-unavailable");
-    return "";
-  }
-  const std::string root = resolve(cache_switch);
-  NSString* parent = [NSString stringWithUTF8String:global.c_str()].stringByDeletingLastPathComponent;
-  if (root.empty() || resolve(parent.UTF8String) != root) {
-    LogProfileRefusal("cache-root-mismatch");
-    return "";
-  }
-  return root;
-}
-
 // Requests a Chrome window whose Browser uses the Profile's own request context. The
 // Chrome runtime pairs a Browser with exactly one Profile, so pages of different Profiles
 // can never share a window. Returns 1 when the request was accepted; completion arrives
@@ -795,20 +863,26 @@ int OpenProfileWindow(const char* utf8_key, int launch) {
   CefRefPtr<CefRequestContext> context;
   if (launch) {
     context = CefRequestContext::GetGlobalContext();
+    if (!ContextPathIs(context, ExpectedProfilePath("", true))) {
+      LogProfileRefusal("launch-context-not-default");
+      return 0;
+    }
   } else {
     auto& contexts = ProfileContexts();
     auto found = contexts.find(key);
     if (found == contexts.end()) {
       // CEF persists a Chrome-style context only as a direct child of its user data dir, which is
-      // the --cache-path root; the global context is that root's "Default" child. Any other
-      // location silently becomes an in-memory profile, so refuse instead of losing storage.
-      const auto root = ProfileRoot();
-      if (root.empty()) return 0;
-      const std::string path = root + "/" + key;
+      // the --cache-path root. Any other location silently becomes an in-memory profile, so
+      // refuse instead of losing storage.
+      const std::string path = ExpectedProfilePath(key, false);
+      if (path.empty()) {
+        LogProfileRefusal("cache-root-unavailable");
+        return 0;
+      }
       CefRequestContextSettings settings;
       CefString(&settings.cache_path) = path;
       context = CefRequestContext::CreateContext(settings, nullptr);
-      if (!context || context->GetCachePath().ToString() != path) {
+      if (!ContextPathIs(context, path)) {
         LogProfileRefusal("context-path-rejected");
         return 0;
       }
@@ -817,6 +891,7 @@ int OpenProfileWindow(const char* utf8_key, int launch) {
     context = found->second;
   }
   PendingWindow().key = key;
+  PendingWindow().launch = launch != 0;
   PendingWindow().context = context;
   const uint64_t serial = ++g_window_serial;
   PendingWindow().serial = serial;
