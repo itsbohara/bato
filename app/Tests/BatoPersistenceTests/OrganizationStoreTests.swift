@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import Darwin
 @testable import BatoPersistence
+import BatoCore
 
 final class OrganizationStoreTests: XCTestCase {
     private struct Document: Codable, Equatable {
@@ -160,6 +161,54 @@ final class OrganizationStoreTests: XCTestCase {
                     atPath: directory.appendingPathComponent(name).path)
                 XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
             }
+        }
+    }
+
+    func testFlatFolderDocumentSurvivesLoadAndSaveByteForByte() throws {
+        try withDirectory { directory in
+            var state = BrowserState.initial()
+            let pin = try state.addTab(url: URL(string: "https://example.invalid/a")!, title: "A")
+            try state.pinEntry(pin)
+            try state.movePin(pin, toFolder: try state.createFolder(name: "Flat"))
+            let writer = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            XCTAssertNil(try writer.load())
+            try writer.save(state)
+            let document = directory.appendingPathComponent("organization.json")
+            let original = try Data(contentsOf: document)
+            XCTAssertFalse(String(decoding: original, as: UTF8.self).contains("parentID"))
+            let reader = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            let loaded = try XCTUnwrap(try reader.load())
+            XCTAssertEqual(loaded.version, 1)
+            try reader.save(loaded)
+            XCTAssertEqual(try Data(contentsOf: document), original)
+        }
+    }
+
+    func testNestedFoldersPersistAsVersionTwoAndRoundTrip() throws {
+        try withDirectory { directory in
+            var state = BrowserState.initial()
+            let parent = try state.createFolder(name: "Parent")
+            let child = try state.createFolder(name: "Child", parentID: parent)
+            let writer = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            XCTAssertNil(try writer.load())
+            try writer.save(state)
+            let loaded = try XCTUnwrap(try OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }.load())
+            XCTAssertEqual(loaded.version, 2)
+            XCTAssertEqual(loaded.currentWorkspace.folder(child)?.parentID, parent)
+            XCTAssertEqual(loaded, state)
+        }
+    }
+
+    func testVersionOneDocumentWithNestingIsRejectedOnLoad() throws {
+        try withDirectory { directory in
+            var state = BrowserState.initial()
+            let parent = try state.createFolder(name: "Parent")
+            try state.createFolder(name: "Child", parentID: parent)
+            state.version = 1
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(state).write(to: directory.appendingPathComponent("organization.json"))
+            let reader = OrganizationStore<BrowserState>(directory: directory) { try $0.validate() }
+            XCTAssertThrowsError(try reader.load()) { XCTAssertEqual($0 as? OrganizationStore<BrowserState>.StoreError, .invalidState) }
         }
     }
 }

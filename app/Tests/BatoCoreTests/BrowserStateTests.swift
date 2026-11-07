@@ -713,10 +713,10 @@ final class BrowserStateTests: XCTestCase {
         let state = BrowserState.initial()
         let data = try JSONEncoder().encode(state)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        json["version"] = 2
+        json["version"] = 3
         let future = try JSONDecoder().decode(BrowserState.self, from: JSONSerialization.data(withJSONObject: json))
         XCTAssertThrowsError(try future.validate()) { error in
-            XCTAssertEqual(error as? BrowserStateError, .unsupportedVersion(2))
+            XCTAssertEqual(error as? BrowserStateError, .unsupportedVersion(3))
         }
         var invalid = state
         invalid.workspaces[0].activeEntryID = UUID()
@@ -920,5 +920,186 @@ extension BrowserStateTests {
         XCTAssertEqual(state.currentSplit?.id, savedPair)
         XCTAssertFalse(state.currentWorkspace.splits.contains { $0.id == transient })
         XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+    }
+}
+
+extension BrowserStateTests {
+    private func pinned(_ state: inout BrowserState, _ count: Int) throws -> [UUID] {
+        try (0..<count).map { index in
+            let id = try state.addTab(url: saved, title: "Pin \(index)")
+            try state.pinEntry(id)
+            return id
+        }
+    }
+
+    func testNestedFoldersKeepFlatDocumentsAtVersionOneAndUpgradeOnNesting() throws {
+        var state = BrowserState.initial()
+        let top = try state.createFolder(name: "Top")
+        XCTAssertEqual(state.version, 1)
+        XCTAssertNil(state.currentWorkspace.folder(top)?.parentID)
+        let sub = try state.createFolder(name: "Sub", parentID: top)
+        XCTAssertEqual(state.version, 2)
+        let restored = try JSONDecoder().decode(BrowserState.self, from: JSONEncoder().encode(state))
+        XCTAssertEqual(restored, state)
+        XCTAssertEqual(restored.currentWorkspace.subfolders(of: top).map(\.id), [sub])
+        XCTAssertEqual(restored.currentWorkspace.depth(ofFolder: sub), 2)
+        var legacy = state
+        legacy.version = 1
+        XCTAssertThrowsError(try legacy.validate()) { XCTAssertEqual($0 as? BrowserStateError, .unsupportedVersion(1)) }
+    }
+
+    func testFolderDepthLimitAppliesToCreationAndMoves() throws {
+        var state = BrowserState.initial()
+        var parent: UUID?
+        var chain: [UUID] = []
+        for level in 1...BrowserState.maxFolderDepth {
+            parent = try state.createFolder(name: "L\(level)", parentID: parent)
+            chain.append(parent!)
+        }
+        XCTAssertThrowsError(try state.createFolder(name: "Too deep", parentID: chain.last))
+        let loose = try state.createFolder(name: "Loose")
+        let looseChild = try state.createFolder(name: "Loose child", parentID: loose)
+        XCTAssertFalse(state.canMoveFolder(loose, toParent: chain[BrowserState.maxFolderDepth - 2]))
+        XCTAssertThrowsError(try state.moveFolder(loose, toParent: chain.last))
+        XCTAssertTrue(state.canMoveFolder(looseChild, toParent: chain[BrowserState.maxFolderDepth - 2]))
+        XCTAssertEqual(state.currentWorkspace.folder(looseChild)?.parentID, loose)
+        var tooDeep = state
+        tooDeep.workspaces[0].folders[0].parentID = chain.last
+        XCTAssertThrowsError(try tooDeep.validate())
+    }
+
+    func testFolderMovesRejectCyclesAndDanglingParentsAtomically() throws {
+        var state = BrowserState.initial()
+        let a = try state.createFolder(name: "A")
+        let b = try state.createFolder(name: "B", parentID: a)
+        let c = try state.createFolder(name: "C", parentID: b)
+        let before = state
+        XCTAssertThrowsError(try state.moveFolder(a, toParent: a))
+        XCTAssertThrowsError(try state.moveFolder(a, toParent: c))
+        XCTAssertThrowsError(try state.moveFolder(b, toParent: c))
+        XCTAssertThrowsError(try state.moveFolder(a, toParent: UUID()))
+        XCTAssertThrowsError(try state.moveFolder(c, toParent: UUID()))
+        XCTAssertFalse(state.canMoveFolder(a, toParent: nil))
+        XCTAssertEqual(state, before)
+        var cyclic = state
+        cyclic.workspaces[0].folders[0].parentID = c
+        XCTAssertThrowsError(try cyclic.validate()) { XCTAssertEqual($0 as? BrowserStateError, .invalidFolder) }
+        var dangling = state
+        dangling.workspaces[0].folders[1].parentID = UUID()
+        XCTAssertThrowsError(try dangling.validate()) { XCTAssertEqual($0 as? BrowserStateError, .invalidFolder) }
+        var selfParent = state
+        selfParent.workspaces[0].folders[0].parentID = a
+        XCTAssertThrowsError(try selfParent.validate())
+    }
+
+    func testMovingFoldersReparentsAppendsAndExpandsDestination() throws {
+        var state = BrowserState.initial()
+        let a = try state.createFolder(name: "A")
+        let b = try state.createFolder(name: "B")
+        let c = try state.createFolder(name: "C", parentID: a)
+        try state.setFolderCollapsed(b, collapsed: true)
+        try state.moveFolder(a, toParent: b)
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: b).map(\.id), [a])
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: a).map(\.id), [c])
+        XCTAssertEqual(state.currentWorkspace.folder(b)?.isCollapsed, false)
+        XCTAssertEqual(state.currentWorkspace.depth(ofFolder: c), 3)
+        try state.moveFolder(c, toParent: nil)
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: nil).map(\.id), [b, c])
+        XCTAssertFalse(state.canMoveFolder(c, toParent: nil))
+    }
+
+    func testFolderOrderingMovesAmongSiblingsOnly() throws {
+        var state = BrowserState.initial()
+        let a = try state.createFolder(name: "A")
+        let a1 = try state.createFolder(name: "A1", parentID: a)
+        let b = try state.createFolder(name: "B")
+        let a2 = try state.createFolder(name: "A2", parentID: a)
+        XCTAssertTrue(state.canMoveFolder(a, direction: .down))
+        XCTAssertFalse(state.canMoveFolder(a, direction: .up))
+        XCTAssertFalse(state.canMoveFolder(b, direction: .down))
+        try state.moveFolder(a, direction: .down)
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: nil).map(\.id), [b, a])
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: a).map(\.id), [a1, a2])
+        try state.moveFolder(a2, direction: .up)
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: a).map(\.id), [a2, a1])
+        XCTAssertThrowsError(try state.moveFolder(a1, direction: .down))
+    }
+
+    func testDissolveMovesChildrenUpOneLevelPreservingOrder() throws {
+        var state = BrowserState.initial()
+        let pins = try pinned(&state, 3)
+        let before = try state.createFolder(name: "Before")
+        let middle = try state.createFolder(name: "Middle")
+        let after = try state.createFolder(name: "After")
+        let one = try state.createFolder(name: "One", parentID: middle)
+        let two = try state.createFolder(name: "Two", parentID: middle)
+        let deep = try state.createFolder(name: "Deep", parentID: one)
+        try state.movePin(pins[0], toFolder: middle)
+        try state.movePin(pins[1], toFolder: middle)
+        try state.dissolveFolder(middle)
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: nil).map(\.id), [before, one, two, after])
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: one).map(\.id), [deep])
+        XCTAssertNil(state.currentWorkspace.folder(containingPin: pins[0]))
+        XCTAssertEqual(state.currentWorkspace.pins.map(\.id), pins)
+
+        let outer = try state.createFolder(name: "Outer")
+        let inner = try state.createFolder(name: "Inner", parentID: outer)
+        let leaf = try state.createFolder(name: "Leaf", parentID: inner)
+        try state.movePin(pins[2], toFolder: outer)
+        try state.movePin(pins[0], toFolder: inner)
+        try state.movePin(pins[1], toFolder: inner)
+        try state.dissolveFolder(inner)
+        XCTAssertEqual(state.currentWorkspace.folder(outer)?.pinIDs, [pins[2], pins[0], pins[1]])
+        XCTAssertEqual(state.currentWorkspace.subfolders(of: outer).map(\.id), [leaf])
+        XCTAssertNil(state.currentWorkspace.folder(inner))
+    }
+
+    func testPinOperationsKeepNestedFolderReferencesConsistent() throws {
+        var state = BrowserState.initial()
+        let pins = try pinned(&state, 3)
+        let outer = try state.createFolder(name: "Outer")
+        let inner = try state.createFolder(name: "Inner", parentID: outer)
+        try state.movePin(pins[0], toFolder: outer)
+        try state.movePin(pins[1], toFolder: inner)
+        try state.movePin(pins[2], toFolder: inner)
+        XCTAssertEqual(state.currentWorkspace.pinCount(inFolder: outer), 3)
+        try state.movePin(pins[1], toFolder: outer)
+        XCTAssertEqual(state.currentWorkspace.folder(inner)?.pinIDs, [pins[2]])
+        XCTAssertEqual(state.currentWorkspace.folder(outer)?.pinIDs, [pins[0], pins[1]])
+        try state.makeTemporary(pins[2])
+        XCTAssertEqual(state.currentWorkspace.folder(inner)?.pinIDs, [])
+        try state.favoriteEntry(pins[0])
+        XCTAssertEqual(state.currentWorkspace.folder(outer)?.pinIDs, [pins[1]])
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.moveEntry(pins[1], toWorkspace: other)
+        XCTAssertEqual(state.currentWorkspace.folder(outer)?.pinIDs, [])
+        try state.validate()
+        XCTAssertThrowsError(try state.moveFolder(outer, toParent: inner))
+    }
+
+    func testNestedFoldersStayScopedToTheirWorkspace() throws {
+        var state = BrowserState.initial()
+        let parent = try state.createFolder(name: "Parent")
+        let other = try state.addWorkspace(name: "Other", profileID: state.currentWorkspace.profileID)
+        try state.activateWorkspace(other)
+        XCTAssertThrowsError(try state.createFolder(name: "Foreign", parentID: parent)) {
+            XCTAssertEqual($0 as? BrowserStateError, .missingFolder)
+        }
+        var forged = state
+        forged.workspaces[1].folders = [PageFolder(name: "Forged", parentID: parent)]
+        forged.version = 2
+        XCTAssertThrowsError(try forged.validate()) { XCTAssertEqual($0 as? BrowserStateError, .invalidFolder) }
+    }
+
+    func testFolderOutlineListsDepthFirstWithDepths() throws {
+        var state = BrowserState.initial()
+        let a = try state.createFolder(name: "A")
+        let b = try state.createFolder(name: "B")
+        let a1 = try state.createFolder(name: "A1", parentID: a)
+        let a1x = try state.createFolder(name: "A1x", parentID: a1)
+        let a2 = try state.createFolder(name: "A2", parentID: a)
+        let outline = state.currentWorkspace.folderOutline()
+        XCTAssertEqual(outline.map(\.folder.id), [a, a1, a1x, a2, b])
+        XCTAssertEqual(outline.map(\.depth), [1, 2, 3, 2, 1])
     }
 }

@@ -61,17 +61,21 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Ordered organization metadata. The complete saved entries remain in Workspace.pins.
+/// Workspace.folders is flat: a folder's subfolders are the entries naming it as `parentID`,
+/// ordered by their position in that array. A folder lists its pins before its subfolders.
 public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var isCollapsed: Bool
     public var pinIDs: [UUID]
+    public var parentID: UUID?
 
-    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = []) {
+    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false, pinIDs: [UUID] = [], parentID: UUID? = nil) {
         self.id = id
         self.name = name
         self.isCollapsed = isCollapsed
         self.pinIDs = pinIDs
+        self.parentID = parentID
     }
 }
 
@@ -122,6 +126,51 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
 
     public func folder(containingPin id: UUID) -> PageFolder? {
         folders.first { $0.pinIDs.contains(id) }
+    }
+
+    public func folder(_ id: UUID) -> PageFolder? {
+        folders.first { $0.id == id }
+    }
+
+    /// Direct subfolders in display order; `nil` lists the workspace's top-level folders.
+    public func subfolders(of parentID: UUID?) -> [PageFolder] {
+        folders.filter { $0.parentID == parentID }
+    }
+
+    /// One for a top-level folder. Nil for an unknown folder or a broken parent chain.
+    public func depth(ofFolder id: UUID) -> Int? {
+        var depth = 0
+        var current: UUID? = id
+        while let folderID = current {
+            guard depth < folders.count, let folder = folder(folderID) else { return nil }
+            depth += 1
+            current = folder.parentID
+        }
+        return depth
+    }
+
+    public func descendantFolderIDs(of id: UUID) -> Set<UUID> {
+        var found = Set<UUID>()
+        var pending = [id]
+        while let next = pending.popLast() {
+            for child in subfolders(of: next) where found.insert(child.id).inserted { pending.append(child.id) }
+        }
+        return found
+    }
+
+    /// Every folder in sidebar order, each after its parent, with its depth (one for top level).
+    public func folderOutline(under parentID: UUID? = nil, depth: Int = 1) -> [(folder: PageFolder, depth: Int)] {
+        subfolders(of: parentID).flatMap { [($0, depth)] + folderOutline(under: $0.id, depth: depth + 1) }
+    }
+
+    /// Levels in the folder's own subtree, counting the folder itself.
+    public func subtreeHeight(ofFolder id: UUID) -> Int {
+        1 + (subfolders(of: id).map { subtreeHeight(ofFolder: $0.id) }.max() ?? 0)
+    }
+
+    /// Pins in the folder and all of its descendants.
+    public func pinCount(inFolder id: UUID) -> Int {
+        (folder(id)?.pinIDs.count ?? 0) + subfolders(of: id).reduce(0) { $0 + pinCount(inFolder: $1.id) }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -201,6 +250,9 @@ public struct BrowserState: Codable, Equatable, Sendable {
     public var workspaces: [Workspace]
     public var activeWorkspaceID: UUID
 
+    /// Folders are at most this many levels deep, so indentation fits the 220-point minimum sidebar.
+    public static let maxFolderDepth = 4
+
     public init(version: Int = 1, profiles: [BrowserProfile], workspaces: [Workspace], activeWorkspaceID: UUID) {
         self.version = version
         self.profiles = profiles
@@ -266,7 +318,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        guard version == 1 else { throw BrowserStateError.unsupportedVersion(version) }
+        guard version == 1 || version == 2 else { throw BrowserStateError.unsupportedVersion(version) }
         var identities = Set<UUID>()
         func claim(_ id: UUID) throws {
             guard identities.insert(id).inserted else { throw BrowserStateError.duplicateIdentity }
@@ -299,13 +351,23 @@ public struct BrowserState: Codable, Equatable, Sendable {
             for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
             let pinIDs = Set(workspace.pins.map(\.id))
             var filedPins = Set<UUID>()
+            let folderIDs = Set(workspace.folders.map(\.id))
             for folder in workspace.folders {
                 try claim(folder.id)
                 try Self.validateFolderName(folder.name)
+                if let parentID = folder.parentID {
+                    guard version >= 2 else { throw BrowserStateError.unsupportedVersion(version) }
+                    guard parentID != folder.id, folderIDs.contains(parentID) else { throw BrowserStateError.invalidFolder }
+                }
                 for id in folder.pinIDs {
                     guard pinIDs.contains(id), filedPins.insert(id).inserted else {
                         throw BrowserStateError.invalidFolder
                     }
+                }
+            }
+            for folder in workspace.folders {
+                guard let depth = workspace.depth(ofFolder: folder.id), depth <= Self.maxFolderDepth else {
+                    throw BrowserStateError.invalidFolder
                 }
             }
             let localEntries = workspace.pins + workspace.tabs
@@ -427,13 +489,20 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Nesting upgrades the document to version 2; flat documents keep version 1 and their bytes.
     @discardableResult
-    public mutating func createFolder(name: String) throws -> UUID {
+    public mutating func createFolder(name: String, parentID: UUID? = nil) throws -> UUID {
         try transact { draft in
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             try Self.validateFolderName(name)
-            let folder = PageFolder(name: name)
-            draft.workspaces[draft.currentWorkspaceIndex].folders.append(folder)
+            let workspace = draft.currentWorkspaceIndex
+            let folder = PageFolder(name: name, parentID: parentID)
+            if let parentID {
+                let parent = try draft.currentFolderIndex(parentID)
+                draft.workspaces[workspace].folders[parent].isCollapsed = false
+                draft.version = max(draft.version, 2)
+            }
+            draft.workspaces[workspace].folders.append(folder)
             return folder.id
         }
     }
@@ -454,11 +523,15 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Folders reorder among their siblings only.
     public func canMoveFolder(_ id: UUID, direction: FolderMoveDirection) -> Bool {
-        guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else { return false }
+        let workspace = currentWorkspace
+        guard let folder = workspace.folder(id) else { return false }
+        let siblings = workspace.subfolders(of: folder.parentID)
+        guard let position = siblings.firstIndex(where: { $0.id == id }) else { return false }
         switch direction {
-        case .up: return index > 0
-        case .down: return index + 1 < currentWorkspace.folders.count
+        case .up: return position > 0
+        case .down: return position + 1 < siblings.count
         }
     }
 
@@ -466,16 +539,69 @@ public struct BrowserState: Codable, Equatable, Sendable {
         try transact { draft in
             let index = try draft.currentFolderIndex(id)
             guard draft.canMoveFolder(id, direction: direction) else { throw BrowserStateError.invalidSelection }
-            let next = direction == .up ? index - 1 : index + 1
-            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, next)
+            let folders = draft.currentWorkspace.folders
+            let siblings = folders.indices.filter { folders[$0].parentID == folders[index].parentID }
+            let position = siblings.firstIndex(of: index)!
+            let neighbor = siblings[direction == .up ? position - 1 : position + 1]
+            draft.workspaces[draft.currentWorkspaceIndex].folders.swapAt(index, neighbor)
         }
     }
 
-    /// Removes only the container. Pins retain their full value, selection and canonical order.
+    /// A folder cannot move into itself or a descendant, and its whole subtree must fit the depth limit.
+    public func canMoveFolder(_ id: UUID, toParent parentID: UUID?) -> Bool {
+        let workspace = currentWorkspace
+        guard let folder = workspace.folder(id), folder.parentID != parentID, parentID != id else { return false }
+        var parentDepth = 0
+        if let parentID {
+            guard !workspace.descendantFolderIDs(of: id).contains(parentID),
+                  let depth = workspace.depth(ofFolder: parentID) else { return false }
+            parentDepth = depth
+        }
+        return parentDepth + workspace.subtreeHeight(ofFolder: id) <= Self.maxFolderDepth
+    }
+
+    /// The folder becomes the last child of the destination, or the last top-level folder for `nil`.
+    public mutating func moveFolder(_ id: UUID, toParent parentID: UUID?) throws {
+        try transact { draft in
+            let index = try draft.currentFolderIndex(id)
+            let workspace = draft.currentWorkspaceIndex
+            if let parentID { _ = try draft.currentFolderIndex(parentID) }
+            guard draft.canMoveFolder(id, toParent: parentID) else { throw BrowserStateError.invalidFolder }
+            var folder = draft.workspaces[workspace].folders.remove(at: index)
+            folder.parentID = parentID
+            draft.workspaces[workspace].folders.append(folder)
+            if let parentID, let parent = draft.workspaces[workspace].folders.firstIndex(where: { $0.id == parentID }) {
+                draft.workspaces[workspace].folders[parent].isCollapsed = false
+                draft.version = max(draft.version, 2)
+            }
+        }
+    }
+
+    /// Removes only the container. Pins and subfolders move up one level in their existing order;
+    /// at the top level pins return to the unfiled group in their canonical order.
     public mutating func dissolveFolder(_ id: UUID) throws {
         try transact { draft in
             let index = try draft.currentFolderIndex(id)
-            draft.workspaces[draft.currentWorkspaceIndex].folders.remove(at: index)
+            let workspace = draft.currentWorkspaceIndex
+            let folders = draft.workspaces[workspace].folders
+            let dissolved = folders[index]
+            var rebuilt: [PageFolder] = []
+            for folder in folders {
+                if folder.id == id {
+                    rebuilt += folders.filter { $0.parentID == id }.map { child in
+                        var child = child
+                        child.parentID = dissolved.parentID
+                        return child
+                    }
+                } else if folder.parentID != id {
+                    rebuilt.append(folder)
+                }
+            }
+            if let parentID = dissolved.parentID,
+               let parent = rebuilt.firstIndex(where: { $0.id == parentID }) {
+                rebuilt[parent].pinIDs += dissolved.pinIDs
+            }
+            draft.workspaces[workspace].folders = rebuilt
         }
     }
 
