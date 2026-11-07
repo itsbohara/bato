@@ -97,6 +97,15 @@ public struct CommandBarResult: Identifiable, Equatable, Sendable {
     public let action: CommandBarAction
 }
 
+public enum CommandBarSelection {
+    /// An arrow-key choice survives a refresh only while the query is unchanged; typing re-ranks, so the top row wins.
+    public static func rowAfterRefresh(previousID: String?, previousQuery: String, query: String,
+                                       results: [CommandBarResult]) -> Int? {
+        if query == previousQuery, let index = results.firstIndex(where: { $0.id == previousID }) { return index }
+        return results.isEmpty ? nil : 0
+    }
+}
+
 public enum CommandBarResults {
     /// Stable IDs let the UI preserve selection while organization events arrive.
     /// Results never mutate state; activation must revalidate through PageRuntime.
@@ -141,5 +150,21 @@ public enum CommandBarResults {
         }
         results += remainingCommands
         return results
+    }
+}
+
+public enum FaviconFallback {
+    public struct Spec: Equatable, Sendable {
+        public let letter: String
+        public let hue: Double
+    }
+
+    public static func spec(title: String, url: URL) -> Spec {
+        let host = (url.host ?? "").lowercased()
+        let hostless = host.isEmpty || host == "localhost" || host.allSatisfy { $0.isNumber || $0 == "." || $0 == ":" }
+        let source = hostless ? title : host.replacingOccurrences(of: "www.", with: "")
+        let letter = source.first(where: \.isLetter) ?? source.first(where: \.isNumber) ?? "?"
+        let seed = (url.absoluteString + title).unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
+        return Spec(letter: String(letter).uppercased(), hue: Double(seed % 360) / 360)
     }
 }

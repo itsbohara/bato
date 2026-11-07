@@ -13,6 +13,7 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
     private let hint = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let openButton = GoPillButton()
+    private var refreshedQuery = ""
     private let resultsForQuery: (String) -> [CommandBarResult]
     private var results: [CommandBarResult] = []
     private(set) var chosenAction: CommandBarAction?
@@ -143,13 +144,14 @@ final class CommandBarController: NSWindowController, NSSearchFieldDelegate, NST
 
     func refresh() {
         let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
-        results = resultsForQuery(field.stringValue)
+        let query = field.stringValue
+        results = resultsForQuery(query)
         table.reloadData()
-        if let index = results.firstIndex(where: { $0.id == selectedID }) {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else if !results.isEmpty {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        if let row = CommandBarSelection.rowAfterRefresh(previousID: selectedID, previousQuery: refreshedQuery,
+                                                         query: query, results: results) {
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
+        refreshedQuery = query
         openButton.isEnabled = results.indices.contains(table.selectedRow)
         if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
             hint.stringValue = message

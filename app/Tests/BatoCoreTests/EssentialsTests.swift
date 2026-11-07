@@ -47,3 +47,17 @@ final class EssentialsTests: XCTestCase {
         XCTAssertEqual(decoded, state)
     }
 }
+
+final class FaviconFallbackTests: XCTestCase {
+    func testIPHostUsesTitleLetterAndHueVariesByURL() {
+        let a = FaviconFallback.spec(title: "Alpha", url: URL(string: "http://127.0.0.1:18765/a")!)
+        let b = FaviconFallback.spec(title: "Beta", url: URL(string: "http://127.0.0.1:18765/b")!)
+        XCTAssertEqual(a.letter, "A")
+        XCTAssertEqual(b.letter, "B")
+        XCTAssertNotEqual(a.hue, b.hue)
+    }
+
+    func testNamedHostUsesHostLetter() {
+        XCTAssertEqual(FaviconFallback.spec(title: "Docs", url: URL(string: "https://www.example.test/docs")!).letter, "E")
+    }
+}
