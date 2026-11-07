@@ -68,12 +68,15 @@ public enum CommandBarInput {
 }
 
 public enum CommandBarCommand: String, CaseIterable, Sendable {
-    case findPage, toggleSidebar, closePage
+    case findPage, toggleSidebar, closePage, openHistory, openDownloads, openSettings
     public var title: String {
         switch self {
         case .findPage: "Find Page"
         case .toggleSidebar: "Toggle Sidebar"
         case .closePage: "Close Current Page"
+        case .openHistory: "History"
+        case .openDownloads: "Downloads"
+        case .openSettings: "Settings"
         }
     }
 }
@@ -92,6 +95,15 @@ public struct CommandBarResult: Identifiable, Equatable, Sendable {
     public let title: String
     public let subtitle: String
     public let action: CommandBarAction
+}
+
+public enum CommandBarSelection {
+    /// An arrow-key choice survives a refresh only while the query is unchanged; typing re-ranks, so the top row wins.
+    public static func rowAfterRefresh(previousID: String?, previousQuery: String, query: String,
+                                       results: [CommandBarResult]) -> Int? {
+        if query == previousQuery, let index = results.firstIndex(where: { $0.id == previousID }) { return index }
+        return results.isEmpty ? nil : 0
+    }
 }
 
 public enum CommandBarResults {
@@ -117,16 +129,42 @@ public enum CommandBarResults {
                 subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
         case .empty, .invalid: break
         }
-        results += state.searchPages(matching: text).map {
-            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
-                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
-        }
-        results += CommandBarCommand.allCases.filter {
+        let commands = CommandBarCommand.allCases.filter {
             text.isEmpty || $0.title.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }.map {
             CommandBarResult(id: "command:\($0.rawValue)", title: $0.title,
                 subtitle: "Browser command", action: .command($0))
         }
+        // An exact command name is a deliberate choice, so it outranks the web-search fallback.
+        let isExactCommand = { (result: CommandBarResult) in
+            result.title.compare(text, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        var remainingCommands = commands
+        if case .search = CommandBarInput.resolve(text, provider: provider) {
+            results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
+            remainingCommands.removeAll(where: isExactCommand)
+        }
+        results += state.searchPages(matching: text).map {
+            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
+                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
+        }
+        results += remainingCommands
         return results
+    }
+}
+
+public enum FaviconFallback {
+    public struct Spec: Equatable, Sendable {
+        public let letter: String
+        public let hue: Double
+    }
+
+    public static func spec(title: String, url: URL) -> Spec {
+        let host = (url.host ?? "").lowercased()
+        let hostless = host.isEmpty || host == "localhost" || host.allSatisfy { $0.isNumber || $0 == "." || $0 == ":" }
+        let source = hostless ? title : host.replacingOccurrences(of: "www.", with: "")
+        let letter = source.first(where: \.isLetter) ?? source.first(where: \.isNumber) ?? "?"
+        let seed = (url.absoluteString + title).unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
+        return Spec(letter: String(letter).uppercased(), hue: Double(seed % 360) / 360)
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import BatoBlocking
 import BatoCore
 import BatoPersistence
 import BatoRuntime
@@ -21,7 +22,7 @@ public final class NativeWorkspaceController: NSObject {
     public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 
     private let entries = SidebarEntries()
-    private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let workspacePager = NSStackView()
     private let workspaceActions = NSButton(frame: .zero)
     private let sidebarToggle = NSButton(frame: .zero)
     private var trafficLightClearanceWidth: NSLayoutConstraint?
@@ -35,7 +36,6 @@ public final class NativeWorkspaceController: NSObject {
     private let peekRow = NSStackView()
     private let peekLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private var workspaceIDs: [UUID] = []
     private var hasStarted = false
     private var sheetObserver: NSObjectProtocol?
     private var workspaceEditor: WorkspaceEditor?
@@ -44,6 +44,7 @@ public final class NativeWorkspaceController: NSObject {
     private var pageFinder: PageFinder?
     private let organizationStore: OrganizationStore<BrowserState>
     private var arcImport: ArcImportController?
+    private var settingsWindow: SettingsWindowController?
     private var commandBar: CommandBarController?
     private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
@@ -122,6 +123,36 @@ public final class NativeWorkspaceController: NSObject {
     /// Opens native navigation, organization search and browser commands.
     public func newTab() { showCommandBar() }
 
+    /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
+    public func openEssential(_ essential: BrowserEssential) {
+        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        runtime.endPeek()
+        requestNativeFocus?()
+        _ = runtime.openEssential(essential)
+        render()
+    }
+
+    /// Opens Bato's own Settings window. It is not tied to a browser window, so it never blocks one.
+    public func showSettings(_ pane: SettingsPane? = nil) {
+        guard hasStarted else { return }
+        let window = settingsWindow ?? SettingsWindowController(hooks: SettingsHooks(
+            state: { [weak self] in self?.runtime.state ?? .initial() },
+            blockingService: { BlockingHost.shared.service(forProfile: $0) },
+            createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
+            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
+            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
+            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } }))
+        settingsWindow = window
+        window.show(pane)
+    }
+
+    /// Sheets and pages belong to the browser window, so Settings actions bring it forward first.
+    private func fromBrowserWindow(_ action: (NativeWorkspaceController) -> Void) {
+        root.window?.makeKeyAndOrderFront(nil)
+        action(self)
+    }
+
     private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil) {
         guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -194,6 +225,9 @@ public final class NativeWorkspaceController: NSObject {
             case .findPage: findPage()
             case .toggleSidebar: requestSidebarToggle?()
             case .closePage: closeSelection()
+            case .openHistory: openEssential(.history)
+            case .openDownloads: openEssential(.downloads)
+            case .openSettings: showSettings()
             }
             return
         }
@@ -298,15 +332,11 @@ public final class NativeWorkspaceController: NSObject {
             view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
         }
 
-        let workspaceEdit = ActionButton(title: "") { [weak self] in self?.editWorkspace() }
-        configureIcon(workspaceEdit, symbol: "paintpalette", label: "Edit workspace")
-        workspaceEdit.setAccessibilityIdentifier("bato-edit-workspace")
-        workspaceEdit.toolTip = "Edit workspace name and color"
         workspaceActions.target = self
         workspaceActions.action = #selector(showWorkspaceActions)
         configureIcon(workspaceActions, symbol: "ellipsis", label: "Workspace actions")
         workspaceActions.setAccessibilityIdentifier("bato-workspace-actions")
-        workspaceActions.toolTip = "Reorder this workspace"
+        workspaceActions.toolTip = "Edit, reorder or import into this workspace"
         sidebarToggle.target = self
         sidebarToggle.action = #selector(toggleSidebar)
         configureIcon(sidebarToggle, symbol: "sidebar.left", label: "Toggle sidebar")
@@ -332,19 +362,25 @@ public final class NativeWorkspaceController: NSObject {
         switcherButton.setAccessibilityLabel("Current workspace")
         switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
         switcherButton.setAccessibilityIdentifier("bato-space-name")
-        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceEdit, workspaceActions])
+        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceActions])
         heading.orientation = .horizontal
         heading.alignment = .centerY
         heading.distribution = .fill
         heading.spacing = 2
         heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight).isActive = true
 
-        configureTextAction(newTabButton, symbol: "plus")
+        newTabButton.title = "New Tab"
+        newTabButton.image = sidebarSymbol("plus", size: 14)
+        newTabButton.imagePosition = .imageLeading
+        newTabButton.font = SidebarStyle.rowFont
+        newTabButton.bezelStyle = .recessed
+        newTabButton.isBordered = false
+        newTabButton.contentTintColor = .secondaryLabelColor
+        newTabButton.alignment = .left
+        newTabButton.focusRingType = .none
+        newTabButton.setAccessibilityLabel("New Tab")
         newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
-        let find = ActionButton(title: "Find page") { [weak self] in self?.findPage() }
-        configureTextAction(find, symbol: "magnifyingglass")
-        find.setAccessibilityLabel("Find Page")
-        find.setAccessibilityIdentifier("bato-find-page")
+        newTabButton.heightAnchor.constraint(equalToConstant: SidebarStyle.rowHeight).isActive = true
         peekLabel.font = .systemFont(ofSize: 11, weight: .medium)
         peekLabel.textColor = .secondaryLabelColor
         peekLabel.lineBreakMode = .byTruncatingTail
@@ -368,10 +404,6 @@ public final class NativeWorkspaceController: NSObject {
         peekRow.isHidden = true
         peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
-        let pageActions = NSStackView(views: [newTabButton, find])
-        pageActions.orientation = .horizontal
-        pageActions.distribution = .fillEqually
-        pageActions.spacing = 6
 
         entries.orientation = .vertical
         entries.alignment = .leading
@@ -389,21 +421,20 @@ public final class NativeWorkspaceController: NSObject {
             entries.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
         ])
 
-        workspacePicker.target = self
-        workspacePicker.action = #selector(workspaceChanged)
-        workspacePicker.setAccessibilityLabel("Workspace")
-        workspacePicker.setAccessibilityIdentifier("bato-workspace-picker")
-        workspacePicker.font = .systemFont(ofSize: 12, weight: .medium)
-        workspacePicker.controlSize = .small
-        workspacePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        workspacePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        workspacePager.orientation = .horizontal
+        workspacePager.spacing = 0
+        workspacePager.setAccessibilityLabel("Workspace")
+        workspacePager.setAccessibilityIdentifier("bato-workspace-picker")
+        workspacePager.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let workspaceAdd = ActionButton(title: "") { [weak self] in
             guard let self else { return }
             self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
         }
         configureIcon(workspaceAdd, symbol: "plus", label: "New workspace")
         workspaceAdd.setAccessibilityIdentifier("bato-add-workspace")
-        let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
+        let pagerSpacer = NSView()
+        pagerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let workspaceRow = NSStackView(views: [workspacePager, pagerSpacer, workspaceAdd])
         workspaceRow.orientation = .horizontal
         workspaceRow.spacing = 6
         profileButton.target = self
@@ -430,7 +461,7 @@ public final class NativeWorkspaceController: NSObject {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 
-        let stack = NSStackView(views: [heading, pageActions, peekRow, scroll, separator, footer, statusLabel])
+        let stack = NSStackView(views: [heading, peekRow, scroll, separator, footer, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 11
@@ -442,7 +473,6 @@ public final class NativeWorkspaceController: NSObject {
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 0),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
             peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -473,7 +503,7 @@ public final class NativeWorkspaceController: NSObject {
         button.image = sidebarSymbol(symbol, size: 12)
         button.imagePosition = .imageLeading
         button.imageHugsTitle = true
-        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.font = SidebarStyle.actionFont
         button.bezelStyle = .recessed
         button.isBordered = false
         button.contentTintColor = .secondaryLabelColor
@@ -493,6 +523,7 @@ public final class NativeWorkspaceController: NSObject {
     private func render() {
         fitTrafficLightClearance()
         commandBar?.refresh()
+        settingsWindow?.reload()
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
@@ -526,8 +557,7 @@ public final class NativeWorkspaceController: NSObject {
         addSavedSplits(workspaceID: workspace.id)
         addSection("Favorites", pages: favorites)
         let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
-        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
-                   totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
+        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) }, includeEmpty: !workspace.folders.isEmpty)
         for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
         addSection("Tabs", pages: workspace.tabs)
         if let focusedControl, let controls = pageControls[focusedControl.id] {
@@ -540,10 +570,21 @@ public final class NativeWorkspaceController: NSObject {
         } else if let parentOfFocusedPin, let controls = folderControls[parentOfFocusedPin] {
             root.window?.makeFirstResponder(controls.disclosure)
         }
-        workspaceIDs = state.workspaces.map(\.id)
-        workspacePicker.removeAllItems()
-        workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
-        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
+        workspacePager.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for item in state.workspaces {
+            let isActive = item.id == state.activeWorkspaceID
+            let dot = ActionButton(title: "") { [weak self] in self?.switchWorkspace(item.id) }
+            dot.image = pagerDot(isActive: isActive)
+            dot.imagePosition = .imageOnly
+            dot.isBordered = false
+            dot.focusRingType = .none
+            dot.setAccessibilityLabel(item.name)
+            dot.setAccessibilityValue(isActive ? "current" : nil)
+            dot.toolTip = item.name
+            dot.widthAnchor.constraint(equalToConstant: 14).isActive = true
+            dot.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            workspacePager.addArrangedSubview(dot)
+        }
         profileButton.title = currentProfile?.name ?? ""
         profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
         profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
@@ -688,10 +729,6 @@ public final class NativeWorkspaceController: NSObject {
     private func addSavedSplits(workspaceID: UUID) {
         let splits = runtime.state.currentWorkspace.splits.filter(\.isPinned)
         guard !splits.isEmpty else { return }
-        let heading = NSTextField(labelWithString: "Saved pairs")
-        heading.font = .systemFont(ofSize: 11, weight: .semibold)
-        heading.textColor = .secondaryLabelColor
-        entries.addArrangedSubview(heading)
         for split in splits {
             let button = ActionButton(title: splitTitle(split)) { [weak self] in
                 guard let self, self.canRunSplitAction(in: workspaceID) else { return }
@@ -724,27 +761,20 @@ public final class NativeWorkspaceController: NSObject {
         if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
     }
 
-    private func addSection(_ title: String, pages: [PageEntry], totalCount: Int? = nil, includeEmpty: Bool = false) {
+    private func addSection(_ title: String, pages: [PageEntry], includeEmpty: Bool = false) {
         // Shared Favorites deserve space when present, without three empty
         // diagnostic sections competing with a new workspace's first tab.
         guard !pages.isEmpty || title == "Tabs" || includeEmpty else { return }
-        let heading = NSStackView()
-        heading.orientation = .horizontal
-        heading.spacing = 6
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        let count = NSTextField(labelWithString: String(totalCount ?? pages.count))
-        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        count.textColor = .secondaryLabelColor
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        heading.addArrangedSubview(label)
-        heading.addArrangedSubview(spacer)
-        heading.addArrangedSubview(count)
-        entries.addArrangedSubview(heading)
-        heading.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
-        entries.setCustomSpacing(8, after: heading)
+        if title == "Tabs", !entries.arrangedSubviews.isEmpty {
+            let divider = NSBox()
+            divider.boxType = .separator
+            entries.addArrangedSubview(divider)
+            divider.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
+        }
+        if title == "Tabs" {
+            entries.addArrangedSubview(newTabButton)
+            newTabButton.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        }
         if pages.isEmpty && title == "Tabs" {
             let empty = NSTextField(wrappingLabelWithString: "No tabs yet.\nOpen a website to start browsing.")
             empty.font = .systemFont(ofSize: 12)
@@ -754,15 +784,15 @@ public final class NativeWorkspaceController: NSObject {
             empty.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -12).isActive = true
         }
         if title == "Favorites" {
-            for start in stride(from: 0, to: pages.count, by: 2) {
+            for start in stride(from: 0, to: pages.count, by: SidebarStyle.tilesPerRow) {
                 let row = NSStackView()
                 row.orientation = .horizontal
                 row.distribution = .fillEqually
-                row.spacing = 6
-                for page in pages[start..<min(start + 2, pages.count)] {
+                row.spacing = 4
+                for page in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)] {
                     row.addArrangedSubview(makePageView(page, tile: true))
                 }
-                if row.arrangedSubviews.count == 1 { row.addArrangedSubview(NSView()) }
+                while row.arrangedSubviews.count < SidebarStyle.tilesPerRow { row.addArrangedSubview(NSView()) }
                 entries.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
@@ -773,7 +803,7 @@ public final class NativeWorkspaceController: NSObject {
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
         }
-        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(17, after: last) }
+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(12, after: last) }
     }
 
     private func makePageView(_ page: PageEntry, tile: Bool) -> NSView {
@@ -784,18 +814,20 @@ public final class NativeWorkspaceController: NSObject {
         }
         select.isBordered = false
         select.bezelStyle = .recessed
+        select.focusRingType = .none
         select.alignment = tile ? .center : .left
-        select.font = .systemFont(ofSize: tile ? 11 : 13, weight: tile ? .medium : .regular)
+        select.font = SidebarStyle.rowFont
         if let icon = pageIcons[page.id]?.copy() as? NSImage {
-            icon.size = NSSize(width: tile ? 20 : 16, height: tile ? 20 : 16)
+            icon.size = NSSize(width: tile ? 26 : 18, height: tile ? 26 : 18)
             select.image = icon
             select.imageScaling = .scaleProportionallyDown
         } else {
-            select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
+            select.image = tile ? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: 26)
+                : sidebarSymbol(page.kind == .pinned ? "pin.fill" : "globe", size: 14)
         }
-        select.imagePosition = tile ? .imageAbove : .imageLeading
+        select.imagePosition = tile ? .imageOnly : .imageLeading
         select.imageHugsTitle = true
-        select.contentTintColor = pageIcons[page.id] == nil ? .labelColor : nil
+        select.contentTintColor = pageIcons[page.id] == nil && !tile ? .labelColor : nil
         select.setButtonType(.momentaryPushIn)
         select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         select.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -812,6 +844,7 @@ public final class NativeWorkspaceController: NSObject {
         close.imagePosition = .imageOnly
         close.isBordered = false
         close.bezelStyle = .recessed
+        close.focusRingType = .none
         close.contentTintColor = .secondaryLabelColor
         close.setAccessibilityLabel(page.kind == .temporary ? "Close \(title)" : "Unload \(title)")
         close.setAccessibilityIdentifier("bato-close-\(page.id.uuidString)")
@@ -1165,6 +1198,8 @@ public final class NativeWorkspaceController: NSObject {
         requestNativeFocus?()
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.addItem(ActionMenuItem(title: "Edit Workspace…") { [weak self] in self?.editWorkspace() })
+        menu.addItem(.separator())
         menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == id else { return }
             self.editFolder()
@@ -1396,11 +1431,6 @@ public final class NativeWorkspaceController: NSObject {
         return true
     }
 
-    @objc private func workspaceChanged() {
-        let index = workspacePicker.indexOfSelectedItem
-        guard workspaceIDs.indices.contains(index) else { return }
-        perform { runtime.activateWorkspace(workspaceIDs[index]) }
-    }
 }
 
 /// Resolve semantic colors while drawing, rather than caching appearance-bound
@@ -1427,32 +1457,36 @@ private final class SidebarPageView: AdaptiveSidebarView {
     private let selected: Bool
     private let accent: NSColor
     private let tile: Bool
-    private var hovered = false
+    private var hovered = false { didSet { close.alphaValue = tile && !hovered ? 0 : 1 } }
+    private let close: NSButton
     private var tracking: NSTrackingArea?
     init(select: NSButton, close: NSButton, tile: Bool, selected: Bool, accent: NSColor) {
         self.selected = selected
         self.accent = accent
         self.tile = tile
+        self.close = close
         super.init(frame: .zero)
+        // Hidden tile close stays in the accessibility tree and still takes clicks; hover only reveals it.
+        close.alphaValue = tile ? 0 : 1
         select.translatesAutoresizingMaskIntoConstraints = false
         close.translatesAutoresizingMaskIntoConstraints = false
         addSubview(select)
         addSubview(close)
-        heightAnchor.constraint(equalToConstant: tile ? 62 : 34).isActive = true
+        heightAnchor.constraint(equalToConstant: tile ? SidebarStyle.tileHeight : SidebarStyle.rowHeight).isActive = true
         close.widthAnchor.constraint(equalToConstant: 20).isActive = true
         close.heightAnchor.constraint(equalToConstant: 24).isActive = true
         if tile {
             NSLayoutConstraint.activate([
-                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-                select.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-                select.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-                select.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+                select.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+                select.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+                select.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
                 close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
                 close.topAnchor.constraint(equalTo: topAnchor, constant: 1)
             ])
         } else {
             NSLayoutConstraint.activate([
-                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
                 select.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -2),
                 select.topAnchor.constraint(equalTo: topAnchor),
                 select.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -1474,20 +1508,31 @@ private final class SidebarPageView: AdaptiveSidebarView {
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
-        if selected {
-            (NSColor.controlBackgroundColor.blended(withFraction: contrast ? 0.3 : 0.2, of: accent) ?? .selectedControlColor).setFill()
-        } else if hovered {
-            NSColor.quaternaryLabelColor.setFill()
-        } else if tile {
-            NSColor.controlBackgroundColor.withAlphaComponent(0.65).setFill()
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: tile ? 1.5 : 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
+        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
+            fill.setFill()
         } else {
             NSColor.clear.setFill()
         }
+        if tile {
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.shadowBlurRadius = 3
+            shadow.set()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
         path.fill()
-        if selected || (contrast && tile) {
-            (selected ? accent : NSColor.separatorColor).setStroke()
-            path.lineWidth = contrast ? 1.5 : 0.65
+        if tile {
+            NSColor.white.withAlphaComponent(0.07).setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+        if contrast && (selected || tile) {
+            (selected ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).setStroke()
+            path.lineWidth = 1.5
             path.stroke()
         }
     }
@@ -1524,12 +1569,8 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let base = NSColor.windowBackgroundColor
-        // Opaque, understated workspace color remains readable with Reduce
-        // Transparency and adapts to the system's current light/dark palette.
-        let fraction: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.05 : 0.2
-        let top = base.blended(withFraction: fraction, of: accent) ?? base
-        let bottom = base.blended(withFraction: fraction * 0.4, of: accent) ?? base
+        let (top, bottom) = SidebarStyle.tint(accent, dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
+                                              highContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
         NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
     }
     var keyEquivalentsEnabled = true
@@ -1595,6 +1636,16 @@ private final class ActionMenuItem: NSMenuItem {
 private let sidebarColorPalette: [(name: String, hex: String)] = [
     ("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
     ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
+
+@MainActor
+private func pagerDot(isActive: Bool) -> NSImage {
+    let size: CGFloat = isActive ? 7 : 5
+    return NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
+        NSColor.labelColor.withAlphaComponent(isActive ? 0.95 : 0.4).setFill()
+        NSBezierPath(ovalIn: NSRect(x: (rect.width - size) / 2, y: (rect.height - size) / 2, width: size, height: size)).fill()
+        return true
+    }
+}
 
 @MainActor
 private func colorDot(_ color: NSColor, size: CGFloat = 9) -> NSImage {
@@ -1668,7 +1719,6 @@ private final class WorkspaceEditor: NSWindowController {
                 stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
                 stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
                 stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
                 nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -1997,7 +2047,7 @@ private final class ProfileEditor: NSWindowController {
 
     init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
         self.save = save
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: creating ? 330 : 240),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.title = creating ? "New Profile" : "Rename Profile"
         window.isReleasedWhenClosed = false
@@ -2068,6 +2118,7 @@ private final class ProfileEditor: NSWindowController {
             ]
             if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
             NSLayoutConstraint.activate(constraints)
+            SidebarStyle.fitSheet(window, to: stack)
         }
     }
 

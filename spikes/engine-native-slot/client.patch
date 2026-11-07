@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,50 @@
+@@ -2313,6 +2317,55 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -128,6 +128,11 @@
 +      "tests/cefsimple/bato/BatoImport/ArcSourceReader.swift",
 +      "tests/cefsimple/bato/BatoImport/ImportTransaction.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArcImportController.swift",
++      "tests/cefsimple/bato/BatoCore/Essentials.swift",
++      "tests/cefsimple/bato/BatoCore/SettingsModel.swift",
++      "tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -146,7 +151,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2384,19 @@
+@@ -2336,12 +2389,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -169,7 +174,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1323 @@
+@@ -0,0 +1,1343 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cstdio>
@@ -319,6 +324,21 @@
 +  const auto scheme = CefString(&parts.scheme).ToString();
 +  return (scheme == "http" || scheme == "https") && parts.host.length != 0 &&
 +      parts.username.length == 0 && parts.password.length == 0;
++}
++
++// Page creation also accepts the exact Chromium pages Bato offers as browser essentials.
++// Navigation, Peek and icon requests keep the web-only rule.
++bool ValidCreateDestination(const char* utf8_url) {
++  if (ValidDestination(utf8_url)) return true;
++  if (!utf8_url) return false;
++  CefURLParts parts;
++  if (!CefParseURL(CefString(utf8_url), parts)) return false;
++  const auto scheme = CefString(&parts.scheme).ToString();
++  const auto host = CefString(&parts.host).ToString();
++  const auto path = CefString(&parts.path).ToString();
++  return scheme == "chrome" && (host == "history" || host == "downloads" || host == "settings") &&
++      (path.empty() || path == "/") && parts.username.length == 0 && parts.password.length == 0 &&
++      parts.query.length == 0;
 +}
 +
 +bool SameWindow(CefRefPtr<CefBrowser> first, CefRefPtr<CefBrowser> second) {
@@ -744,7 +764,7 @@
 +    LogWorkspaceRejection("create-page", reason);
 +    return 0;
 +  };
-+  if (!ValidDestination(utf8_url))
++  if (!ValidCreateDestination(utf8_url))
 +    return reject(WorkspaceRejection::kDestinationInvalid);
 +  if (!g_new_tab)
 +    return reject(WorkspaceRejection::kNewTabCallbackUnavailable);
@@ -1327,6 +1347,11 @@
 +  if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB")) command = 1;
 +  if (command_id == cef_id_for_command_id_name("IDC_CLOSE_TAB")) command = 2;
 +  if (command_id == cef_id_for_command_id_name("IDC_DEV_TOOLS_INSPECT") && IsCopyUrlChord()) command = 4;
++  // Not reached through Chrome's command controller: the engine offers these three from
++  // chrome::ShowHistory/ShowDownloads/ShowSettings, which every menu and key route ends in.
++  if (command_id == cef_id_for_command_id_name("IDC_SHOW_HISTORY")) command = 5;
++  if (command_id == cef_id_for_command_id_name("IDC_SHOW_DOWNLOADS")) command = 6;
++  if (command_id == cef_id_for_command_id_name("IDC_OPTIONS")) command = 7;
 +  if (!command || !browser || !browser->IsValid()) return false;
 +  for (const auto& [token, slot] : WorkspaceSlots()) {
 +    auto* available = AvailableSlot(token);
@@ -1534,7 +1559,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,48 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -1557,14 +1582,15 @@
 +              '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
 +              '-I', str(modules)]
 +    objects = []
-+    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift']),
++    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift']),
-+                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift']),
++                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
 +                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
-+                                              'ArcImportController.swift', 'BlockingControls.swift'])]:
++                                              'ArcImportController.swift', 'BlockingControls.swift',
++                                              'SettingsWindowController.swift', 'SidebarStyle.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -1742,7 +1768,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,907 @@
+@@ -0,0 +1,910 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2350,6 +2376,9 @@
 +    if command == 3 { controller.resumeCommittedSelection() }
 +    if command == 1 { controller.newTab() }
 +    if command == 4 { controller.copyCurrentLink() }
++    if command == 5 { controller.openEssential(.history) }
++    if command == 6 { controller.openEssential(.downloads) }
++    if command == 7 { controller.showSettings() }
 +    if command == 2, workspaceSlots[token]?.engine?.transient[browserID] != nil {
 +        controller.dismissPeek()
 +    } else if command == 2, let page = workspaceSlots[token]?.engine?.pages[browserID] {
@@ -3345,7 +3374,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1096 @@
+@@ -0,0 +1,1097 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4437,6 +4466,7 @@
 +    }
 +
 +    private static func validateURL(_ url: URL) throws {
++        if BrowserEssential.accepts(url) { return }
 +        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
 +              let host = url.host, !host.isEmpty,
 +              url.user == nil, url.password == nil else { throw BrowserStateError.invalidURL }
@@ -5590,8 +5620,9 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2103 @@
+@@ -0,0 +1,2154 @@
 +import AppKit
++import BatoBlocking
 +import BatoCore
 +import BatoPersistence
 +import BatoRuntime
@@ -5614,7 +5645,7 @@
 +    public var isPeekPresented: Bool { runtime.peekSession.preview != nil }
 +
 +    private let entries = SidebarEntries()
-+    private let workspacePicker = NSPopUpButton(frame: .zero, pullsDown: false)
++    private let workspacePager = NSStackView()
 +    private let workspaceActions = NSButton(frame: .zero)
 +    private let sidebarToggle = NSButton(frame: .zero)
 +    private var trafficLightClearanceWidth: NSLayoutConstraint?
@@ -5628,7 +5659,6 @@
 +    private let peekRow = NSStackView()
 +    private let peekLabel = NSTextField(labelWithString: "")
 +    private let statusLabel = NSTextField(wrappingLabelWithString: "")
-+    private var workspaceIDs: [UUID] = []
 +    private var hasStarted = false
 +    private var sheetObserver: NSObjectProtocol?
 +    private var workspaceEditor: WorkspaceEditor?
@@ -5637,6 +5667,7 @@
 +    private var pageFinder: PageFinder?
 +    private let organizationStore: OrganizationStore<BrowserState>
 +    private var arcImport: ArcImportController?
++    private var settingsWindow: SettingsWindowController?
 +    private var commandBar: CommandBarController?
 +    private var commandBarSearchProvider: CommandBarSearchProvider = .duckDuckGo
 +    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
@@ -5715,6 +5746,36 @@
 +    /// Opens native navigation, organization search and browser commands.
 +    public func newTab() { showCommandBar() }
 +
++    /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
++    public func openEssential(_ essential: BrowserEssential) {
++        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        runtime.endPeek()
++        requestNativeFocus?()
++        _ = runtime.openEssential(essential)
++        render()
++    }
++
++    /// Opens Bato's own Settings window. It is not tied to a browser window, so it never blocks one.
++    public func showSettings(_ pane: SettingsPane? = nil) {
++        guard hasStarted else { return }
++        let window = settingsWindow ?? SettingsWindowController(hooks: SettingsHooks(
++            state: { [weak self] in self?.runtime.state ?? .initial() },
++            blockingService: { BlockingHost.shared.service(forProfile: $0) },
++            createProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: true) } },
++            renameCurrentProfile: { [weak self] in self?.fromBrowserWindow { $0.editProfile(creating: false) } },
++            importFromArc: { [weak self] in self?.fromBrowserWindow { $0.importFromArc() } },
++            openEssential: { [weak self] essential in self?.fromBrowserWindow { $0.openEssential(essential) } }))
++        settingsWindow = window
++        window.show(pane)
++    }
++
++    /// Sheets and pages belong to the browser window, so Settings actions bring it forward first.
++    private func fromBrowserWindow(_ action: (NativeWorkspaceController) -> Void) {
++        root.window?.makeKeyAndOrderFront(nil)
++        action(self)
++    }
++
 +    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil) {
 +        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -5787,6 +5848,9 @@
 +            case .findPage: findPage()
 +            case .toggleSidebar: requestSidebarToggle?()
 +            case .closePage: closeSelection()
++            case .openHistory: openEssential(.history)
++            case .openDownloads: openEssential(.downloads)
++            case .openSettings: showSettings()
 +            }
 +            return
 +        }
@@ -5891,15 +5955,11 @@
 +            view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
 +        }
 +
-+        let workspaceEdit = ActionButton(title: "") { [weak self] in self?.editWorkspace() }
-+        configureIcon(workspaceEdit, symbol: "paintpalette", label: "Edit workspace")
-+        workspaceEdit.setAccessibilityIdentifier("bato-edit-workspace")
-+        workspaceEdit.toolTip = "Edit workspace name and color"
 +        workspaceActions.target = self
 +        workspaceActions.action = #selector(showWorkspaceActions)
 +        configureIcon(workspaceActions, symbol: "ellipsis", label: "Workspace actions")
 +        workspaceActions.setAccessibilityIdentifier("bato-workspace-actions")
-+        workspaceActions.toolTip = "Reorder this workspace"
++        workspaceActions.toolTip = "Edit, reorder or import into this workspace"
 +        sidebarToggle.target = self
 +        sidebarToggle.action = #selector(toggleSidebar)
 +        configureIcon(sidebarToggle, symbol: "sidebar.left", label: "Toggle sidebar")
@@ -5925,19 +5985,25 @@
 +        switcherButton.setAccessibilityLabel("Current workspace")
 +        switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
 +        switcherButton.setAccessibilityIdentifier("bato-space-name")
-+        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceEdit, workspaceActions])
++        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceActions])
 +        heading.orientation = .horizontal
 +        heading.alignment = .centerY
 +        heading.distribution = .fill
 +        heading.spacing = 2
 +        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight).isActive = true
 +
-+        configureTextAction(newTabButton, symbol: "plus")
++        newTabButton.title = "New Tab"
++        newTabButton.image = sidebarSymbol("plus", size: 14)
++        newTabButton.imagePosition = .imageLeading
++        newTabButton.font = SidebarStyle.rowFont
++        newTabButton.bezelStyle = .recessed
++        newTabButton.isBordered = false
++        newTabButton.contentTintColor = .secondaryLabelColor
++        newTabButton.alignment = .left
++        newTabButton.focusRingType = .none
++        newTabButton.setAccessibilityLabel("New Tab")
 +        newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
-+        let find = ActionButton(title: "Find page") { [weak self] in self?.findPage() }
-+        configureTextAction(find, symbol: "magnifyingglass")
-+        find.setAccessibilityLabel("Find Page")
-+        find.setAccessibilityIdentifier("bato-find-page")
++        newTabButton.heightAnchor.constraint(equalToConstant: SidebarStyle.rowHeight).isActive = true
 +        peekLabel.font = .systemFont(ofSize: 11, weight: .medium)
 +        peekLabel.textColor = .secondaryLabelColor
 +        peekLabel.lineBreakMode = .byTruncatingTail
@@ -5961,10 +6027,6 @@
 +        peekRow.isHidden = true
 +        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
-+        let pageActions = NSStackView(views: [newTabButton, find])
-+        pageActions.orientation = .horizontal
-+        pageActions.distribution = .fillEqually
-+        pageActions.spacing = 6
 +
 +        entries.orientation = .vertical
 +        entries.alignment = .leading
@@ -5982,21 +6044,20 @@
 +            entries.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
 +        ])
 +
-+        workspacePicker.target = self
-+        workspacePicker.action = #selector(workspaceChanged)
-+        workspacePicker.setAccessibilityLabel("Workspace")
-+        workspacePicker.setAccessibilityIdentifier("bato-workspace-picker")
-+        workspacePicker.font = .systemFont(ofSize: 12, weight: .medium)
-+        workspacePicker.controlSize = .small
-+        workspacePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        workspacePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        workspacePager.orientation = .horizontal
++        workspacePager.spacing = 0
++        workspacePager.setAccessibilityLabel("Workspace")
++        workspacePager.setAccessibilityIdentifier("bato-workspace-picker")
++        workspacePager.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        let workspaceAdd = ActionButton(title: "") { [weak self] in
 +            guard let self else { return }
 +            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
 +        }
 +        configureIcon(workspaceAdd, symbol: "plus", label: "New workspace")
 +        workspaceAdd.setAccessibilityIdentifier("bato-add-workspace")
-+        let workspaceRow = NSStackView(views: [workspacePicker, workspaceAdd])
++        let pagerSpacer = NSView()
++        pagerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let workspaceRow = NSStackView(views: [workspacePager, pagerSpacer, workspaceAdd])
 +        workspaceRow.orientation = .horizontal
 +        workspaceRow.spacing = 6
 +        profileButton.target = self
@@ -6023,7 +6084,7 @@
 +        statusLabel.textColor = .secondaryLabelColor
 +        statusLabel.setAccessibilityIdentifier("bato-workspace-status")
 +
-+        let stack = NSStackView(views: [heading, pageActions, peekRow, scroll, separator, footer, statusLabel])
++        let stack = NSStackView(views: [heading, peekRow, scroll, separator, footer, statusLabel])
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
 +        stack.spacing = 11
@@ -6035,7 +6096,6 @@
 +            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 0),
 +            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
 +            heading.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            pageActions.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            peekRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -6066,7 +6126,7 @@
 +        button.image = sidebarSymbol(symbol, size: 12)
 +        button.imagePosition = .imageLeading
 +        button.imageHugsTitle = true
-+        button.font = .systemFont(ofSize: 12, weight: .medium)
++        button.font = SidebarStyle.actionFont
 +        button.bezelStyle = .recessed
 +        button.isBordered = false
 +        button.contentTintColor = .secondaryLabelColor
@@ -6086,6 +6146,7 @@
 +    private func render() {
 +        fitTrafficLightClearance()
 +        commandBar?.refresh()
++        settingsWindow?.reload()
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
 +        (root as? WorkspaceRoot)?.accent = accent
@@ -6119,8 +6180,7 @@
 +        addSavedSplits(workspaceID: workspace.id)
 +        addSection("Favorites", pages: favorites)
 +        let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
-+        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) },
-+                   totalCount: workspace.pins.count, includeEmpty: !workspace.folders.isEmpty)
++        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) }, includeEmpty: !workspace.folders.isEmpty)
 +        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
 +        addSection("Tabs", pages: workspace.tabs)
 +        if let focusedControl, let controls = pageControls[focusedControl.id] {
@@ -6133,10 +6193,21 @@
 +        } else if let parentOfFocusedPin, let controls = folderControls[parentOfFocusedPin] {
 +            root.window?.makeFirstResponder(controls.disclosure)
 +        }
-+        workspaceIDs = state.workspaces.map(\.id)
-+        workspacePicker.removeAllItems()
-+        workspacePicker.addItems(withTitles: state.workspaces.map(\.name))
-+        if let index = workspaceIDs.firstIndex(of: state.activeWorkspaceID) { workspacePicker.selectItem(at: index) }
++        workspacePager.arrangedSubviews.forEach { $0.removeFromSuperview() }
++        for item in state.workspaces {
++            let isActive = item.id == state.activeWorkspaceID
++            let dot = ActionButton(title: "") { [weak self] in self?.switchWorkspace(item.id) }
++            dot.image = pagerDot(isActive: isActive)
++            dot.imagePosition = .imageOnly
++            dot.isBordered = false
++            dot.focusRingType = .none
++            dot.setAccessibilityLabel(item.name)
++            dot.setAccessibilityValue(isActive ? "current" : nil)
++            dot.toolTip = item.name
++            dot.widthAnchor.constraint(equalToConstant: 14).isActive = true
++            dot.heightAnchor.constraint(equalToConstant: 24).isActive = true
++            workspacePager.addArrangedSubview(dot)
++        }
 +        profileButton.title = currentProfile?.name ?? ""
 +        profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
 +        profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
@@ -6281,10 +6352,6 @@
 +    private func addSavedSplits(workspaceID: UUID) {
 +        let splits = runtime.state.currentWorkspace.splits.filter(\.isPinned)
 +        guard !splits.isEmpty else { return }
-+        let heading = NSTextField(labelWithString: "Saved pairs")
-+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
-+        heading.textColor = .secondaryLabelColor
-+        entries.addArrangedSubview(heading)
 +        for split in splits {
 +            let button = ActionButton(title: splitTitle(split)) { [weak self] in
 +                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
@@ -6317,27 +6384,20 @@
 +        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
 +    }
 +
-+    private func addSection(_ title: String, pages: [PageEntry], totalCount: Int? = nil, includeEmpty: Bool = false) {
++    private func addSection(_ title: String, pages: [PageEntry], includeEmpty: Bool = false) {
 +        // Shared Favorites deserve space when present, without three empty
 +        // diagnostic sections competing with a new workspace's first tab.
 +        guard !pages.isEmpty || title == "Tabs" || includeEmpty else { return }
-+        let heading = NSStackView()
-+        heading.orientation = .horizontal
-+        heading.spacing = 6
-+        let label = NSTextField(labelWithString: title)
-+        label.font = .systemFont(ofSize: 11, weight: .semibold)
-+        label.textColor = .secondaryLabelColor
-+        let count = NSTextField(labelWithString: String(totalCount ?? pages.count))
-+        count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-+        count.textColor = .secondaryLabelColor
-+        let spacer = NSView()
-+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-+        heading.addArrangedSubview(label)
-+        heading.addArrangedSubview(spacer)
-+        heading.addArrangedSubview(count)
-+        entries.addArrangedSubview(heading)
-+        heading.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
-+        entries.setCustomSpacing(8, after: heading)
++        if title == "Tabs", !entries.arrangedSubviews.isEmpty {
++            let divider = NSBox()
++            divider.boxType = .separator
++            entries.addArrangedSubview(divider)
++            divider.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
++        }
++        if title == "Tabs" {
++            entries.addArrangedSubview(newTabButton)
++            newTabButton.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++        }
 +        if pages.isEmpty && title == "Tabs" {
 +            let empty = NSTextField(wrappingLabelWithString: "No tabs yet.\nOpen a website to start browsing.")
 +            empty.font = .systemFont(ofSize: 12)
@@ -6347,15 +6407,15 @@
 +            empty.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -12).isActive = true
 +        }
 +        if title == "Favorites" {
-+            for start in stride(from: 0, to: pages.count, by: 2) {
++            for start in stride(from: 0, to: pages.count, by: SidebarStyle.tilesPerRow) {
 +                let row = NSStackView()
 +                row.orientation = .horizontal
 +                row.distribution = .fillEqually
-+                row.spacing = 6
-+                for page in pages[start..<min(start + 2, pages.count)] {
++                row.spacing = 4
++                for page in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)] {
 +                    row.addArrangedSubview(makePageView(page, tile: true))
 +                }
-+                if row.arrangedSubviews.count == 1 { row.addArrangedSubview(NSView()) }
++                while row.arrangedSubviews.count < SidebarStyle.tilesPerRow { row.addArrangedSubview(NSView()) }
 +                entries.addArrangedSubview(row)
 +                row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +            }
@@ -6366,7 +6426,7 @@
 +                row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +            }
 +        }
-+        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(17, after: last) }
++        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(12, after: last) }
 +    }
 +
 +    private func makePageView(_ page: PageEntry, tile: Bool) -> NSView {
@@ -6377,18 +6437,20 @@
 +        }
 +        select.isBordered = false
 +        select.bezelStyle = .recessed
++        select.focusRingType = .none
 +        select.alignment = tile ? .center : .left
-+        select.font = .systemFont(ofSize: tile ? 11 : 13, weight: tile ? .medium : .regular)
++        select.font = SidebarStyle.rowFont
 +        if let icon = pageIcons[page.id]?.copy() as? NSImage {
-+            icon.size = NSSize(width: tile ? 20 : 16, height: tile ? 20 : 16)
++            icon.size = NSSize(width: tile ? 26 : 18, height: tile ? 26 : 18)
 +            select.image = icon
 +            select.imageScaling = .scaleProportionallyDown
 +        } else {
-+            select.image = sidebarSymbol(page.kind == .favorite ? "star.fill" : page.kind == .pinned ? "pin.fill" : "globe", size: tile ? 16 : 12)
++            select.image = tile ? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: 26)
++                : sidebarSymbol(page.kind == .pinned ? "pin.fill" : "globe", size: 14)
 +        }
-+        select.imagePosition = tile ? .imageAbove : .imageLeading
++        select.imagePosition = tile ? .imageOnly : .imageLeading
 +        select.imageHugsTitle = true
-+        select.contentTintColor = pageIcons[page.id] == nil ? .labelColor : nil
++        select.contentTintColor = pageIcons[page.id] == nil && !tile ? .labelColor : nil
 +        select.setButtonType(.momentaryPushIn)
 +        select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        select.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -6405,6 +6467,7 @@
 +        close.imagePosition = .imageOnly
 +        close.isBordered = false
 +        close.bezelStyle = .recessed
++        close.focusRingType = .none
 +        close.contentTintColor = .secondaryLabelColor
 +        close.setAccessibilityLabel(page.kind == .temporary ? "Close \(title)" : "Unload \(title)")
 +        close.setAccessibilityIdentifier("bato-close-\(page.id.uuidString)")
@@ -6758,6 +6821,8 @@
 +        requestNativeFocus?()
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
++        menu.addItem(ActionMenuItem(title: "Edit Workspace…") { [weak self] in self?.editWorkspace() })
++        menu.addItem(.separator())
 +        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
 +            self.editFolder()
@@ -6989,11 +7054,6 @@
 +        return true
 +    }
 +
-+    @objc private func workspaceChanged() {
-+        let index = workspacePicker.indexOfSelectedItem
-+        guard workspaceIDs.indices.contains(index) else { return }
-+        perform { runtime.activateWorkspace(workspaceIDs[index]) }
-+    }
 +}
 +
 +/// Resolve semantic colors while drawing, rather than caching appearance-bound
@@ -7020,32 +7080,36 @@
 +    private let selected: Bool
 +    private let accent: NSColor
 +    private let tile: Bool
-+    private var hovered = false
++    private var hovered = false { didSet { close.alphaValue = tile && !hovered ? 0 : 1 } }
++    private let close: NSButton
 +    private var tracking: NSTrackingArea?
 +    init(select: NSButton, close: NSButton, tile: Bool, selected: Bool, accent: NSColor) {
 +        self.selected = selected
 +        self.accent = accent
 +        self.tile = tile
++        self.close = close
 +        super.init(frame: .zero)
++        // Hidden tile close stays in the accessibility tree and still takes clicks; hover only reveals it.
++        close.alphaValue = tile ? 0 : 1
 +        select.translatesAutoresizingMaskIntoConstraints = false
 +        close.translatesAutoresizingMaskIntoConstraints = false
 +        addSubview(select)
 +        addSubview(close)
-+        heightAnchor.constraint(equalToConstant: tile ? 62 : 34).isActive = true
++        heightAnchor.constraint(equalToConstant: tile ? SidebarStyle.tileHeight : SidebarStyle.rowHeight).isActive = true
 +        close.widthAnchor.constraint(equalToConstant: 20).isActive = true
 +        close.heightAnchor.constraint(equalToConstant: 24).isActive = true
 +        if tile {
 +            NSLayoutConstraint.activate([
-+                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-+                select.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-+                select.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-+                select.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
++                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
++                select.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
++                select.topAnchor.constraint(equalTo: topAnchor, constant: 4),
++                select.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
 +                close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
 +                close.topAnchor.constraint(equalTo: topAnchor, constant: 1)
 +            ])
 +        } else {
 +            NSLayoutConstraint.activate([
-+                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
++                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
 +                select.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -2),
 +                select.topAnchor.constraint(equalTo: topAnchor),
 +                select.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -7067,20 +7131,31 @@
 +    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 +    override func draw(_ dirtyRect: NSRect) {
 +        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
-+        if selected {
-+            (NSColor.controlBackgroundColor.blended(withFraction: contrast ? 0.3 : 0.2, of: accent) ?? .selectedControlColor).setFill()
-+        } else if hovered {
-+            NSColor.quaternaryLabelColor.setFill()
-+        } else if tile {
-+            NSColor.controlBackgroundColor.withAlphaComponent(0.65).setFill()
++        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: tile ? 1.5 : 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
++        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
++            fill.setFill()
 +        } else {
 +            NSColor.clear.setFill()
 +        }
++        if tile {
++            NSGraphicsContext.saveGraphicsState()
++            let shadow = NSShadow()
++            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
++            shadow.shadowOffset = NSSize(width: 0, height: -1)
++            shadow.shadowBlurRadius = 3
++            shadow.set()
++            path.fill()
++            NSGraphicsContext.restoreGraphicsState()
++        }
 +        path.fill()
-+        if selected || (contrast && tile) {
-+            (selected ? accent : NSColor.separatorColor).setStroke()
-+            path.lineWidth = contrast ? 1.5 : 0.65
++        if tile {
++            NSColor.white.withAlphaComponent(0.07).setStroke()
++            path.lineWidth = 0.5
++            path.stroke()
++        }
++        if contrast && (selected || tile) {
++            (selected ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).setStroke()
++            path.lineWidth = 1.5
 +            path.stroke()
 +        }
 +    }
@@ -7117,12 +7192,8 @@
 +    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
 +    override var isOpaque: Bool { true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let base = NSColor.windowBackgroundColor
-+        // Opaque, understated workspace color remains readable with Reduce
-+        // Transparency and adapts to the system's current light/dark palette.
-+        let fraction: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.05 : 0.2
-+        let top = base.blended(withFraction: fraction, of: accent) ?? base
-+        let bottom = base.blended(withFraction: fraction * 0.4, of: accent) ?? base
++        let (top, bottom) = SidebarStyle.tint(accent, dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
++                                              highContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
 +        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
 +    }
 +    var keyEquivalentsEnabled = true
@@ -7188,6 +7259,16 @@
 +private let sidebarColorPalette: [(name: String, hex: String)] = [
 +    ("Rose", "#B47879"), ("Ocean", "#527FAD"), ("Sage", "#6D8B70"),
 +    ("Lavender", "#8975A8"), ("Amber", "#B38847"), ("Slate", "#76818F")]
++
++@MainActor
++private func pagerDot(isActive: Bool) -> NSImage {
++    let size: CGFloat = isActive ? 7 : 5
++    return NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
++        NSColor.labelColor.withAlphaComponent(isActive ? 0.95 : 0.4).setFill()
++        NSBezierPath(ovalIn: NSRect(x: (rect.width - size) / 2, y: (rect.height - size) / 2, width: size, height: size)).fill()
++        return true
++    }
++}
 +
 +@MainActor
 +private func colorDot(_ color: NSColor, size: CGFloat = 9) -> NSImage {
@@ -7261,7 +7342,6 @@
 +                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
 +                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
 +                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
 +                nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -7590,7 +7670,7 @@
 +
 +    init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
 +        self.save = save
-+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: creating ? 330 : 240),
++        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
 +                              styleMask: [.titled], backing: .buffered, defer: false)
 +        window.title = creating ? "New Profile" : "Rename Profile"
 +        window.isReleasedWhenClosed = false
@@ -7661,6 +7741,7 @@
 +            ]
 +            if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
 +            NSLayoutConstraint.activate(constraints)
++            SidebarStyle.fitSheet(window, to: stack)
 +        }
 +    }
 +
@@ -7696,7 +7777,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,170 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -7767,12 +7848,15 @@
 +}
 +
 +public enum CommandBarCommand: String, CaseIterable, Sendable {
-+    case findPage, toggleSidebar, closePage
++    case findPage, toggleSidebar, closePage, openHistory, openDownloads, openSettings
 +    public var title: String {
 +        switch self {
 +        case .findPage: "Find Page"
 +        case .toggleSidebar: "Toggle Sidebar"
 +        case .closePage: "Close Current Page"
++        case .openHistory: "History"
++        case .openDownloads: "Downloads"
++        case .openSettings: "Settings"
 +        }
 +    }
 +}
@@ -7791,6 +7875,15 @@
 +    public let title: String
 +    public let subtitle: String
 +    public let action: CommandBarAction
++}
++
++public enum CommandBarSelection {
++    /// An arrow-key choice survives a refresh only while the query is unchanged; typing re-ranks, so the top row wins.
++    public static func rowAfterRefresh(previousID: String?, previousQuery: String, query: String,
++                                       results: [CommandBarResult]) -> Int? {
++        if query == previousQuery, let index = results.firstIndex(where: { $0.id == previousID }) { return index }
++        return results.isEmpty ? nil : 0
++    }
 +}
 +
 +public enum CommandBarResults {
@@ -7816,22 +7909,48 @@
 +                subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
 +        case .empty, .invalid: break
 +        }
-+        results += state.searchPages(matching: text).map {
-+            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
-+                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
-+        }
-+        results += CommandBarCommand.allCases.filter {
++        let commands = CommandBarCommand.allCases.filter {
 +            text.isEmpty || $0.title.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
 +        }.map {
 +            CommandBarResult(id: "command:\($0.rawValue)", title: $0.title,
 +                subtitle: "Browser command", action: .command($0))
 +        }
++        // An exact command name is a deliberate choice, so it outranks the web-search fallback.
++        let isExactCommand = { (result: CommandBarResult) in
++            result.title.compare(text, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
++        }
++        var remainingCommands = commands
++        if case .search = CommandBarInput.resolve(text, provider: provider) {
++            results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
++            remainingCommands.removeAll(where: isExactCommand)
++        }
++        results += state.searchPages(matching: text).map {
++            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
++                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
++        }
++        results += remainingCommands
 +        return results
++    }
++}
++
++public enum FaviconFallback {
++    public struct Spec: Equatable, Sendable {
++        public let letter: String
++        public let hue: Double
++    }
++
++    public static func spec(title: String, url: URL) -> Spec {
++        let host = (url.host ?? "").lowercased()
++        let hostless = host.isEmpty || host == "localhost" || host.allSatisfy { $0.isNumber || $0 == "." || $0 == ":" }
++        let source = hostless ? title : host.replacingOccurrences(of: "www.", with: "")
++        let letter = source.first(where: \.isLetter) ?? source.first(where: \.isNumber) ?? "?"
++        let seed = (url.absoluteString + title).unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
++        return Spec(letter: String(letter).uppercased(), hue: Double(seed % 360) / 360)
 +    }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,320 @@
 +import AppKit
 +import BatoCore
 +
@@ -7846,7 +7965,8 @@
 +    private let table = CommandBarTable()
 +    private let hint = NSTextField(labelWithString: "")
 +    private let errorLabel = NSTextField(wrappingLabelWithString: "")
-+    private let openButton = NSButton(title: "Open", target: nil, action: nil)
++    private let openButton = GoPillButton()
++    private var refreshedQuery = ""
 +    private let resultsForQuery: (String) -> [CommandBarResult]
 +    private var results: [CommandBarResult] = []
 +    private(set) var chosenAction: CommandBarAction?
@@ -7859,7 +7979,7 @@
 +        self.provider = provider
 +        self.providerChanged = providerChanged
 +        resultsForQuery = results
-+        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 410),
++        let panel = CommandBarPanel(contentRect: NSRect(origin: .zero, size: SidebarStyle.commandBarSize),
 +                                    styleMask: [.borderless], backing: .buffered, defer: false)
 +        panel.isReleasedWhenClosed = false
 +        panel.title = "New Tab"
@@ -7871,13 +7991,16 @@
 +        super.init(window: panel)
 +        let surface = CommandBarSurface()
 +        surface.wantsLayer = true
-+        surface.layer?.cornerRadius = 16
++        surface.layer?.cornerRadius = SidebarStyle.commandBarRadius
++        surface.layer?.borderWidth = 0.5
 +        surface.layer?.masksToBounds = true
 +        panel.contentView = surface
 +        field.stringValue = query
 +        field.placeholderString = "Search or enter a URL"
-+        field.font = .systemFont(ofSize: 20)
++        field.font = .systemFont(ofSize: 22, weight: .regular)
 +        field.controlSize = .large
++        field.isBezeled = false
++        field.drawsBackground = false
 +        field.focusRingType = .none
 +        field.setAccessibilityLabel("Command bar search or address")
 +        field.setAccessibilityIdentifier("bato-command-bar-input")
@@ -7891,14 +8014,15 @@
 +        providerPicker.setAccessibilityLabel("Web search provider")
 +        providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
 +        providerPicker.toolTip = "Search provider for this session"
-+        let inputRow = NSStackView(views: [field, providerPicker])
-+        inputRow.spacing = 12
++        providerPicker.isBordered = false
++        providerPicker.controlSize = .small
++        providerPicker.font = .systemFont(ofSize: 12)
++        let inputRow = NSStackView(views: [field])
 +        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        providerPicker.setContentCompressionResistancePriority(.required, for: .horizontal)
 +        table.dataSource = self
 +        table.delegate = self
 +        table.headerView = nil
-+        table.rowHeight = 52
++        table.rowHeight = SidebarStyle.commandBarRowHeight
 +        table.backgroundColor = .clear
 +        table.selectionHighlightStyle = .regular
 +        table.allowsEmptySelection = false
@@ -7928,38 +8052,35 @@
 +        errorLabel.textColor = .systemRed
 +        errorLabel.stringValue = error ?? ""
 +        errorLabel.setAccessibilityIdentifier("bato-command-bar-error")
-+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelBar))
-+        cancel.bezelStyle = .rounded
-+        cancel.keyEquivalent = "\u{1b}"
-+        cancel.setAccessibilityIdentifier("bato-command-bar-cancel")
 +        openButton.target = self
 +        openButton.action = #selector(openSelected)
-+        openButton.bezelStyle = .rounded
 +        openButton.keyEquivalent = "\r"
++        openButton.setAccessibilityLabel("Go")
 +        openButton.setAccessibilityIdentifier("bato-command-bar-open")
 +        panel.defaultButtonCell = openButton.cell as? NSButtonCell
 +        let spacer = NSView()
 +        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-+        let footer = NSStackView(views: [hint, spacer, cancel, openButton])
-+        footer.spacing = 8
++        let footer = NSStackView(views: [providerPicker, hint, spacer, openButton])
++        footer.spacing = 12
++        footer.alignment = .centerY
 +        let divider = NSBox()
 +        divider.boxType = .separator
 +        let stack = NSStackView(views: [inputRow, divider, scroll, errorLabel, footer])
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
-+        stack.spacing = 12
++        stack.spacing = 14
 +        stack.translatesAutoresizingMaskIntoConstraints = false
 +        surface.addSubview(stack)
 +        NSLayoutConstraint.activate([
-+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 20),
-+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -20),
-+            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 20),
-+            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -16),
++            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 22),
++            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -22),
++            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 24),
++            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -18),
 +            inputRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            field.heightAnchor.constraint(equalToConstant: 36),
++            field.heightAnchor.constraint(equalToConstant: 40),
 +            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
++            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
 +            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +            footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
 +        ])
@@ -7976,18 +8097,19 @@
 +
 +    func refresh() {
 +        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
-+        results = resultsForQuery(field.stringValue)
++        let query = field.stringValue
++        results = resultsForQuery(query)
 +        table.reloadData()
-+        if let index = results.firstIndex(where: { $0.id == selectedID }) {
-+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-+        } else if !results.isEmpty {
-+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++        if let row = CommandBarSelection.rowAfterRefresh(previousID: selectedID, previousQuery: refreshedQuery,
++                                                         query: query, results: results) {
++            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
 +        }
++        refreshedQuery = query
 +        openButton.isEnabled = results.indices.contains(table.selectedRow)
 +        if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
 +            hint.stringValue = message
 +        } else {
-+            hint.stringValue = "↑↓ to choose · Return to open · Esc to cancel"
++            hint.stringValue = "↑↓ choose · Esc cancel"
 +        }
 +    }
 +
@@ -8019,6 +8141,8 @@
 +        openButton.isEnabled = results.indices.contains(table.selectedRow)
 +    }
 +
++    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedRowView() }
++
 +    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
 +        guard results.indices.contains(row) else { return nil }
 +        let result = results[row]
@@ -8031,20 +8155,20 @@
 +        case .command: symbol = "command"
 +        }
 +        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
++        image.symbolConfiguration = .init(pointSize: 15, weight: .regular)
 +        image.contentTintColor = .secondaryLabelColor
 +        let title = NSTextField(labelWithString: result.title)
-+        title.font = .systemFont(ofSize: 13, weight: .medium)
++        title.font = .systemFont(ofSize: 15)
 +        title.lineBreakMode = .byTruncatingTail
 +        let detail = NSTextField(labelWithString: result.subtitle)
-+        detail.font = .systemFont(ofSize: 11)
++        detail.font = .systemFont(ofSize: 13)
 +        detail.textColor = .secondaryLabelColor
 +        detail.lineBreakMode = .byTruncatingMiddle
-+        let labels = NSStackView(views: [title, detail])
-+        labels.orientation = .vertical
-+        labels.alignment = .leading
-+        labels.spacing = 3
-+        let rowView = NSStackView(views: [image, labels])
-+        rowView.spacing = 12
++        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
++        let rowView = NSStackView(views: [image, title, detail])
++        rowView.spacing = 10
++        rowView.alignment = .firstBaseline
 +        rowView.translatesAutoresizingMaskIntoConstraints = false
 +        let cell = NSTableCellView()
 +        cell.textField = title
@@ -8053,9 +8177,7 @@
 +            rowView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
 +            rowView.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
 +            rowView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-+            image.widthAnchor.constraint(equalToConstant: 20),
-+            title.widthAnchor.constraint(equalTo: labels.widthAnchor),
-+            detail.widthAnchor.constraint(equalTo: labels.widthAnchor)
++            image.widthAnchor.constraint(equalToConstant: 20)
 +        ])
 +        return cell
 +    }
@@ -8078,6 +8200,33 @@
 +        guard let window, let parent = window.sheetParent else { return }
 +        parent.endSheet(window, returnCode: response)
 +        window.orderOut(nil)
++    }
++}
++
++/// The "Go" pill: a light capsule with dark text, as in Dia, instead of a stock push button.
++@MainActor
++private final class GoPillButton: NSButton {
++    init() {
++        super.init(frame: .zero)
++        title = "Go  ⏎"
++        isBordered = false
++        font = .systemFont(ofSize: 15, weight: .semibold)
++        wantsLayer = true
++        layer?.cornerRadius = 15
++        focusRingType = .none
++        heightAnchor.constraint(equalToConstant: 30).isActive = true
++        widthAnchor.constraint(equalToConstant: 78).isActive = true
++        refreshColors()
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
++    override func viewDidChangeEffectiveAppearance() { refreshColors() }
++    private func refreshColors() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.88).cgColor
++            attributedTitle = NSAttributedString(string: title, attributes: [
++                .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
++        }
 +    }
 +}
 +
@@ -8113,7 +8262,10 @@
 +@MainActor
 +private final class CommandBarSurface: NSView {
 +    override var wantsUpdateLayer: Bool { true }
-+    override func updateLayer() { layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
++    override func updateLayer() {
++        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
++        layer?.borderColor = NSColor.separatorColor.cgColor
++    }
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
@@ -10027,5 +10179,671 @@
 +        guard (try? service.setBlocking(!blocking, forPageURL: page.url)) != nil else { return }
 +        let reload = reload
 +        DispatchQueue.main.asyncAfter(deadline: .now() + reloadDelay) { reload(page.browserID) }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/Essentials.swift
+@@ -0,0 +1,42 @@
++import Foundation
++
++/// Browser pages that Chromium already provides. Bato opens them as ordinary organized tabs
++/// in the current Profile, so history and downloads stay per Profile and a repeat shortcut
++/// returns to the tab it opened.
++public enum BrowserEssential: String, CaseIterable, Sendable {
++    case history, downloads, chromiumSettings
++
++    public var url: URL {
++        switch self {
++        case .history: URL(string: "chrome://history/")!
++        case .downloads: URL(string: "chrome://downloads/")!
++        case .chromiumSettings: URL(string: "chrome://settings/")!
++        }
++    }
++
++    public var title: String {
++        switch self {
++        case .history: "History"
++        case .downloads: "Downloads"
++        case .chromiumSettings: "Browser Settings"
++        }
++    }
++
++    /// The only non-web destinations Bato will save in organization or hand to the engine.
++    public static func accepts(_ url: URL) -> Bool {
++        guard url.scheme?.lowercased() == "chrome", url.user == nil, url.password == nil,
++              url.query == nil, url.fragment == nil, let host = url.host?.lowercased() else { return false }
++        return allCases.contains { $0.url.host == host } && (url.path.isEmpty || url.path == "/")
++    }
++
++    public static func matching(_ url: URL) -> BrowserEssential? {
++        accepts(url) ? allCases.first { $0.url.host == url.host?.lowercased() } : nil
++    }
++}
++
++extension BrowserState {
++    /// The current Workspace's tab for an essential, if one is already open.
++    public func openEssentialEntry(_ essential: BrowserEssential) -> PageEntry? {
++        visibleEntries.first { BrowserEssential.matching($0.lastURL) == essential }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/SettingsModel.swift
+@@ -0,0 +1,67 @@
++import Foundation
++
++public enum SettingsPane: String, CaseIterable, Sendable {
++    case profiles, privacy, importData, shortcuts, advanced
++
++    public var title: String {
++        switch self {
++        case .profiles: "Profiles"
++        case .privacy: "Privacy"
++        case .importData: "Import"
++        case .shortcuts: "Shortcuts"
++        case .advanced: "Advanced"
++        }
++    }
++
++    public var symbolName: String {
++        switch self {
++        case .profiles: "person.crop.circle"
++        case .privacy: "hand.raised"
++        case .importData: "square.and.arrow.down"
++        case .shortcuts: "keyboard"
++        case .advanced: "gearshape.2"
++        }
++    }
++}
++
++public struct SettingsProfileRow: Identifiable, Equatable, Sendable {
++    public let id: UUID
++    public let name: String
++    public let colorHex: String
++    public let workspaceCount: Int
++    public let isCurrent: Bool
++
++    public var detail: String {
++        let spaces = workspaceCount == 1 ? "1 workspace" : "\(workspaceCount) workspaces"
++        return isCurrent ? "Current · \(spaces)" : spaces
++    }
++
++    public static func rows(from state: BrowserState) -> [SettingsProfileRow] {
++        let current = state.currentWorkspace.profileID
++        return state.profiles.map { profile in
++            SettingsProfileRow(id: profile.id, name: profile.name, colorHex: state.displayColor(of: profile),
++                               workspaceCount: state.workspaces.filter { $0.profileID == profile.id }.count,
++                               isCurrent: profile.id == current)
++        }
++    }
++}
++
++public struct ShortcutRow: Equatable, Sendable {
++    public let title: String
++    public let keys: String
++}
++
++public enum ShortcutCatalog {
++    public static let rows: [ShortcutRow] = [
++        ShortcutRow(title: "New tab or command bar", keys: "⌘T"),
++        ShortcutRow(title: "Go to address in this page", keys: "⌘L"),
++        ShortcutRow(title: "Close page", keys: "⌘W"),
++        ShortcutRow(title: "Toggle sidebar", keys: "⌘S"),
++        ShortcutRow(title: "Copy page URL", keys: "⇧⌘C"),
++        ShortcutRow(title: "Open Peek as tab", keys: "⌥⌘↩"),
++        ShortcutRow(title: "Switch Profile", keys: "⌃1–9"),
++        ShortcutRow(title: "History", keys: "⌘Y"),
++        ShortcutRow(title: "Downloads", keys: "⇧⌘J"),
++        ShortcutRow(title: "Settings", keys: "⌘,"),
++    ]
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoRuntime/EssentialsRuntime.swift
+@@ -0,0 +1,13 @@
++import BatoCore
++import Foundation
++
++extension PageRuntime {
++    /// Selects the essential's tab in the current Workspace, or opens it there. The Workspace's
++    /// Profile decides which Chromium profile serves the page, so history and downloads
++    /// never cross Profiles.
++    @discardableResult
++    public func openEssential(_ essential: BrowserEssential) -> Bool {
++        if let existing = state.openEssentialEntry(essential) { return selectEntry(existing.id) }
++        return addTab(url: essential.url, title: essential.title)
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
+@@ -0,0 +1,443 @@
++import AppKit
++import BatoBlocking
++import BatoCore
++
++/// What the Settings window needs from the workspace. Every action runs against the current
++/// organization at the moment it is invoked, never against a snapshot held by the window.
++struct SettingsHooks {
++    let state: () -> BrowserState
++    let blockingService: (String) -> BlockingService?
++    let createProfile: () -> Void
++    let renameCurrentProfile: () -> Void
++    let importFromArc: () -> Void
++    let openEssential: (BrowserEssential) -> Void
++}
++
++/// Bato's own preferences, in a standalone window. Chromium's settings stay in their web page.
++@MainActor
++final class SettingsWindowController: NSObject, NSWindowDelegate {
++    private let hooks: SettingsHooks
++    private let window: NSWindow
++    private let sidebarStack = NSStackView()
++    private let contentHost = NSView()
++    private var sidebarButtons: [SettingsPane: SettingsSidebarButton] = [:]
++    private(set) var pane: SettingsPane = .profiles
++
++    init(hooks: SettingsHooks) {
++        self.hooks = hooks
++        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700),
++                          styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
++                          backing: .buffered, defer: false)
++        super.init()
++        window.title = "Settings"
++        window.titlebarAppearsTransparent = true
++        window.isReleasedWhenClosed = false
++        window.delegate = self
++        window.setFrameAutosaveName("BatoSettings")
++        buildLayout()
++    }
++
++    func show(_ pane: SettingsPane? = nil) {
++        if let pane { self.pane = pane }
++        reload()
++        if !window.isVisible { window.center() }
++        window.makeKeyAndOrderFront(nil)
++    }
++
++    /// Rebuilds the visible pane from current organization, e.g. after a Profile was created.
++    func reload() {
++        for (candidate, button) in sidebarButtons { button.isSelected = candidate == pane }
++        contentHost.subviews.forEach { $0.removeFromSuperview() }
++        let scroll = NSScrollView()
++        scroll.drawsBackground = false
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        // Legacy scrollers take 16 pt from the clip view, narrowing cards on long panes only.
++        scroll.scrollerStyle = .overlay
++        scroll.translatesAutoresizingMaskIntoConstraints = false
++        let document = FlippedView()
++        document.translatesAutoresizingMaskIntoConstraints = false
++        let column = NSStackView(views: [heading(pane.title)] + content(for: pane))
++        column.orientation = .vertical
++        column.alignment = .leading
++        column.spacing = 20
++        column.translatesAutoresizingMaskIntoConstraints = false
++        document.addSubview(column)
++        scroll.documentView = document
++        contentHost.addSubview(scroll)
++        NSLayoutConstraint.activate([
++            scroll.topAnchor.constraint(equalTo: contentHost.topAnchor),
++            scroll.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
++            scroll.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
++            scroll.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
++            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
++            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 60),
++            column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 40),
++            column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -40),
++            column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
++        ])
++        for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
++    }
++
++    // MARK: Layout
++
++    private func buildLayout() {
++        let rail = NSVisualEffectView()
++        rail.material = .sidebar
++        rail.blendingMode = .behindWindow
++        rail.state = .followsWindowActiveState
++        rail.translatesAutoresizingMaskIntoConstraints = false
++        sidebarStack.orientation = .vertical
++        sidebarStack.alignment = .leading
++        sidebarStack.spacing = 4
++        sidebarStack.translatesAutoresizingMaskIntoConstraints = false
++        for candidate in SettingsPane.allCases {
++            let button = SettingsSidebarButton(title: candidate.title, symbol: candidate.symbolName) { [weak self] in
++                self?.pane = candidate
++                self?.reload()
++            }
++            sidebarButtons[candidate] = button
++            sidebarStack.addArrangedSubview(button)
++            button.widthAnchor.constraint(equalTo: sidebarStack.widthAnchor).isActive = true
++        }
++        rail.addSubview(sidebarStack)
++        contentHost.translatesAutoresizingMaskIntoConstraints = false
++        let root = NSView()
++        root.addSubview(rail)
++        root.addSubview(contentHost)
++        window.contentView = root
++        NSLayoutConstraint.activate([
++            rail.topAnchor.constraint(equalTo: root.topAnchor),
++            rail.bottomAnchor.constraint(equalTo: root.bottomAnchor),
++            rail.leadingAnchor.constraint(equalTo: root.leadingAnchor),
++            rail.widthAnchor.constraint(equalToConstant: 270),
++            sidebarStack.topAnchor.constraint(equalTo: rail.topAnchor, constant: 60),
++            sidebarStack.leadingAnchor.constraint(equalTo: rail.leadingAnchor, constant: 14),
++            sidebarStack.trailingAnchor.constraint(equalTo: rail.trailingAnchor, constant: -14),
++            contentHost.topAnchor.constraint(equalTo: root.topAnchor),
++            contentHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
++            contentHost.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
++            contentHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
++        ])
++    }
++
++    private func content(for pane: SettingsPane) -> [NSView] {
++        switch pane {
++        case .profiles: profilesPane()
++        case .privacy: privacyPane()
++        case .importData: importPane()
++        case .shortcuts: shortcutsPane()
++        case .advanced: advancedPane()
++        }
++    }
++
++    // MARK: Panes
++
++    private func profilesPane() -> [NSView] {
++        let note = caption("Each Profile keeps its own history, downloads, logins, cookies and extensions.")
++        let rows = SettingsProfileRow.rows(from: hooks.state()).map { row -> NSView in
++            let action: NSView? = row.isCurrent ? SettingsPillButton(title: "Rename…") { [weak self] in
++                self?.hooks.renameCurrentProfile()
++            } : nil
++            return SettingsRow(leading: ColorDot(hex: row.colorHex), title: row.name, detail: row.detail, trailing: action)
++        }
++        let create = SettingsPillButton(title: "Create Profile…") { [weak self] in self?.hooks.createProfile() }
++        return [note, SettingsGroup(rows: rows), trailingAligned(create)]
++    }
++
++    private func privacyPane() -> [NSView] {
++        let state = hooks.state()
++        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
++              let service = hooks.blockingService(profile.id.uuidString) else {
++            return [caption("Content blocking starts with the browser engine and isn’t available yet.")]
++        }
++        let toggle = NSSwitch()
++        toggle.state = service.settings.enabled ? .on : .off
++        let handler = ActionTarget { [weak self, weak toggle] in
++            guard let toggle else { return }
++            if (try? service.setEnabled(toggle.state == .on)) == nil { toggle.state = toggle.state == .on ? .off : .on }
++            self?.reload()
++        }
++        toggle.target = handler
++        toggle.action = #selector(ActionTarget.fire)
++        toggle.setAccessibilityLabel("Block ads and trackers")
++        let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
++                                   title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
++                                   trailing: toggle, keeping: handler)
++        var views: [NSView] = [caption("Content blocking"), SettingsGroup(rows: [blocking])]
++        let exceptions = service.exceptions
++        views.append(caption(exceptions.isEmpty ? "No sites are excluded from blocking." : "Sites excluded from blocking"))
++        if !exceptions.isEmpty {
++            views.append(SettingsGroup(rows: exceptions.map { host in
++                SettingsRow(leading: nil, title: host, detail: nil, trailing: SettingsPillButton(title: "Remove") { [weak self] in
++                    try? service.removeException(host: host)
++                    self?.reload()
++                })
++            }))
++        }
++        return views
++    }
++
++    private func importPane() -> [NSView] {
++        let button = SettingsPillButton(title: "Import from Arc…") { [weak self] in self?.hooks.importFromArc() }
++        let row = SettingsRow(leading: SymbolTile(symbol: "square.and.arrow.down.fill", color: .systemBlue),
++                              title: "Arc", detail: "Pins, tabs and Spaces. You choose the file and preview the result first.",
++                              trailing: button)
++        return [caption("Bring your organization from another browser. Nothing in the other browser is changed."),
++                SettingsGroup(rows: [row])]
++    }
++
++    private func shortcutsPane() -> [NSView] {
++        [SettingsGroup(rows: ShortcutCatalog.rows.map { shortcut in
++            SettingsRow(leading: nil, title: shortcut.title, detail: nil, trailing: keyLabel(shortcut.keys))
++        })]
++    }
++
++    private func advancedPane() -> [NSView] {
++        let pages: [(BrowserEssential, String)] = [
++            (.history, "Browsing history for the current Profile."),
++            (.downloads, "Files downloaded in the current Profile."),
++            (.chromiumSettings, "Chromium’s own settings: search engine, passwords, site permissions and more."),
++        ]
++        let rows = pages.map { essential, detail in
++            SettingsRow(leading: nil, title: essential.title, detail: detail,
++                        trailing: SettingsPillButton(title: "Open") { [weak self] in self?.hooks.openEssential(essential) })
++        }
++        return [caption("Browser pages"), SettingsGroup(rows: rows)]
++    }
++
++    // MARK: Pieces
++
++    private func heading(_ text: String) -> NSTextField {
++        let label = NSTextField(labelWithString: text)
++        label.font = .systemFont(ofSize: 26, weight: .semibold)
++        return label
++    }
++
++    private func caption(_ text: String) -> NSTextField {
++        let label = NSTextField(wrappingLabelWithString: text)
++        label.font = .systemFont(ofSize: 15)
++        label.textColor = .secondaryLabelColor
++        return label
++    }
++
++    private func keyLabel(_ keys: String) -> NSTextField {
++        let label = NSTextField(labelWithString: keys)
++        label.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
++        label.textColor = .secondaryLabelColor
++        return label
++    }
++
++    private func trailingAligned(_ view: NSView) -> NSView {
++        let container = NSStackView(views: [NSView(), view])
++        container.orientation = .horizontal
++        return container
++    }
++}
++
++// MARK: - Views
++
++private final class FlippedView: NSView {
++    override var isFlipped: Bool { true }
++}
++
++private final class ActionTarget: NSObject {
++    private let handler: () -> Void
++    init(_ handler: @escaping () -> Void) { self.handler = handler }
++    @objc func fire() { handler() }
++}
++
++private final class SettingsSidebarButton: NSControl {
++    private let handler: () -> Void
++    var isSelected = false { didSet { updateAppearance() } }
++    private let label: NSTextField
++    private let icon: NSImageView
++
++    init(title: String, symbol: String, handler: @escaping () -> Void) {
++        self.handler = handler
++        label = NSTextField(labelWithString: title)
++        icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.cornerRadius = 10
++        label.font = .systemFont(ofSize: 17, weight: .medium)
++        icon.symbolConfiguration = .init(pointSize: 17, weight: .regular)
++        let stack = NSStackView(views: [icon, label])
++        stack.spacing = 12
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(stack)
++        NSLayoutConstraint.activate([
++            heightAnchor.constraint(equalToConstant: 44),
++            icon.widthAnchor.constraint(equalToConstant: 26),
++            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
++            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
++        ])
++        setAccessibilityElement(true)
++        setAccessibilityRole(.button)
++        setAccessibilityLabel(title)
++        updateAppearance()
++    }
++
++    /// The rail must work on the first click even while another window is key.
++    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
++    override func accessibilityPerformPress() -> Bool { handler(); return true }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++
++    override func mouseDown(with event: NSEvent) { handler() }
++    override func viewDidChangeEffectiveAppearance() { updateAppearance() }
++
++    private func updateAppearance() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.cgColor : nil
++        }
++        let color: NSColor = isSelected ? .white : .labelColor
++        label.textColor = color
++        icon.contentTintColor = color
++        setAccessibilityValue(isSelected ? "selected" : nil)
++    }
++}
++
++private final class SettingsGroup: NSView {
++    init(rows: [NSView]) {
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.cornerRadius = 16
++        let stack = NSStackView()
++        stack.orientation = .vertical
++        stack.spacing = 0
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        for (index, row) in rows.enumerated() {
++            if index > 0 {
++                let line = NSBox()
++                line.boxType = .separator
++                stack.addArrangedSubview(line)
++                line.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
++            }
++            stack.addArrangedSubview(row)
++            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
++        }
++        addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.topAnchor.constraint(equalTo: topAnchor),
++            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
++            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
++            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
++        ])
++        updateColors()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++
++    override func viewDidChangeEffectiveAppearance() { updateColors() }
++
++    private func updateColors() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
++        }
++    }
++}
++
++private final class SettingsRow: NSView {
++    private let keepAlive: AnyObject?
++
++    init(leading: NSView?, title: String, detail: String?, trailing: NSView?, keeping: AnyObject? = nil) {
++        keepAlive = keeping
++        super.init(frame: .zero)
++        let name = NSTextField(labelWithString: title)
++        name.font = .systemFont(ofSize: 17)
++        name.lineBreakMode = .byTruncatingTail
++        let text = NSStackView(views: [name])
++        text.orientation = .vertical
++        text.alignment = .leading
++        text.spacing = 4
++        if let detail {
++            let sub = NSTextField(wrappingLabelWithString: detail)
++            sub.font = .systemFont(ofSize: 14)
++            sub.textColor = .secondaryLabelColor
++            text.addArrangedSubview(sub)
++        }
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        text.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
++        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        trailing?.setContentHuggingPriority(.required, for: .horizontal)
++        trailing?.setContentCompressionResistancePriority(.required, for: .horizontal)
++        let row = NSStackView(views: [leading, text, trailing].compactMap { $0 })
++        row.spacing = 14
++        row.alignment = .centerY
++        row.distribution = .fill
++        row.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(row)
++        NSLayoutConstraint.activate([
++            row.topAnchor.constraint(equalTo: topAnchor, constant: 14),
++            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
++            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
++            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
++            heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
++        ])
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private final class SettingsPillButton: NSButton {
++    private let handlerTarget: ActionTarget
++
++    init(title: String, handler: @escaping () -> Void) {
++        handlerTarget = ActionTarget(handler)
++        super.init(frame: .zero)
++        self.title = title
++        bezelStyle = .rounded
++        controlSize = .large
++        font = .systemFont(ofSize: 15)
++        target = handlerTarget
++        action = #selector(ActionTarget.fire)
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private final class ColorDot: NSView {
++    init(hex: String) {
++        super.init(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
++        wantsLayer = true
++        layer?.cornerRadius = 9
++        layer?.backgroundColor = NSColor(hexString: hex).cgColor
++        translatesAutoresizingMaskIntoConstraints = false
++        widthAnchor.constraint(equalToConstant: 18).isActive = true
++        heightAnchor.constraint(equalToConstant: 18).isActive = true
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private final class SymbolTile: NSView {
++    init(symbol: String, color: NSColor) {
++        super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
++        wantsLayer = true
++        layer?.cornerRadius = 9
++        layer?.backgroundColor = color.cgColor
++        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
++        image.contentTintColor = .white
++        image.symbolConfiguration = .init(pointSize: 17, weight: .semibold)
++        image.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(image)
++        translatesAutoresizingMaskIntoConstraints = false
++        NSLayoutConstraint.activate([
++            widthAnchor.constraint(equalToConstant: 36), heightAnchor.constraint(equalToConstant: 36),
++            image.centerXAnchor.constraint(equalTo: centerXAnchor), image.centerYAnchor.constraint(equalTo: centerYAnchor),
++        ])
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
++private extension NSColor {
++    convenience init(hexString: String) {
++        let digits = hexString.dropFirst()
++        let value = UInt32(digits, radix: 16) ?? 0xB47879
++        self.init(srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255,
++                  blue: CGFloat(value & 0xFF) / 255, alpha: 1)
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
+@@ -0,0 +1,86 @@
++import AppKit
++import BatoCore
++
++/// Visual constants and fills for sidebar rows and sheets. Fills are translucent label colors so
++/// they read as a lift on any workspace tint, in light and dark, rather than a second palette.
++enum SidebarStyle {
++    static let rowHeight: CGFloat = 36
++    static let tileHeight: CGFloat = 58
++    static let tilesPerRow = 3
++    static var rowFont: NSFont { NSFont.systemFont(ofSize: 14) }
++    static var actionFont: NSFont { NSFont.systemFont(ofSize: 13) }
++    static let commandBarRadius: CGFloat = 22
++    static let commandBarRowHeight: CGFloat = 48
++    static let commandBarSize = NSSize(width: 680, height: 470)
++
++    static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
++        if selected { return NSColor.labelColor.withAlphaComponent(0.16) }
++        if hovered { return NSColor.labelColor.withAlphaComponent(0.07) }
++        if tile { return NSColor.labelColor.withAlphaComponent(0.12) }
++        return nil
++    }
++
++    /// Lifts a stored workspace colour to a hue that survives blending: muted picks like slate blue or
++    /// sage would otherwise vanish into the dark system background. Truly neutral greys stay neutral.
++    static func vivid(_ accent: NSColor) -> NSColor {
++        guard let rgb = accent.usingColorSpace(.sRGB) else { return accent }
++        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
++        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
++        let boosted = saturation < 0.05 ? saturation : max(saturation, 0.6)
++        return NSColor(hue: hue, saturation: boosted, brightness: max(brightness, 0.8), alpha: alpha)
++    }
++
++    /// Top and bottom of the sidebar gradient. The workspace colour dominates, as in Dia; the system
++    /// background only keeps the result from going neon. Increase Contrast keeps a lighter wash so text
++    /// stays legible, but still clearly coloured.
++    static func tint(_ accent: NSColor, dark: Bool, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
++        let base = NSColor.windowBackgroundColor
++        let hue = vivid(accent)
++        if highContrast {
++            return (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
++                    base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
++        }
++        let body = dark ? (hue.blended(withFraction: 0.35, of: .black) ?? hue) : hue
++        let top = base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base
++        let bottom = base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base
++        return (top, bottom)
++    }
++
++    /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
++    /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.
++    @MainActor
++    static func letterIcon(for title: String, url: URL, size: CGFloat) -> NSImage {
++        let spec = FaviconFallback.spec(title: title, url: url)
++        let color = NSColor(hue: spec.hue, saturation: 0.5, brightness: 0.62, alpha: 1)
++        let letter = spec.letter
++        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
++            color.setFill()
++            NSBezierPath(roundedRect: rect, xRadius: size * 0.28, yRadius: size * 0.28).fill()
++            let attributes: [NSAttributedString.Key: Any] = [
++                .font: NSFont.systemFont(ofSize: size * 0.55, weight: .semibold), .foregroundColor: NSColor.white]
++            let text = NSAttributedString(string: letter, attributes: attributes)
++            let textSize = text.size()
++            text.draw(at: NSPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2))
++            return true
++        }
++    }
++
++    /// Sizes a sheet to its content so short forms do not end in blank space.
++    @MainActor
++    static func fitSheet(_ window: NSWindow, to stack: NSView, horizontalInset: CGFloat = 20, verticalInset: CGFloat = 18) {
++        window.contentView?.layoutSubtreeIfNeeded()
++        let fitting = stack.fittingSize
++        window.setContentSize(NSSize(width: window.contentRect(forFrameRect: window.frame).width,
++                                     height: ceil(fitting.height + verticalInset * 2)))
++    }
++}
++
++/// Command bar results: a rounded inset selection instead of the full-width system bar.
++@MainActor
++final class RoundedRowView: NSTableRowView {
++    override func drawSelection(in dirtyRect: NSRect) {
++        guard selectionHighlightStyle != .none else { return }
++        NSColor.labelColor.withAlphaComponent(0.12).setFill()
++        NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 12, yRadius: 12).fill()
 +    }
 +}

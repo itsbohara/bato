@@ -123,4 +123,22 @@ final class CurrentPageNavigationTests: XCTestCase {
         let results = CommandBarResults.make(query: page.absoluteString, state: BrowserState.initial())
         XCTAssertEqual(Array(results.map(\.action).prefix(2)), [.open(page), .peek(page)])
     }
+
+    func testExactCommandNameOutranksWebSearch() {
+        let state = BrowserState.initial()
+        let results = CommandBarResults.make(query: "history", state: state)
+        XCTAssertEqual(results.first?.action, .command(.openHistory))
+        XCTAssertEqual(results.filter { $0.id == "command:openHistory" }.count, 1)
+        XCTAssertEqual(results[1].id, "destination")
+    }
+
+    func testTypingMovesSelectionToTopRowButArrowChoiceSurvivesRefreshOfSameQuery() {
+        let state = BrowserState.initial()
+        let first = CommandBarResults.make(query: "h", state: state)
+        let history = CommandBarResults.make(query: "history", state: state)
+        XCTAssertEqual(CommandBarSelection.rowAfterRefresh(previousID: first.last?.id, previousQuery: "h", query: "history", results: history), 0)
+        let kept = history[1].id
+        XCTAssertEqual(CommandBarSelection.rowAfterRefresh(previousID: kept, previousQuery: "history", query: "history", results: history), 1)
+        XCTAssertNil(CommandBarSelection.rowAfterRefresh(previousID: nil, previousQuery: "", query: "", results: []))
+    }
 }
