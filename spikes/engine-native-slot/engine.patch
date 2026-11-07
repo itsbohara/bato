@@ -159,7 +159,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,962 @@
+@@ -49,3 +49,1217 @@
  }
 
  }  // namespace cef
@@ -176,6 +176,12 @@
 +#include "cef/libcef/browser/chrome/chrome_browser_host_impl.h"
 +#include "cef/include/internal/bato_native_slot.h"
 +#include "chrome/app/chrome_command_ids.h"
++#include "base/scoped_observation.h"
++#include "base/time/time.h"
++#include "chrome/browser/download/download_item_model.h"
++#include "chrome/browser/profiles/profile.h"
++#include "components/download/public/common/download_item.h"
++#include "content/public/browser/download_manager.h"
 +#include "chrome/browser/lifetime/browser_shutdown.h"
 +#include "chrome/browser/ui/browser_commands.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -651,6 +657,254 @@
 +}
 +@end
 +
++
++// Downloads. One watcher per in-progress-at-creation download of each regular Profile that
++// owns a slot window. Dangerous downloads stay held by Chromium; the client decides
++// keep or discard through the action export. Chromium's own bubble is suppressed
++// separately, so nothing here depends on its models.
++namespace {
++BatoDownloadCallbacksV1 g_download_callbacks = {};
++constexpr base::TimeDelta kDownloadProgressInterval = base::Milliseconds(250);
++
++std::string DownloadProfileKey(Profile* profile) {
++  const std::string name = profile->GetPath().BaseName().AsUTF8Unsafe();
++  return name == "Default" ? std::string() : name;
++}
++
++int32_t DownloadWarning(download::DownloadItem* item) {
++  if (item->GetState() != download::DownloadItem::IN_PROGRESS) return 0;
++  if (item->IsInsecure()) return 2;
++  switch (item->GetDangerType()) {
++    case download::DOWNLOAD_DANGER_TYPE_PROMPT_FOR_SCANNING:
++    case download::DOWNLOAD_DANGER_TYPE_PROMPT_FOR_LOCAL_PASSWORD_SCANNING:
++      return 3;
++    default:
++      return item->IsDangerous() ? 1 : 0;
++  }
++}
++
++int32_t DownloadStateCode(download::DownloadItem* item) {
++  switch (item->GetState()) {
++    case download::DownloadItem::IN_PROGRESS: return item->IsPaused() ? 1 : 0;
++    case download::DownloadItem::COMPLETE: return 2;
++    case download::DownloadItem::CANCELLED: return 4;
++    default: return 3;
++  }
++}
++
++class DownloadProfile;
++class WatchedDownload final : public download::DownloadItem::Observer {
++ public:
++  WatchedDownload(DownloadProfile* owner, std::string key, download::DownloadItem* item)
++      : owner_(owner), key_(std::move(key)), item_(item) {
++    observation_.Observe(item);
++  }
++  download::DownloadItem* item() const { return item_; }
++  void Emit(bool force);
++  void OnDownloadUpdated(download::DownloadItem*) override { Emit(false); }
++  void OnDownloadRemoved(download::DownloadItem*) override;
++  void OnDownloadDestroyed(download::DownloadItem*) override;
++ private:
++  struct Shape {
++    int32_t state = -1, can_resume = -1, exists = -1, warning = -1;
++    std::string filename;
++    bool operator==(const Shape&) const = default;
++  };
++  DownloadProfile* owner_;
++  const std::string key_;
++  raw_ptr<download::DownloadItem> item_;
++  base::ScopedObservation<download::DownloadItem, download::DownloadItem::Observer> observation_{this};
++  base::TimeTicks last_emit_;
++  Shape last_shape_;
++};
++
++class DownloadProfile final : public content::DownloadManager::Observer {
++ public:
++  DownloadProfile(Profile* profile, std::string key)
++      : profile_(profile), key_(std::move(key)), manager_(profile->GetDownloadManager()) {
++    manager_->AddObserver(this);
++    std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> existing;
++    manager_->GetAllDownloads(&existing);
++    for (auto item : existing) Watch(item);
++  }
++  ~DownloadProfile() override {
++    if (manager_) manager_->RemoveObserver(this);
++  }
++  const std::string& key() const { return key_; }
++  content::DownloadManager* manager() const { return manager_; }
++  void Replay() {
++    for (auto& [id, watch] : watched_) watch->Emit(true);
++  }
++  void Forget(const std::string& id) { watched_.erase(id); }
++  void OnDownloadCreated(content::DownloadManager*, download::DownloadItem* item) override { Watch(item); }
++  void ManagerGoingDown(content::DownloadManager*) override;
++ private:
++  void Watch(download::DownloadItem* item) {
++    // History items load as finished: they stay in chrome://downloads, not the sidebar.
++    if (item->GetState() != download::DownloadItem::IN_PROGRESS || item->IsTransient() ||
++        watched_.contains(item->GetGuid())) return;
++    auto watch = std::make_unique<WatchedDownload>(this, key_, item);
++    auto* raw = watch.get();
++    watched_[item->GetGuid()] = std::move(watch);
++    raw->Emit(true);
++  }
++  Profile* const profile_;
++  const std::string key_;
++  raw_ptr<content::DownloadManager> manager_;
++  std::map<std::string, std::unique_ptr<WatchedDownload>> watched_;
++};
++
++auto& DownloadProfiles() {
++  static base::NoDestructor<std::map<Profile*, std::unique_ptr<DownloadProfile>>> profiles;
++  return *profiles;
++}
++
++void WatchedDownload::Emit(bool force) {
++  if (!g_download_callbacks.upserted) return;
++  const std::string name = item_->GetTargetFilePath().empty()
++      ? item_->GetFileNameToReportUser().AsUTF8Unsafe()
++      : item_->GetTargetFilePath().BaseName().AsUTF8Unsafe();
++  Shape shape;
++  shape.state = DownloadStateCode(item_);
++  shape.can_resume = item_->CanResume() ? 1 : 0;
++  shape.exists = item_->GetFileExternallyRemoved() ? 0 : 1;
++  shape.warning = DownloadWarning(item_);
++  shape.filename = name;
++  const auto now = base::TimeTicks::Now();
++  if (!force && shape == last_shape_ && now - last_emit_ < kDownloadProgressInterval) return;
++  last_emit_ = now;
++  last_shape_ = shape;
++  const std::string id = item_->GetGuid();
++  const std::string path = (item_->GetState() == download::DownloadItem::COMPLETE
++                                ? item_->GetFullPath() : item_->GetTargetFilePath()).AsUTF8Unsafe();
++  BatoDownloadInfoV1 info = {};
++  info.size = sizeof(info);
++  info.profile_key = key_.c_str();
++  info.id = id.c_str();
++  info.filename = name.c_str();
++  info.path = path.c_str();
++  info.received_bytes = item_->GetReceivedBytes();
++  info.total_bytes = item_->GetTotalBytes() > 0 ? item_->GetTotalBytes() : -1;
++  info.bytes_per_second = item_->CurrentSpeed();
++  info.state = shape.state;
++  info.can_resume = shape.can_resume;
++  info.file_exists = shape.exists;
++  info.warning = shape.warning;
++  g_download_callbacks.upserted(g_download_callbacks.context, &info);
++}
++
++void WatchedDownload::OnDownloadRemoved(download::DownloadItem*) {
++  if (g_download_callbacks.removed) {
++    const std::string id = item_->GetGuid();
++    g_download_callbacks.removed(g_download_callbacks.context, key_.c_str(), id.c_str());
++  }
++}
++
++void WatchedDownload::OnDownloadDestroyed(download::DownloadItem*) {
++  const std::string id = item_->GetGuid();
++  observation_.Reset();
++  item_ = nullptr;
++  owner_->Forget(id);  // Deletes this.
++}
++
++void DownloadProfile::ManagerGoingDown(content::DownloadManager*) {
++  manager_->RemoveObserver(this);
++  manager_ = nullptr;
++  watched_.clear();
++  auto self = DownloadProfiles().find(profile_);
++  if (self != DownloadProfiles().end()) {
++    // Erasing destroys this; nothing may touch members afterwards.
++    auto owned = std::move(self->second);
++    DownloadProfiles().erase(self);
++  }
++}
++
++void WatchDownloads(Profile* profile) {
++  if (!g_download_callbacks.upserted || !profile || profile->IsOffTheRecord() ||
++      DownloadProfiles().contains(profile)) return;
++  const std::string key = DownloadProfileKey(profile);
++  DownloadProfiles()[profile] = std::make_unique<DownloadProfile>(profile, key);
++  fprintf(stderr, "{\"event\":\"native-downloads-watching\",\"profile_key\":\"%s\"}\n", key.c_str());
++}
++
++download::DownloadItem* FindDownload(const std::string& key, const std::string& id) {
++  for (auto& [profile, watched] : DownloadProfiles()) {
++    if (watched->key() == key && watched->manager()) return watched->manager()->GetDownloadByGuid(id);
++  }
++  return nullptr;
++}
++}  // namespace
++
++extern "C" CEF_EXPORT int bato_native_slot_register_download_callbacks_v1(
++    const BatoDownloadCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_download_callbacks.version ||
++      g_slot_registration_closed || (CefContext::Get() && CefContext::Get()->initialized()) ||
++      !callbacks || callbacks->size != sizeof(BatoDownloadCallbacksV1) ||
++      callbacks->version != 1 || !callbacks->upserted || !callbacks->removed) return 0;
++  g_download_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_download_snapshot_v1(void) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || !g_download_callbacks.upserted) return 0;
++  for (const auto& [view, state] : Slots()) WatchDownloads(view->browser()->GetProfile());
++  // Replay may reach client code; walk a copy of the keys, not the live map.
++  std::vector<Profile*> profiles;
++  for (const auto& [profile, watched] : DownloadProfiles()) profiles.push_back(profile);
++  for (Profile* profile : profiles) {
++    auto found = DownloadProfiles().find(profile);
++    if (found != DownloadProfiles().end()) found->second->Replay();
++  }
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_download_action_v1(
++    const char* profile_key, const char* id, int action) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || !profile_key || !id) return 0;
++  download::DownloadItem* item = FindDownload(profile_key, id);
++  if (!item) return 0;
++  const bool in_progress = item->GetState() == download::DownloadItem::IN_PROGRESS;
++  const int32_t warning = DownloadWarning(item);
++  switch (action) {
++    case 0:
++      if (!in_progress || item->IsPaused() || warning) return 0;
++      item->Pause();
++      return 1;
++    case 1:
++      if (!item->CanResume() || warning) return 0;
++      item->Resume(true);
++      return 1;
++    case 2:
++      if (!in_progress || warning) return 0;
++      item->Cancel(true);
++      return 1;
++    case 3:
++      if (item->GetState() != download::DownloadItem::COMPLETE ||
++          item->GetFileExternallyRemoved()) return 0;
++      item->OpenDownload();
++      return 1;
++    case 4:
++      if (item->GetFullPath().empty() && item->GetTargetFilePath().empty()) return 0;
++      item->ShowDownloadInShell();
++      return 1;
++    case 5:
++      if (in_progress && !item->IsPaused()) return 0;
++      item->Remove();
++      return 1;
++    case 6: {
++      if (!warning) return 0;
++      DownloadItemModel model(item);
++      if (warning == 3) model.CompleteSafeBrowsingScan();
++      if (item->IsInsecure()) item->ValidateInsecureDownload();
++      else item->ValidateDangerousDownload();
++      return 1;
++    }
++    case 7:
++      if (!warning) return 0;
++      item->Remove();
++      return 1;
++    default:
++      return 0;
++  }
++}
 +extern "C" CEF_EXPORT int bato_native_slot_register_v1(
 +    const BatoNativeSlotCallbacksV1* callbacks) {
 +  if (!NSThread.isMainThread || g_slot_callbacks.version ||
@@ -1063,6 +1317,7 @@
 +          view->browser()->GetTabStripModel(), state.token);
 +    }
 +    ObserveWindowNotifications(view, state);
++    WatchDownloads(view->browser()->GetProfile());
 +    fprintf(stderr, "{\"event\":\"native-slot-attached\",\"token\":%llu}\n", (unsigned long long)state.token);
 +    // Successful ownership changes the normal-window tabstrip layout policy.
 +    // Recompute through BrowserView rather than mutating the strip directly.
@@ -1861,7 +2116,7 @@
 
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,174 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -1989,6 +2244,49 @@
 +} BatoPeekInteractionCallbacksV1;
 +CEF_EXPORT int bato_native_slot_register_peek_interaction_callbacks_v1(
 +    const BatoPeekInteractionCallbacksV1* callbacks);
++// Downloads. Separate tables and exports so every earlier table keeps its exact v1 size.
++// Register once on the main thread before CefInitialize. Callbacks run on the CEF UI
++// thread, possibly inside a download or tab-model mutation: clients must copy every
++// string during the call and defer real work. Only this session's downloads are
++// reported; history items stay in chrome://downloads.
++// state: 0 in progress, 1 paused, 2 completed, 3 failed (interrupted or blocked), 4 cancelled.
++// warning: 0 none, 1 dangerous, 2 insecure, 3 needs a scan decision (for example a
++// password-protected archive). A warned download is held by Chromium until it is kept
++// (action 6) or discarded (action 7); the engine never keeps one by itself.
++typedef struct BatoDownloadInfoV1 {
++  size_t size;               // sizeof(BatoDownloadInfoV1)
++  // The Profile directory name under the cache root: empty for the launch Profile
++  // (<root>/Default), otherwise the key Swift gave that Profile's window.
++  const char* profile_key;
++  const char* id;            // DownloadItem::GetGuid(), stable for the item's life
++  const char* filename;      // basename of the target, or the suggested name until chosen
++  const char* path;          // GetFullPath() when complete, else the target path; "" before known
++  int64_t received_bytes;
++  int64_t total_bytes;       // -1 unknown
++  int64_t bytes_per_second;  // 0 unknown
++  int32_t state;
++  int32_t can_resume;        // 1 when CanResume() (failed or paused)
++  int32_t file_exists;       // 0 when completed but the file was moved or deleted
++  int32_t warning;
++} BatoDownloadInfoV1;
++typedef struct BatoDownloadCallbacksV1 {
++  size_t size;
++  uint32_t version;          // 1
++  void* context;
++  // Creation, progress, state change, completion, failure, cancellation: one snapshot
++  // callback. Progress is throttled to about 4 per second per item; any change of state,
++  // warning, name or resumability is delivered immediately.
++  void (*upserted)(void* context, const BatoDownloadInfoV1* info);
++  // Removed from history, by the remove or discard action, or from chrome://downloads.
++  void (*removed)(void* context, const char* profile_key, const char* id);
++} BatoDownloadCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_download_callbacks_v1(const BatoDownloadCallbacksV1* callbacks);
++// Replays every watched download of every live Profile through upserted. Main thread.
++CEF_EXPORT int bato_native_slot_download_snapshot_v1(void);
++// action: 0 pause, 1 resume, 2 cancel, 3 open, 4 show in Finder, 5 remove (file untouched),
++// 6 keep a warned download, 7 discard a warned download (removes it and its partial file).
++// Returns 1 when accepted; 0 for an unknown id or Profile or an action invalid for the state.
++CEF_EXPORT int bato_native_slot_download_action_v1(const char* profile_key, const char* id, int action);
 +#ifdef __cplusplus
 +}
 +#endif
@@ -2452,3 +2750,100 @@
      gfx::Size new_size(bounds.width(), tab_widget_height_);
      browser_view_->tab_overlay_widget()->SetSize(new_size);
      browser_view_->tab_overlay_view()->SetSize(new_size);
+--- a/chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.cc
++++ b/chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.cc
+@@ -11,6 +11,7 @@
+ #include <optional>
+ #include <string>
+
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/i18n/number_formatting.h"
+ #include "base/location.h"
+@@ -76,6 +77,11 @@
+ #include "ui/views/view_class_properties.h"
+ #include "ui/views/widget/widget.h"
+
++#include "cef/libcef/features/features.h"
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++#include "cef/libcef/browser/chrome/browser_util.h"
++#endif
++
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/ui/fullscreen_util_mac.h"
+ #endif
+@@ -430,6 +436,24 @@
+   return badge;
+ }
+
++}  // namespace
++
++namespace {
++// Bato windows list downloads in their own sidebar: no toolbar button, bubble or
++// started animation. The manager, history and chrome://downloads are untouched.
++bool SidebarShowsDownloads(const BrowserView* browser_view) {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  // Not NativeSidebarOwnsTabs: a recent download from the last session shows the button
++  // while the window is created, before its sidebar attaches.
++  return browser_view &&
++         base::CommandLine::ForCurrentProcess()->HasSwitch("bato-workspace-state") &&
++         browser_view->browser()->GetType() ==
++             BrowserWindowInterface::Type::TYPE_NORMAL &&
++         !cef::NativeSlotRefused(browser_view);
++#else
++  return false;
++#endif
++}
+ }  // namespace
+
+ // static
+@@ -476,6 +500,9 @@
+ }
+
+ void DownloadToolbarUIController::Show() {
++  if (SidebarShowsDownloads(browser_view_)) {
++    return;
++  }
+   auto* container = GetPinnedToolbarActions(browser_view_);
+   if (!container) {
+     return;
+@@ -507,6 +534,9 @@
+
+ void DownloadToolbarUIController::UpdateDownloadIcon(
+     const IconUpdateInfo& updates) {
++  if (SidebarShowsDownloads(browser_view_)) {
++    return;
++  }
+   // Whether to update the icon after processing any changes.
+   bool update_icon = false;
+
+@@ -591,6 +621,9 @@
+ }
+
+ bool DownloadToolbarUIController::ShouldShowExclusiveAccessBubble() const {
++  if (SidebarShowsDownloads(browser_view_)) {
++    return false;
++  }
+   if (!IsFullscreenWithParentViewHidden()) {
+     return false;
+   }
+@@ -618,6 +651,9 @@
+ // we do not show the partial view. If the partial view is already showing,
+ // there is nothing to do here, the controller should update the partial view.
+ void DownloadToolbarUIController::ShowDetails() {
++  if (SidebarShowsDownloads(browser_view_)) {
++    return;
++  }
+   if (bubble_delegate_ || pending_bubble_) {
+     return;
+   }
+@@ -947,6 +983,9 @@
+ void DownloadToolbarUIController::ShowBubble(
+     DownloadBubbleMode mode,
+     std::optional<ContentId> content_id) {
++  if (SidebarShowsDownloads(browser_view_)) {
++    return;
++  }
+   // Requests for a complete (i.e. non-partial) window override requests for a
+   // partial window.
+   if (!pending_bubble_ || mode == DownloadBubbleMode::kComplete) {

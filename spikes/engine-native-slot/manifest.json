@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "5fc41fb05a07493ef644f51b6bb4ec8321739b1603df3f4d8d68cf44df6ef2a9",
+  "patch_sha256": "a113a9276c846d8e658b7d4a55fd6561e92329359492d38477bd28636c628f5e",
   "files": [
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "fbcedc364bcbece1f9e9ca7815c5111e9f43f07d0f9cbe9c8a374c3570409a64"
+      "patched_sha256": "ceedd4ecc45fad0ff18b7049e05fbcb36a3ea8db5b6f8d857f81f0c07116b090"
     },
     {
       "root": "cef",
@@ -80,7 +80,7 @@
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "b2ad41787a298cccda2d0b21c7ac1af14deffed23d79d2a60189962ef12b6ff3"
+      "patched_sha256": "6ff1d1c4b11e206d996b2e8a029920e57c0eecfb1870f38409fe184f70a97230"
     },
     {
       "root": "cef",
@@ -123,6 +123,12 @@
       "path": "chrome/browser/ui/views/frame/immersive_mode_controller_mac.mm",
       "original_sha256": "505ada676906417a12e9da25ae6fcfbc17dd839ece49f03da7df411471c4b86b",
       "patched_sha256": "2e85689e40014af93397eb6f89d440bf081eb70b97db350e1dcef2d284fc91bd"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.cc",
+      "original_sha256": "377c47e8a556d09ca0527bae49efc3ef1e639838356e08c6abeb9d104f8045e9",
+      "patched_sha256": "09196ced4fce511018859578f540e86269dfbbe5038d2372fc38dcd48044052d"
     }
   ]
 }

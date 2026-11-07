@@ -125,6 +125,49 @@ typedef struct BatoPeekInteractionCallbacksV1 {
 } BatoPeekInteractionCallbacksV1;
 CEF_EXPORT int bato_native_slot_register_peek_interaction_callbacks_v1(
     const BatoPeekInteractionCallbacksV1* callbacks);
+// Downloads. Separate tables and exports so every earlier table keeps its exact v1 size.
+// Register once on the main thread before CefInitialize. Callbacks run on the CEF UI
+// thread, possibly inside a download or tab-model mutation: clients must copy every
+// string during the call and defer real work. Only this session's downloads are
+// reported; history items stay in chrome://downloads.
+// state: 0 in progress, 1 paused, 2 completed, 3 failed (interrupted or blocked), 4 cancelled.
+// warning: 0 none, 1 dangerous, 2 insecure, 3 needs a scan decision (for example a
+// password-protected archive). A warned download is held by Chromium until it is kept
+// (action 6) or discarded (action 7); the engine never keeps one by itself.
+typedef struct BatoDownloadInfoV1 {
+  size_t size;               // sizeof(BatoDownloadInfoV1)
+  // The Profile directory name under the cache root: empty for the launch Profile
+  // (<root>/Default), otherwise the key Swift gave that Profile's window.
+  const char* profile_key;
+  const char* id;            // DownloadItem::GetGuid(), stable for the item's life
+  const char* filename;      // basename of the target, or the suggested name until chosen
+  const char* path;          // GetFullPath() when complete, else the target path; "" before known
+  int64_t received_bytes;
+  int64_t total_bytes;       // -1 unknown
+  int64_t bytes_per_second;  // 0 unknown
+  int32_t state;
+  int32_t can_resume;        // 1 when CanResume() (failed or paused)
+  int32_t file_exists;       // 0 when completed but the file was moved or deleted
+  int32_t warning;
+} BatoDownloadInfoV1;
+typedef struct BatoDownloadCallbacksV1 {
+  size_t size;
+  uint32_t version;          // 1
+  void* context;
+  // Creation, progress, state change, completion, failure, cancellation: one snapshot
+  // callback. Progress is throttled to about 4 per second per item; any change of state,
+  // warning, name or resumability is delivered immediately.
+  void (*upserted)(void* context, const BatoDownloadInfoV1* info);
+  // Removed from history, by the remove or discard action, or from chrome://downloads.
+  void (*removed)(void* context, const char* profile_key, const char* id);
+} BatoDownloadCallbacksV1;
+CEF_EXPORT int bato_native_slot_register_download_callbacks_v1(const BatoDownloadCallbacksV1* callbacks);
+// Replays every watched download of every live Profile through upserted. Main thread.
+CEF_EXPORT int bato_native_slot_download_snapshot_v1(void);
+// action: 0 pause, 1 resume, 2 cancel, 3 open, 4 show in Finder, 5 remove (file untouched),
+// 6 keep a warned download, 7 discard a warned download (removes it and its partial file).
+// Returns 1 when accepted; 0 for an unknown id or Profile or an action invalid for the state.
+CEF_EXPORT int bato_native_slot_download_action_v1(const char* profile_key, const char* id, int action);
 #ifdef __cplusplus
 }
 #endif
