@@ -13,6 +13,7 @@ public final class OrganizationStore<State: Codable> {
         case fileOperationFailed
         case snapshotUnavailable
         case snapshotStale
+        case migrationFailed
 
         public var errorDescription: String? {
             switch self {
@@ -24,6 +25,7 @@ public final class OrganizationStore<State: Codable> {
             case .fileOperationFailed: "Organization could not be read or saved."
             case .snapshotUnavailable: "No saved snapshot is available to restore."
             case .snapshotStale: "Organization changed after this snapshot, so it can no longer be restored."
+            case .migrationFailed: "Organization could not be upgraded. The previous document and its pre-migration snapshot were kept."
             }
         }
     }
@@ -135,6 +137,28 @@ public final class OrganizationStore<State: Codable> {
             knownBytes = saved
             return restored
         }
+    }
+
+    public static var preMigrationSnapshotName: String { "pre-migration" }
+
+    /// Upgrades the loaded document in one step, keeping the previous one as the pre-migration snapshot.
+    /// If `transform` or the save fails, the committed document is untouched.
+    public func migrate(_ transform: (State) throws -> State) throws -> State {
+        guard loaded else { throw StoreError.loadRequired }
+        guard let knownBytes else { throw StoreError.snapshotUnavailable }
+        let current: State
+        do { current = try JSONDecoder().decode(State.self, from: knownBytes) }
+        catch { throw StoreError.corruptState }
+        let migrated: State
+        do { migrated = try transform(current) }
+        catch { throw StoreError.migrationFailed }
+        _ = try saveWithSnapshot(migrated, named: Self.preMigrationSnapshotName)
+        return migrated
+    }
+
+    /// The committed document's bytes, read under the store lock so a backup never sees a half-written save.
+    public func committedDocument() throws -> Data? {
+        try withLock { try readDocument() }
     }
 
     private func snapshotURL(_ name: String) -> URL {
