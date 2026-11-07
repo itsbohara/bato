@@ -1,0 +1,41 @@
+# Crash recovery, backups and migration safety (Swift layer)
+
+Implements the DESIGN.md "Crash recovery", "Backup" and "Failure and recovery behavior" rows (store migration, renderer termination) in Swift. No engine change; nothing here has been built into the host or launched yet. Verified by unit tests only (`logs/recovery-swift-tests.log`: 147 XCTest + 153 Swift Testing, all passing).
+
+## Design
+
+**Abnormal termination.** `RecoveryCoordinator` (BatoPersistence/SessionRecovery.swift) writes `<state>/session.marker` (pid, start time, confirmed flag, failure count) in `beginLaunch()` before the organization is read, and removes it in `endCleanly()`. A surviving marker means the last session did not quit cleanly. An unreadable marker counts as abnormal. A marker whose pid is alive (and started after boot, via `kern.boottime`) is `.concurrent`: left alone, no judgement.
+
+**Last-session offer, no crash loop.** The recovery snapshot is `backups/last-session` and is replaced only by `confirmLaunch`, which the controller calls 10 s after a launch started successfully and only after any recovery sheet is resolved. A launch that crashes first never overwrites it, so the snapshot of the last good session survives any number of crashing launches. Nothing relaunches or restores automatically; the sheet only offers. `consecutiveFailures` (reset by a confirmed launch) adds a "happened N times in a row" line from the second failure. The sheet is shown before `runtime.start()`, so a page that crashes at launch is not loaded until the user has chosen. Choices: Keep Current (default) or Restore Session Start. The organization is persisted on every change, so "Keep Current" already is the crashed session's state; the snapshot is the state at the start of that session.
+
+**Snapshots.** `BackupStore` (BatoPersistence/BackupStore.swift) holds `backups/daily-YYYY-MM-DD/` (7 kept, one per calendar day) and `backups/last-session/`. Each has `organization.json`, `files/blocking/<ProfileKey>/blocking-settings.json` and a `manifest.json` written last; copies are built in a staging directory and swapped in, and a copy without a manifest is never listed. The organization bytes come from the new `OrganizationStore.committedDocument()` (read under the store's file lock). Blocking settings are collected by `RecoveryController.settingsFiles()` (one atomic file per Profile, copied individually, so a settings write racing a backup is not locked against).
+
+**Pre-import / pre-migration: reused, not duplicated.** `ImportTransaction` already writes `organization.snapshot.pre-import.json` through `OrganizationStore.saveWithSnapshot`. `BackupStore.list()` lists those single-slot snapshot files (pre-import, pre-migration, pre-restore) and `prune()` keeps only the newest of them, which gives the "one pre-import/pre-migration snapshot" bound. Pruning happens at launch confirmation, so a second snapshot can exist until then. Import undo is unchanged.
+
+**Store migration error.** New `OrganizationStore.migrate(_:)` runs a transform and commits through `saveWithSnapshot(named: "pre-migration")`. Transform failure throws `migrationFailed`, a validation failure throws `invalidState`; both leave the document byte-identical, and a snapshot written before a late failure is kept. An unsupported stored version already fails `load()` with `invalidState` without touching the file (tested). When the controller cannot open organization, `NativeWorkspaceController.unavailableMessage(for:)` replaces the old text: the reason, "nothing was changed", and where to copy a backup from. Today's v1 to v2 schema change happens at write time (nesting), so nothing calls `migrate` yet; it is the seam for the first load-time migration.
+
+**Restore.** `BackupStore.restore(_:into:)` decodes the backup, saves it through `saveWithSnapshot(named: "pre-restore")` (invalid or corrupt backups change nothing), then writes the settings files. Paths from a backup are validated (no `..`, absolute, empty or odd segments; never written through a link). Settings > Advanced > "Restore from backup…" stages the choice (`recovery-pending-restore.json`) and offers Quit; the next launch applies it in `NativeWorkspaceController.init` before blocking reads anything, because live pages are bound to the current organization. The launch sheet restores in place instead, which `PageRuntime.adoptRestoredOrganization` allows only while no page is live (then it may change the selection; `adoptSavedOrganization` keeps its stricter rule for import). After a restore `BlockingProfiles.reloadSettings()` drops cached settings (new `BlockingSettingsStore.reload()`).
+
+**Renderer crash.** The native bridge has no renderer-terminated event. Chromium keeps the page's browser (sad tab with its own Reload). If a page is lost or fails to recreate, the runtime sees `unloaded` or `creationFailed`, and neither touches organization; only an engine `closed` removes a temporary entry. `lostRendererOrEnginePageNeverRemovesASidebarEntry` pins this (pinned and temporary entries, state byte-equal, re-selecting recreates a new generation).
+
+## Files
+
+New: `app/Sources/BatoPersistence/BackupStore.swift`, `SessionRecovery.swift`, `app/Sources/BatoBrowserUI/RecoveryController.swift`; tests `BatoPersistenceTests/BackupStoreTests.swift`, `RecoveryTests.swift`.
+Edited: `OrganizationStore.swift` (migrate, committedDocument, migrationFailed), `PageRuntime.swift` (adoptRestoredOrganization), `NativeWorkspaceController.swift` (launch order, offer, `prepareForQuit`, restore hook), `SettingsWindowController.swift` (Backup row), BatoBlocking reload (store, service, profiles), tests in `PageRuntimeTests.swift` and `BlockingSettingsStoreTests.swift`.
+`WorkspaceSlot.swift`: two lines only: the unavailable message, and `prepareForQuit()` when the last window slot detaches.
+Build wiring (client patch NOT regenerated): `client.json` source_mirrors and files (new entries use current hashes; existing hashes are stale for the edited files until `regenerate-workspace-client.py` runs), `client/compile_native_slot.py` file lists, staged `cef/BUILD.gn` inputs, and the changed mirrors were copied into the staged tree. All six modules were compile-checked at the client's flags (macOS 13 target, Swift 6, WMO) outside the engine build.
+
+## Needs real-host verification
+
+1. `kill -9` the browser, relaunch: the sheet appears; Keep Current opens the crashed organization; after 10 s a clean quit and relaunch shows no sheet.
+2. `kill -9` twice in a row, with the second before 10 s: the second sheet says it happened 2 times, and `backups/last-session` is byte-identical to its state before the first crash.
+3. Normal Quit via the app menu clears `session.marker`. No notification hook is proven: `NSApplication.willTerminateNotification` may not fire in the CEF quit path, so the last-slot detach also clears the marker. Check no sheet after a normal Quit, and that closing the last window while the process stays alive (keep-alive) does not leave a stale clean state.
+4. Sheet presentation over the engine window before the first page exists (the sheet blocks `runtime.start()`; engine anchor-lost/window-ready callbacks may still call `runtime.start()` underneath, in which case Restore Session Start reports that a page is already open and points to Settings).
+5. Settings > Advanced > Restore from backup…: pick an entry, Quit, relaunch, confirm organization and a Profile's blocking exceptions are restored and "Before last restore" is listed.
+6. A daily backup appears under `<state>/backups` on first launch and again the next calendar day, with `files/blocking/<UUID>/blocking-settings.json` per Profile; only 7 remain.
+7. Kill a renderer process (`kill -9` on a Chromium helper): the sidebar entry stays and the Chromium sad tab offers Reload.
+8. The 232 pt "organization unavailable" text fits (plant an organization.json with `"version": 9`).
+
+## Known limits
+
+Engine data (cookies, credentials, extension state) is not backed up (DESIGN.md keeps that separate). Open pages are not restored, only organization; temporary tabs return at their last URL as before. Disk-full backup failures are logged with `NSLog` and not shown in the UI. Blocking filter lists are not backed up (they re-download). Restore points do not include the engine's per-Profile blocking counters.
