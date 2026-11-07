@@ -95,7 +95,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,59 @@
+@@ -2313,6 +2317,64 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -137,6 +137,11 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/RecoveryController.swift",
++      "tests/cefsimple/bato/BatoCore/DownloadsModel.swift",
++      "tests/cefsimple/bato/BatoCore/DownloadsController.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/DownloadsButton.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/DownloadsSidebar.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -155,7 +160,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2393,19 @@
+@@ -2336,12 +2398,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -178,7 +183,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1378 @@
+@@ -0,0 +1,1393 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -1390,6 +1395,16 @@
 +    if (command_id == cef_id_for_command_id_name(kSelectTabNames[i])) command = 21 + i;
 +  }
 +  if (command_id == cef_id_for_command_id_name("IDC_SELECT_LAST_TAB")) command = 29;
++  // Tab menu items act on Chrome's tab strip, which holds only the pages Bato created.
++  // New Tab to the Right is New Tab, Pin Tab pins or unpins the selection, and the
++  // grouping and window-moving items have no sidebar meaning, so they are consumed.
++  if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB_TO_RIGHT")) command = 1;
++  if (command_id == cef_id_for_command_id_name("IDC_DUPLICATE_TAB")) command = 31;
++  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_PIN_TAB")) command = 32;
++  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_CLOSE_OTHER_TABS")) command = 33;
++  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_CLOSE_TABS_TO_RIGHT")) command = 34;
++  if (command_id == cef_id_for_command_id_name("IDC_MOVE_TAB_TO_NEW_WINDOW") ||
++      command_id == cef_id_for_command_id_name("IDC_WINDOW_GROUP_TAB")) command = 99;
 +  fprintf(stderr, "{\"event\":\"workspace-chrome-command\",\"id\":%d,\"command\":%d}\n", command_id, command);
 +  if (!command || !browser || !browser->IsValid()) return false;
 +  for (const auto& [token, slot] : WorkspaceSlots()) {
@@ -1543,6 +1558,11 @@
 +                                 SelectWorkspacePage, CloseWorkspacePage,
 +                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId,
 +                                 ScheduleWorkspaceSelection, sidebar_geometry, focus);
++    // Links that macOS hands the app while it starts arrive before any window exists.
++    if (auto install_router = reinterpret_cast<void (*)()>(
++            dlsym(RTLD_DEFAULT, "BatoSwiftInstallExternalURLRouter"))) {
++      install_router();
++    }
 +  }
 +  BatoNativeSlotCallbacksV1 callbacks = {};
 +  callbacks.size = sizeof(callbacks);
@@ -1598,7 +1618,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,50 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -1621,7 +1641,8 @@
 +              '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
 +              '-I', str(modules)]
 +    objects = []
-+    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift']),
++    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
++                                        'DownloadsModel.swift', 'DownloadsController.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -1629,7 +1650,8 @@
 +                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
-+                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift'])]:
++                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
++                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -1807,7 +1829,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,949 @@
+@@ -0,0 +1,989 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2210,7 +2232,6 @@
 +            root.addSubview(controller.root, positioned: .below, relativeTo: nil)
 +            root.needsLayout = true
 +            workspaceHost.mounted = self
-+            ExternalURLRouter.install()
 +            let router = WorkspaceKeyRouter(token: token, root: root,
 +                                            toggle: { workspaceHost.mounted?.toggle() ?? false },
 +                                            dismissPeek: { [weak controller] in
@@ -2411,14 +2432,19 @@
 +
 +/// Chromium's application delegate opens links that macOS hands the app (Bato as the default browser)
 +/// as a tab in its own tab strip, which Bato does not track. Web links go to the Bato workspace
-+/// instead; anything else, and any link before the workspace exists, keeps Chromium's behaviour.
++/// instead; anything else keeps Chromium's behaviour. The hook is installed before the workspace
++/// exists, so links that start the app, or arrive while a sheet is open, wait here until the
++/// workspace can take them.
 +@MainActor private enum ExternalURLRouter {
 +    private static var installed = false
++    private static var pending: [URL] = []
++    private static var retry: Timer?
++    private static let patience = 60
 +
 +    static func install() {
-+        guard !installed, let delegate = NSApp.delegate else { return }
++        guard !installed, let delegateClass = NSClassFromString("AppController") else { return }
 +        let selector = NSSelectorFromString("application:openURLs:")
-+        guard let method = class_getInstanceMethod(type(of: delegate), selector) else {
++        guard let method = class_getInstanceMethod(delegateClass, selector) else {
 +            fputs("{\"event\":\"external-url-routing-unavailable\"}\n", stderr)
 +            return
 +        }
@@ -2426,7 +2452,7 @@
 +        let chromium = method_getImplementation(method)
 +        let route: @convention(block) (AnyObject, AnyObject, NSArray) -> Void = { object, application, urls in
 +            let links = urls.compactMap { $0 as? URL }
-+            if MainActor.assumeIsolated({ open(links) }) { return }
++            if MainActor.assumeIsolated({ accept(links) }) { return }
 +            typealias Original = @convention(c) (AnyObject, Selector, AnyObject, NSArray) -> Void
 +            unsafeBitCast(chromium, to: Original.self)(object, selector, application, urls)
 +        }
@@ -2434,12 +2460,44 @@
 +        fputs("{\"event\":\"external-url-routing-installed\"}\n", stderr)
 +    }
 +
-+    private static func open(_ urls: [URL]) -> Bool {
-+        guard let controller = workspaceHost.controller, !urls.isEmpty else { return false }
-+        let opened = urls.filter { controller.openExternalURL($0) }.count
-+        fputs("{\"event\":\"external-url-routed\",\"requested\":\(urls.count),\"opened\":\(opened)}\n", stderr)
-+        return opened == urls.count
++    /// Takes plain web links now or queues them. Anything else is left to Chromium.
++    private static func accept(_ urls: [URL]) -> Bool {
++        guard !urls.isEmpty, urls.allSatisfy(NativeWorkspaceController.isExternalWebLink) else { return false }
++        pending += urls
++        deliver()
++        if !pending.isEmpty { waitForWorkspace() }
++        return true
 +    }
++
++    private static func deliver() {
++        guard let controller = workspaceHost.controller else { return }
++        let requested = pending.count
++        pending.removeAll { controller.openExternalURL($0) }
++        fputs("{\"event\":\"external-url-routed\",\"requested\":\(requested),\"opened\":\(requested - pending.count)}\n", stderr)
++    }
++
++    private static func waitForWorkspace() {
++        guard retry == nil else { return }
++        var attempts = 0
++        retry = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
++            MainActor.assumeIsolated {
++                attempts += 1
++                if !pending.isEmpty { deliver() }
++                if pending.isEmpty || attempts >= patience {
++                    if !pending.isEmpty { fputs("{\"event\":\"external-url-dropped\",\"count\":\(pending.count)}\n", stderr) }
++                    pending.removeAll()
++                    timer.invalidate()
++                    retry = nil
++                }
++            }
++        }
++    }
++}
++
++/// Called from the client's registration, before the application runs, so links that launch the app are seen.
++@_cdecl("BatoSwiftInstallExternalURLRouter")
++@MainActor public func installExternalURLRouter() {
++    ExternalURLRouter.install()
 +}
 +
 +@_cdecl("BatoSwiftWorkspaceCommand")
@@ -2453,6 +2511,10 @@
 +    if command == 6 { controller.openEssential(.downloads) }
 +    if command == 7 { controller.showSettings() }
 +    if command == 8 { controller.reopenClosedTab() }
++    if command == 31 { controller.duplicateSelection() }
++    if command == 32 { controller.togglePinSelection() }
++    if command == 33 { controller.closeOtherTemporaryTabs() }
++    if command == 34 { controller.closeTemporaryTabsBelowSelection() }
 +    if command == 30 { controller.openSiteSettings() }
 +    if command == 9 { controller.selectAdjacentPage(step: 1) }
 +    if command == 10 { controller.selectAdjacentPage(step: -1) }
@@ -3487,7 +3549,7 @@
    void OnLoadError(CefRefPtr<CefBrowser> browser,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1185 @@
+@@ -0,0 +1,1193 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4288,6 +4350,14 @@
 +        return entries[((index + step) % count + count) % count].id
 +    }
 +
++    /// The page to select once `id` closes: the next one in sidebar order, else the previous one.
++    public func entryID(afterClosing id: UUID, skipping unavailable: (UUID) -> Bool = { _ in false }) -> UUID? {
++        let entries = visibleEntries
++        guard let index = entries.firstIndex(where: { $0.id == id }) else { return nil }
++        let candidates = entries[(index + 1)...] + entries[..<index].reversed()
++        return candidates.first { !unavailable($0.id) }?.id
++    }
++
 +    /// Cmd-1 to Cmd-8 pick that page in sidebar order; Cmd-9 always picks the last one.
 +    public func entryID(forShortcut number: Int) -> UUID? {
 +        let entries = visibleEntries
@@ -4968,7 +5038,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,868 @@
 +import Foundation
 +import BatoCore
 +
@@ -5419,6 +5489,46 @@
 +        return true
 +    }
 +
++    /// Opens a second temporary tab on the selected page's address.
++    @discardableResult
++    public func duplicateSelectedEntry() -> Bool {
++        guard let entry = selectedEntry else { lastError = .invalidCommand; return false }
++        return addTab(url: entry.lastURL, title: entry.title)
++    }
++
++    /// Pins a temporary tab; a pin or Favorite goes back to being a temporary tab.
++    @discardableResult
++    public func togglePinSelectedEntry() -> Bool {
++        guard let entry = selectedEntry else { lastError = .invalidCommand; return false }
++        return entry.kind == .temporary ? pinEntry(entry.id) : makeTemporary(entry.id)
++    }
++
++    /// Closes the current Workspace's temporary tabs other than the selection. Saved pages stay.
++    @discardableResult
++    public func closeOtherTemporaryTabs() -> Bool {
++        closeTemporaryTabs { entries, selected in entries.filter { $0.id != selected } }
++    }
++
++    /// Closes the temporary tabs below the selection in sidebar order. Saved pages stay.
++    @discardableResult
++    public func closeTemporaryTabsBelowSelection() -> Bool {
++        closeTemporaryTabs { entries, selected in
++            guard let index = entries.firstIndex(where: { $0.id == selected }) else { return [] }
++            return Array(entries[(index + 1)...])
++        }
++    }
++
++    private var selectedEntry: PageEntry? {
++        state.currentWorkspace.activeEntryID.flatMap { id in state.visibleEntries.first { $0.id == id } }
++    }
++
++    private func closeTemporaryTabs(_ choose: ([PageEntry], UUID) -> [PageEntry]) -> Bool {
++        guard let selected = state.currentWorkspace.activeEntryID else { lastError = .invalidCommand; return false }
++        let doomed = choose(state.visibleEntries, selected).filter { $0.kind == .temporary }
++        guard !doomed.isEmpty else { return false }
++        return doomed.map { closeEntry($0.id) }.contains(true)
++    }
++
 +    /// Selects the page one step from the selection in sidebar order. Ignores a page that is closing.
 +    @discardableResult
 +    public func selectAdjacentEntry(step: Int) -> Bool {
@@ -5574,6 +5684,9 @@
 +        case let .selected(page):
 +            guard livePages[page.entryID] == page else { return }
 +            if state.currentWorkspace.activeEntryID == page.entryID { return }
++            // Chromium picks its own neighbour while the selected page closes; the close handler
++            // below picks the sidebar neighbour instead.
++            if selectedPageIsClosing { return }
 +            // Chromium already focused this visible split side. Re-presenting
 +            // would restore a persisted divider before its pending change event.
 +            let isCurrentSplitSide = state.currentSplit?.contains(page.entryID) == true
@@ -5590,7 +5703,7 @@
 +        case .peekEnded:
 +            return
 +        case .selectionCleared:
-+            guard state.currentWorkspace.activeEntryID != nil else { return }
++            guard state.currentWorkspace.activeEntryID != nil, !selectedPageIsClosing else { return }
 +            let accepted = change { candidate in
 +                guard let index = candidate.workspaces.firstIndex(where: { $0.id == candidate.activeWorkspaceID }) else {
 +                    throw PageRuntimeError.invalidCommand
@@ -5638,6 +5751,10 @@
 +            var candidate = state
 +            let closedTab = candidate.closedTab(for: page.entryID)
 +            let active = candidate.activeWorkspaceID
++            let successor = state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
++                ? state.entryID(afterClosing: page.entryID, skipping: { [pendingClose] id in
++                    pendingClose.contains { $0.entryID == id } })
++                : nil
 +            if let owner = candidate.workspaces.first(where: {
 +                $0.profileID == page.profileID && ($0.pins + $0.tabs).contains(where: { $0.id == page.entryID })
 +            }) {
@@ -5648,16 +5765,25 @@
 +            do {
 +                try candidate.closeEntry(page.entryID)
 +                try candidate.activateWorkspace(active)
++                if let successor { try? candidate.selectEntry(successor) }
 +                if save(candidate), let closedTab {
 +                    closedTabs[closedTab.profileID, default: ClosedTabStack()].push(closedTab)
 +                }
 +            } catch {
 +                lastError = .invalidCommand
 +            }
-+            engine.select(selectedLivePage)
++            if successor != nil, state.currentWorkspace.activeEntryID == successor {
++                _ = showSelection()
++            } else {
++                engine.select(selectedLivePage)
++            }
 +            // A failed save leaves the committed entry unloaded. Do not recreate
 +            // it automatically after a physical engine close.
 +        }
++    }
++
++    private var selectedPageIsClosing: Bool {
++        selectedLivePage.map { pendingClose.contains($0) } ?? false
 +    }
 +
 +    private var selectedLivePage: LivePage? {
@@ -5903,7 +6029,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2223 @@
+@@ -0,0 +1,2256 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -5933,6 +6059,8 @@
 +    private let sidebarToggle = NSButton(frame: .zero)
 +    private var trafficLightClearanceWidth: NSLayoutConstraint?
 +    private let profileButton = NSButton(frame: .zero)
++    private var downloadsSidebar: DownloadsSidebar?
++    private var downloadsProfileKey: (UUID) -> String = { $0.uuidString }
 +    private let switcherButton = NSButton(frame: .zero)
 +    private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
@@ -6058,6 +6186,10 @@
 +    public func reopenClosedTab() { performWhenIdle({ runtime.reopenClosedTab() }) }
 +    public func selectAdjacentPage(step: Int) { performWhenIdle({ runtime.selectAdjacentEntry(step: step) }) }
 +    public func selectPage(shortcut number: Int) { performWhenIdle({ runtime.selectEntry(forShortcut: number) }) }
++    public func duplicateSelection() { performWhenIdle({ runtime.duplicateSelectedEntry() }) }
++    public func togglePinSelection() { performWhenIdle({ runtime.togglePinSelectedEntry() }) }
++    public func closeOtherTemporaryTabs() { performWhenIdle({ runtime.closeOtherTemporaryTabs() }) }
++    public func closeTemporaryTabsBelowSelection() { performWhenIdle({ runtime.closeTemporaryTabsBelowSelection() }) }
 +
 +    private func performWhenIdle(_ command: () -> Bool) {
 +        guard commandBar == nil, pageFinder == nil, root.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -6089,8 +6221,7 @@
 +    /// Workspace, brought to the front. Anything but a plain HTTP(S) address is refused.
 +    @discardableResult
 +    public func openExternalURL(_ url: URL) -> Bool {
-+        guard canOpenBrowserPage, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
-+              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
++        guard canOpenBrowserPage, Self.isExternalWebLink(url) else { return false }
 +        runtime.endPeek()
 +        let before = runtime.state
 +        let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
@@ -6098,6 +6229,11 @@
 +        root.window?.makeKeyAndOrderFront(nil)
 +        render()
 +        return true
++    }
++
++    public static func isExternalWebLink(_ url: URL) -> Bool {
++        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
++        return url.host?.isEmpty == false && url.user == nil && url.password == nil
 +    }
 +
 +    private var canOpenBrowserPage: Bool {
@@ -6318,7 +6454,7 @@
 +        sidebarToggle.setAccessibilityIdentifier("bato-toggle-sidebar")
 +        sidebarToggle.toolTip = "Toggle sidebar (⌘S)"
 +        sidebarToggle.isHidden = requestSidebarToggle == nil
-+        let trafficLightClearance = NSView()
++        let trafficLightClearance = WindowDragView()
 +        let clearanceWidth = trafficLightClearance.widthAnchor.constraint(equalToConstant: SidebarMetrics.trafficLightClearance)
 +        clearanceWidth.isActive = true
 +        self.trafficLightClearanceWidth = clearanceWidth
@@ -6332,12 +6468,14 @@
 +        switcherButton.lineBreakMode = .byTruncatingTail
 +        switcherButton.imagePosition = .imageLeading
 +        switcherButton.imageHugsTitle = true
-+        switcherButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        switcherButton.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 +        switcherButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        switcherButton.setAccessibilityLabel("Current workspace")
 +        switcherButton.setAccessibilityHelp("Opens the workspace and Profile switcher. Control-1 to Control-9 switch directly.")
 +        switcherButton.setAccessibilityIdentifier("bato-space-name")
-+        let heading = NSStackView(views: [trafficLightClearance, switcherButton, sidebarToggle, workspaceActions])
++        let dragSpace = WindowDragView()
++        dragSpace.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let heading = NSStackView(views: [trafficLightClearance, switcherButton, dragSpace, sidebarToggle, workspaceActions])
 +        heading.orientation = .horizontal
 +        heading.alignment = .centerY
 +        heading.distribution = .fill
@@ -6461,6 +6599,18 @@
 +        scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 +    }
 +
++    /// Mounts the downloads button in the workspace footer row. `profileKey` maps a Profile to the key
++    /// the engine tags its downloads with.
++    public func attachDownloads(_ controller: DownloadsController, profileKey: @escaping (UUID) -> String = { $0.uuidString }) {
++        guard downloadsSidebar == nil, let row = workspacePager.superview as? NSStackView else { return }
++        let sidebar = DownloadsSidebar(controller: controller)
++        downloadsSidebar = sidebar
++        downloadsProfileKey = profileKey
++        row.insertArrangedSubview(sidebar.button, at: row.arrangedSubviews.count - 1)
++        controller.onChange = { [weak sidebar] in sidebar?.refresh() }
++        render()
++    }
++
 +    private func configureIcon(_ button: NSButton, symbol: String, label: String) {
 +        button.title = ""
 +        button.image = sidebarSymbol(symbol, size: 13)
@@ -6564,6 +6714,7 @@
 +        profileButton.image = currentProfile.map { colorDot(workspaceColor(state.displayColor(of: $0))) }
 +        profileButton.toolTip = "Profile: \(currentProfile?.name ?? "")"
 +        profileButton.setAccessibilityValue(currentProfile?.name ?? "")
++        downloadsSidebar?.setProfileKey(downloadsProfileKey(workspace.profileID))
 +        pageFinder?.refresh()
 +        let peek = runtime.peekSession.preview
 +        peekRow.isHidden = peek == nil
@@ -7531,6 +7682,12 @@
 +    return image.withSymbolConfiguration(.init(pointSize: size, weight: weight)) ?? image
 +}
 +
++/// Empty space in the top row; the sidebar covers the window's own drag area.
++@MainActor
++private final class WindowDragView: NSView {
++    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
++}
++
 +@MainActor
 +private final class SidebarEntries: NSStackView {
 +    // NSClipView uses the document's coordinate direction when its height is
@@ -7560,6 +7717,8 @@
 +    var copyLink: (() -> Bool)?
 +    var switchToWorkspace: ((Int) -> Bool)?
 +    override var isFlipped: Bool { true }
++    // Clicks on empty sidebar space reach this view, and the sidebar covers the window's own drag area.
++    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 +    override func isAccessibilityElement() -> Bool { true }
 +    override func accessibilityRole() -> NSAccessibility.Role? { .group }
 +    override func accessibilityLabel() -> String? { "Bato workspace sidebar" }
@@ -11236,7 +11395,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,88 @@
 +import AppKit
 +import BatoCore
 +
@@ -11251,6 +11410,8 @@
 +    static let commandBarRadius: CGFloat = 22
 +    static let commandBarRowHeight: CGFloat = 48
 +    static let commandBarSize = NSSize(width: 680, height: 470)
++    static let downloadsPopoverWidth: CGFloat = 320
++    static let downloadsPopoverMaxListHeight: CGFloat = 360
 +
 +    static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
 +        if selected { return NSColor.labelColor.withAlphaComponent(0.16) }
@@ -12146,3 +12307,560 @@
  	<key>CFBundleVersion</key>
  	<string>${VERSION_SHORT}</string>
  	<key>CFBundleShortVersionString</key>
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/DownloadsModel.swift
+@@ -0,0 +1,150 @@
++import Foundation
++
++public enum DownloadState: String, Codable, Equatable, Sendable {
++    case inProgress, paused, completed, failed, cancelled
++
++    public var isActive: Bool { self == .inProgress || self == .paused }
++}
++
++/// One engine download as last reported. `id` is stable for the item's life within its Profile.
++public struct DownloadItem: Identifiable, Equatable, Sendable {
++    public var id: String
++    /// Names the engine Profile the download belongs to; never shown.
++    public var profileKey: String
++    public var filename: String
++    /// Final location once known; empty while the engine has not chosen one.
++    public var path: String
++    public var receivedBytes: Int64
++    /// -1 when the server sent no length.
++    public var totalBytes: Int64
++    public var bytesPerSecond: Int64
++    public var state: DownloadState
++    public var canResume: Bool
++    public var fileExists: Bool
++
++    public init(id: String, profileKey: String, filename: String, path: String = "", receivedBytes: Int64 = 0,
++                totalBytes: Int64 = -1, bytesPerSecond: Int64 = 0, state: DownloadState = .inProgress,
++                canResume: Bool = false, fileExists: Bool = true) {
++        self.id = id
++        self.profileKey = profileKey
++        self.filename = filename
++        self.path = path
++        self.receivedBytes = receivedBytes
++        self.totalBytes = totalBytes
++        self.bytesPerSecond = bytesPerSecond
++        self.state = state
++        self.canResume = canResume
++        self.fileExists = fileExists
++    }
++
++    /// nil when the total is unknown, so the UI shows an indeterminate state.
++    public var fraction: Double? {
++        guard totalBytes > 0 else { return nil }
++        return min(1, max(0, Double(receivedBytes) / Double(totalBytes)))
++    }
++
++    public var fileURL: URL? { path.isEmpty ? nil : URL(fileURLWithPath: path) }
++    public var canOpen: Bool { state == .completed && fileExists && fileURL != nil }
++}
++
++public enum DownloadEvent: Equatable, Sendable {
++    /// A snapshot: both a new download and any later change arrive as an upsert, so the
++    /// engine never has to distinguish created from updated for correctness.
++    case upsert(DownloadItem)
++    case removed(profileKey: String, id: String)
++}
++
++public enum DownloadAction: Equatable, Sendable {
++    case pause, resume, cancel, open, showInFinder, remove
++}
++
++/// What the sidebar needs from the engine. Events arrive on the main actor; actions return whether
++/// the engine accepted them (an unknown or finished id is refused, never an error).
++@MainActor
++public protocol DownloadsEngine: AnyObject {
++    var onEvent: ((DownloadEvent) -> Void)? { get set }
++    /// Replays every known download of every Profile as `upsert`, for a host that attaches late.
++    func requestSnapshot()
++    @discardableResult
++    func perform(_ action: DownloadAction, id: String, profileKey: String) -> Bool
++}
++
++/// Per-Profile download lists, newest first. Pure state; the controller owns engine wiring.
++public struct DownloadsModel: Equatable, Sendable {
++    private var itemsByProfile: [String: [DownloadItem]] = [:]
++    /// Profiles with a download that finished since the list was last viewed.
++    private var unseen: Set<String> = []
++
++    public init() {}
++
++    public func items(for profileKey: String) -> [DownloadItem] { itemsByProfile[profileKey] ?? [] }
++    public func activeItems(for profileKey: String) -> [DownloadItem] { items(for: profileKey).filter { $0.state.isActive } }
++    public func hasUnseenFinish(for profileKey: String) -> Bool { unseen.contains(profileKey) }
++
++    public mutating func apply(_ event: DownloadEvent) {
++        switch event {
++        case .upsert(let item): upsert(item)
++        case .removed(let profileKey, let id): remove(profileKey: profileKey, id: id)
++        }
++    }
++
++    public mutating func markSeen(_ profileKey: String) { unseen.remove(profileKey) }
++
++    /// Drops finished items (completed, failed, cancelled) from the list only; files stay on disk.
++    public mutating func clearFinished(for profileKey: String) {
++        itemsByProfile[profileKey]?.removeAll { !$0.state.isActive }
++        if itemsByProfile[profileKey]?.isEmpty == true { itemsByProfile[profileKey] = nil }
++        unseen.remove(profileKey)
++    }
++
++    /// Combined progress of active downloads with a known size, nil when none can report one.
++    public func aggregateFraction(for profileKey: String) -> Double? {
++        let sized = activeItems(for: profileKey).filter { $0.totalBytes > 0 }
++        let total = sized.reduce(Int64(0)) { $0 + $1.totalBytes }
++        guard total > 0 else { return nil }
++        let received = sized.reduce(Int64(0)) { $0 + min($1.receivedBytes, $1.totalBytes) }
++        return Double(received) / Double(total)
++    }
++
++    private mutating func upsert(_ item: DownloadItem) {
++        var list = itemsByProfile[item.profileKey] ?? []
++        if let index = list.firstIndex(where: { $0.id == item.id }) {
++            if list[index].state.isActive, !item.state.isActive { unseen.insert(item.profileKey) }
++            list[index] = item
++        } else {
++            list.insert(item, at: 0)
++            if !item.state.isActive { unseen.insert(item.profileKey) }
++        }
++        itemsByProfile[item.profileKey] = list
++    }
++
++    private mutating func remove(profileKey: String, id: String) {
++        itemsByProfile[profileKey]?.removeAll { $0.id == id }
++        if itemsByProfile[profileKey]?.isEmpty == true {
++            itemsByProfile[profileKey] = nil
++            unseen.remove(profileKey)
++        }
++    }
++}
++
++public enum DownloadFormat {
++    /// "4.2 MB of 48 MB · 1.1 MB/s", "Done · 48 MB", "Paused", "Failed", "Cancelled".
++    public static func status(_ item: DownloadItem) -> String {
++        switch item.state {
++        case .completed:
++            if !item.fileExists { return "File moved or deleted" }
++            return item.totalBytes > 0 ? "Done · \(bytes(item.totalBytes))" : "Done"
++        case .failed: return item.canResume ? "Failed · can resume" : "Failed"
++        case .cancelled: return "Cancelled"
++        case .paused: return item.totalBytes > 0 ? "Paused · \(bytes(item.receivedBytes)) of \(bytes(item.totalBytes))" : "Paused"
++        case .inProgress:
++            var text = item.totalBytes > 0 ? "\(bytes(item.receivedBytes)) of \(bytes(item.totalBytes))" : bytes(item.receivedBytes)
++            if item.bytesPerSecond > 0 { text += " · \(bytes(item.bytesPerSecond))/s" }
++            return text
++        }
++    }
++
++    private static func bytes(_ count: Int64) -> String {
++        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/DownloadsController.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++/// Connects an engine to the per-Profile model and republishes changes to the sidebar.
++/// Actions go to the engine and the model changes only when its events say so.
++@MainActor
++public final class DownloadsController {
++    public private(set) var model = DownloadsModel()
++    public var onChange: (() -> Void)?
++    private let engine: DownloadsEngine
++
++    public init(engine: DownloadsEngine) {
++        self.engine = engine
++        engine.onEvent = { [weak self] event in self?.receive(event) }
++        engine.requestSnapshot()
++    }
++
++    public func receive(_ event: DownloadEvent) {
++        model.apply(event)
++        onChange?()
++    }
++
++    @discardableResult
++    public func perform(_ action: DownloadAction, on item: DownloadItem) -> Bool {
++        engine.perform(action, id: item.id, profileKey: item.profileKey)
++    }
++
++    public func markSeen(_ profileKey: String) {
++        model.markSeen(profileKey)
++        onChange?()
++    }
++
++    public func clearFinished(for profileKey: String) {
++        model.clearFinished(for: profileKey)
++        onChange?()
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/DownloadsButton.swift
+@@ -0,0 +1,56 @@
++import AppKit
++import BatoCore
++
++/// Sidebar footer button: a download arrow inside a progress ring that fills while downloads run,
++/// with a dot when one finished unseen. Hidden while the current Profile has no downloads, as in Arc.
++@MainActor
++final class DownloadsButton: NSButton {
++    var fraction: Double? { didSet { needsDisplay = true } }
++    var isActive = false { didSet { needsDisplay = true } }
++    var hasUnseenFinish = false { didSet { needsDisplay = true } }
++
++    init() {
++        super.init(frame: .zero)
++        title = ""
++        isBordered = false
++        bezelStyle = .recessed
++        imagePosition = .imageOnly
++        image = sidebarSymbol("arrow.down", size: 12, weight: .semibold)
++        contentTintColor = .secondaryLabelColor
++        focusRingType = .none
++        toolTip = "Downloads"
++        setAccessibilityLabel("Downloads")
++        setAccessibilityIdentifier("bato-downloads-button")
++        widthAnchor.constraint(equalToConstant: 28).isActive = true
++        heightAnchor.constraint(equalToConstant: 28).isActive = true
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override func draw(_ dirtyRect: NSRect) {
++        super.draw(dirtyRect)
++        let ring = bounds.insetBy(dx: 3.5, dy: 3.5)
++        let track = NSBezierPath(ovalIn: ring)
++        track.lineWidth = 1.5
++        NSColor.labelColor.withAlphaComponent(isActive ? 0.18 : 0.1).setStroke()
++        track.stroke()
++        if isActive {
++            NSColor.controlAccentColor.setStroke()
++            let arc = NSBezierPath()
++            let center = NSPoint(x: ring.midX, y: ring.midY)
++            if let fraction {
++                arc.appendArc(withCenter: center, radius: ring.width / 2, startAngle: 90,
++                              endAngle: 90 - 360 * CGFloat(fraction), clockwise: true)
++            } else {
++                arc.appendArc(withCenter: center, radius: ring.width / 2, startAngle: 90, endAngle: -30, clockwise: true)
++            }
++            arc.lineWidth = 1.5
++            arc.lineCapStyle = .round
++            arc.stroke()
++        }
++        if hasUnseenFinish {
++            NSColor.controlAccentColor.setFill()
++            NSBezierPath(ovalIn: NSRect(x: bounds.maxX - 9, y: bounds.maxY - 9, width: 6, height: 6)).fill()
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift
+@@ -0,0 +1,258 @@
++import AppKit
++import BatoCore
++
++/// The downloads list opened from the sidebar button: newest first, with progress, pause/resume,
++/// cancel, Show in Finder and drag-out of finished files. Rebuilt from the model on every change.
++@MainActor
++final class DownloadsPopover: NSObject, NSPopoverDelegate {
++    private let controller: DownloadsController
++    private let popover = NSPopover()
++    private let list = NSStackView()
++    private let emptyLabel = NSTextField(labelWithString: "No downloads yet")
++    private var profileKey = ""
++
++    var isShown: Bool { popover.isShown }
++
++    init(controller: DownloadsController) {
++        self.controller = controller
++        super.init()
++        popover.behavior = .transient
++        popover.delegate = self
++        popover.contentViewController = makeContent()
++    }
++
++    func toggle(from button: NSView, profileKey: String) {
++        if popover.isShown { popover.performClose(nil); return }
++        self.profileKey = profileKey
++        reload()
++        controller.markSeen(profileKey)
++        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
++    }
++
++    func reload() {
++        guard popover.isShown || list.arrangedSubviews.isEmpty else { return }
++        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
++        let items = controller.model.items(for: profileKey)
++        emptyLabel.isHidden = !items.isEmpty
++        for item in items {
++            let row = DownloadRow(item: item) { [weak self] action in self?.controller.perform(action, on: item) }
++            list.addArrangedSubview(row)
++            row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
++        }
++    }
++
++    func updateProfile(_ key: String) {
++        guard key != profileKey else { return }
++        profileKey = key
++        if popover.isShown { popover.performClose(nil) }
++    }
++
++    private func makeContent() -> NSViewController {
++        let heading = NSTextField(labelWithString: "Downloads")
++        heading.font = .systemFont(ofSize: 13, weight: .semibold)
++        let clear = NSButton(title: "Clear", target: self, action: #selector(clearFinished))
++        clear.isBordered = false
++        clear.font = .systemFont(ofSize: 12)
++        clear.contentTintColor = .secondaryLabelColor
++        clear.setAccessibilityIdentifier("bato-downloads-clear")
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let header = NSStackView(views: [heading, spacer, clear])
++        header.orientation = .horizontal
++
++        list.orientation = .vertical
++        list.alignment = .leading
++        list.spacing = 2
++        list.translatesAutoresizingMaskIntoConstraints = false
++        emptyLabel.font = .systemFont(ofSize: 12)
++        emptyLabel.textColor = .secondaryLabelColor
++        let flipped = FlippedView()
++        flipped.addSubview(list)
++        NSLayoutConstraint.activate([
++            list.leadingAnchor.constraint(equalTo: flipped.leadingAnchor),
++            list.trailingAnchor.constraint(equalTo: flipped.trailingAnchor),
++            list.topAnchor.constraint(equalTo: flipped.topAnchor),
++            list.bottomAnchor.constraint(equalTo: flipped.bottomAnchor)
++        ])
++        let scroll = NSScrollView()
++        scroll.drawsBackground = false
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.documentView = flipped
++        flipped.translatesAutoresizingMaskIntoConstraints = false
++        flipped.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
++
++        let content = NSStackView(views: [header, emptyLabel, scroll])
++        content.orientation = .vertical
++        content.alignment = .leading
++        content.spacing = 8
++        content.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 10, right: 12)
++        content.translatesAutoresizingMaskIntoConstraints = false
++        header.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
++        scroll.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
++
++        let host = NSViewController()
++        let view = NSView()
++        view.addSubview(content)
++        NSLayoutConstraint.activate([
++            content.leadingAnchor.constraint(equalTo: view.leadingAnchor),
++            content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
++            content.topAnchor.constraint(equalTo: view.topAnchor),
++            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
++            view.widthAnchor.constraint(equalToConstant: SidebarStyle.downloadsPopoverWidth),
++            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: SidebarStyle.downloadsPopoverMaxListHeight)
++        ])
++        let listHeight = scroll.heightAnchor.constraint(equalTo: flipped.heightAnchor)
++        listHeight.priority = .defaultHigh
++        listHeight.isActive = true
++        host.view = view
++        return host
++    }
++
++    @objc private func clearFinished() {
++        controller.clearFinished(for: profileKey)
++    }
++}
++
++private final class FlippedView: NSView {
++    override var isFlipped: Bool { true }
++}
++
++@MainActor
++private final class DownloadRow: NSView, NSDraggingSource {
++    private let item: DownloadItem
++    private let act: (DownloadAction) -> Void
++    private var tracking: NSTrackingArea?
++    private var hovered = false {
++        didSet {
++            layer?.backgroundColor = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false)?.cgColor
++            actions.isHidden = !hovered && !item.state.isActive
++        }
++    }
++    private let actions = NSStackView()
++
++    init(item: DownloadItem, act: @escaping (DownloadAction) -> Void) {
++        self.item = item
++        self.act = act
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.cornerRadius = 8
++        build()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override func updateTrackingAreas() {
++        super.updateTrackingAreas()
++        if let tracking { removeTrackingArea(tracking) }
++        tracking = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
++        addTrackingArea(tracking!)
++    }
++
++    override func mouseEntered(with event: NSEvent) { hovered = true }
++    override func mouseExited(with event: NSEvent) { hovered = false }
++
++    override func mouseDown(with event: NSEvent) {
++        if event.clickCount == 2, item.canOpen { act(.open) }
++    }
++
++    override func mouseDragged(with event: NSEvent) {
++        guard item.canOpen, let url = item.fileURL else { return }
++        let dragItem = NSDraggingItem(pasteboardWriter: url as NSURL)
++        dragItem.setDraggingFrame(NSRect(x: 0, y: 0, width: 32, height: 32), contents: NSWorkspace.shared.icon(forFile: url.path))
++        beginDraggingSession(with: [dragItem], event: event, source: self)
++    }
++
++    nonisolated func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
++        context == .outsideApplication ? .copy : []
++    }
++
++    private func build() {
++        let icon = NSImageView(image: item.fileURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
++            ?? NSWorkspace.shared.icon(for: .data))
++        icon.widthAnchor.constraint(equalToConstant: 28).isActive = true
++        icon.heightAnchor.constraint(equalToConstant: 28).isActive = true
++
++        let name = NSTextField(labelWithString: item.filename)
++        name.font = .systemFont(ofSize: 13, weight: .medium)
++        name.lineBreakMode = .byTruncatingMiddle
++        let status = NSTextField(labelWithString: DownloadFormat.status(item))
++        status.font = .systemFont(ofSize: 11)
++        status.textColor = item.state == .failed ? .systemRed : .secondaryLabelColor
++        status.lineBreakMode = .byTruncatingTail
++        var text: [NSView] = [name, status]
++        if item.state.isActive {
++            let bar = NSProgressIndicator()
++            bar.style = .bar
++            bar.controlSize = .small
++            bar.isIndeterminate = item.fraction == nil
++            bar.minValue = 0
++            bar.maxValue = 1
++            bar.doubleValue = item.fraction ?? 0
++            if bar.isIndeterminate { bar.startAnimation(nil) }
++            text.insert(bar, at: 1)
++        }
++        let textStack = NSStackView(views: text)
++        textStack.orientation = .vertical
++        textStack.alignment = .leading
++        textStack.spacing = 2
++        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        text.forEach { $0.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true }
++
++        actions.orientation = .horizontal
++        actions.spacing = 2
++        for spec in actionSpecs() {
++            let button = DownloadActionButton(symbol: spec.symbol, label: spec.label) { [act] in act(spec.action) }
++            actions.addArrangedSubview(button)
++        }
++        actions.isHidden = !item.state.isActive
++
++        let row = NSStackView(views: [icon, textStack, actions])
++        row.orientation = .horizontal
++        row.alignment = .centerY
++        row.spacing = 8
++        row.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
++        row.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(row)
++        NSLayoutConstraint.activate([
++            row.leadingAnchor.constraint(equalTo: leadingAnchor),
++            row.trailingAnchor.constraint(equalTo: trailingAnchor),
++            row.topAnchor.constraint(equalTo: topAnchor),
++            row.bottomAnchor.constraint(equalTo: bottomAnchor)
++        ])
++    }
++
++    private func actionSpecs() -> [(action: DownloadAction, symbol: String, label: String)] {
++        switch item.state {
++        case .inProgress: [(.pause, "pause.fill", "Pause"), (.cancel, "xmark", "Cancel")]
++        case .paused: [(.resume, "play.fill", "Resume"), (.cancel, "xmark", "Cancel")]
++        case .completed where item.canOpen: [(.showInFinder, "magnifyingglass", "Show in Finder"), (.remove, "xmark", "Remove from list")]
++        case .failed where item.canResume: [(.resume, "arrow.clockwise", "Resume"), (.remove, "xmark", "Remove from list")]
++        default: [(.remove, "xmark", "Remove from list")]
++        }
++    }
++}
++
++private final class DownloadActionButton: NSButton {
++    private let invoke: () -> Void
++
++    init(symbol: String, label: String, invoke: @escaping () -> Void) {
++        self.invoke = invoke
++        super.init(frame: .zero)
++        image = sidebarSymbol(symbol, size: 11, weight: .semibold)
++        imagePosition = .imageOnly
++        isBordered = false
++        bezelStyle = .recessed
++        contentTintColor = .secondaryLabelColor
++        toolTip = label
++        setAccessibilityLabel(label)
++        target = self
++        action = #selector(run)
++        widthAnchor.constraint(equalToConstant: 24).isActive = true
++        heightAnchor.constraint(equalToConstant: 24).isActive = true
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    @objc private func run() { invoke() }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/DownloadsSidebar.swift
+@@ -0,0 +1,42 @@
++import AppKit
++import BatoCore
++
++/// Owns the footer button and popover for one window. The host supplies the engine-facing controller
++/// and the key of the current Profile; the button shows only that Profile's downloads.
++@MainActor
++public final class DownloadsSidebar {
++    let button = DownloadsButton()
++    private let controller: DownloadsController
++    private let popover: DownloadsPopover
++    private var profileKey = ""
++
++    public init(controller: DownloadsController) {
++        self.controller = controller
++        popover = DownloadsPopover(controller: controller)
++        button.target = self
++        button.action = #selector(toggle)
++        refresh()
++    }
++
++    /// Call whenever the current Profile may have changed and from the controller's `onChange`.
++    public func setProfileKey(_ key: String) {
++        profileKey = key
++        popover.updateProfile(key)
++        refresh()
++    }
++
++    public func refresh() {
++        let model = controller.model
++        let active = model.activeItems(for: profileKey)
++        button.isHidden = model.items(for: profileKey).isEmpty
++        button.isActive = !active.isEmpty
++        button.fraction = model.aggregateFraction(for: profileKey)
++        button.hasUnseenFinish = model.hasUnseenFinish(for: profileKey) && !popover.isShown
++        popover.reload()
++    }
++
++    @objc private func toggle() {
++        popover.toggle(from: button, profileKey: profileKey)
++        refresh()
++    }
++}

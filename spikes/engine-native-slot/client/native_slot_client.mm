@@ -1209,6 +1209,16 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
     if (command_id == cef_id_for_command_id_name(kSelectTabNames[i])) command = 21 + i;
   }
   if (command_id == cef_id_for_command_id_name("IDC_SELECT_LAST_TAB")) command = 29;
+  // Tab menu items act on Chrome's tab strip, which holds only the pages Bato created.
+  // New Tab to the Right is New Tab, Pin Tab pins or unpins the selection, and the
+  // grouping and window-moving items have no sidebar meaning, so they are consumed.
+  if (command_id == cef_id_for_command_id_name("IDC_NEW_TAB_TO_RIGHT")) command = 1;
+  if (command_id == cef_id_for_command_id_name("IDC_DUPLICATE_TAB")) command = 31;
+  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_PIN_TAB")) command = 32;
+  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_CLOSE_OTHER_TABS")) command = 33;
+  if (command_id == cef_id_for_command_id_name("IDC_WINDOW_CLOSE_TABS_TO_RIGHT")) command = 34;
+  if (command_id == cef_id_for_command_id_name("IDC_MOVE_TAB_TO_NEW_WINDOW") ||
+      command_id == cef_id_for_command_id_name("IDC_WINDOW_GROUP_TAB")) command = 99;
   fprintf(stderr, "{\"event\":\"workspace-chrome-command\",\"id\":%d,\"command\":%d}\n", command_id, command);
   if (!command || !browser || !browser->IsValid()) return false;
   for (const auto& [token, slot] : WorkspaceSlots()) {
@@ -1362,6 +1372,11 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
                                  SelectWorkspacePage, CloseWorkspacePage,
                                  ActiveWorkspacePage, native_focus, WorkspaceCommandId,
                                  ScheduleWorkspaceSelection, sidebar_geometry, focus);
+    // Links that macOS hands the app while it starts arrive before any window exists.
+    if (auto install_router = reinterpret_cast<void (*)()>(
+            dlsym(RTLD_DEFAULT, "BatoSwiftInstallExternalURLRouter"))) {
+      install_router();
+    }
   }
   BatoNativeSlotCallbacksV1 callbacks = {};
   callbacks.size = sizeof(callbacks);

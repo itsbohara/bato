@@ -400,7 +400,6 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
             root.addSubview(controller.root, positioned: .below, relativeTo: nil)
             root.needsLayout = true
             workspaceHost.mounted = self
-            ExternalURLRouter.install()
             let router = WorkspaceKeyRouter(token: token, root: root,
                                             toggle: { workspaceHost.mounted?.toggle() ?? false },
                                             dismissPeek: { [weak controller] in
@@ -601,14 +600,19 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
 
 /// Chromium's application delegate opens links that macOS hands the app (Bato as the default browser)
 /// as a tab in its own tab strip, which Bato does not track. Web links go to the Bato workspace
-/// instead; anything else, and any link before the workspace exists, keeps Chromium's behaviour.
+/// instead; anything else keeps Chromium's behaviour. The hook is installed before the workspace
+/// exists, so links that start the app, or arrive while a sheet is open, wait here until the
+/// workspace can take them.
 @MainActor private enum ExternalURLRouter {
     private static var installed = false
+    private static var pending: [URL] = []
+    private static var retry: Timer?
+    private static let patience = 60
 
     static func install() {
-        guard !installed, let delegate = NSApp.delegate else { return }
+        guard !installed, let delegateClass = NSClassFromString("AppController") else { return }
         let selector = NSSelectorFromString("application:openURLs:")
-        guard let method = class_getInstanceMethod(type(of: delegate), selector) else {
+        guard let method = class_getInstanceMethod(delegateClass, selector) else {
             fputs("{\"event\":\"external-url-routing-unavailable\"}\n", stderr)
             return
         }
@@ -616,7 +620,7 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
         let chromium = method_getImplementation(method)
         let route: @convention(block) (AnyObject, AnyObject, NSArray) -> Void = { object, application, urls in
             let links = urls.compactMap { $0 as? URL }
-            if MainActor.assumeIsolated({ open(links) }) { return }
+            if MainActor.assumeIsolated({ accept(links) }) { return }
             typealias Original = @convention(c) (AnyObject, Selector, AnyObject, NSArray) -> Void
             unsafeBitCast(chromium, to: Original.self)(object, selector, application, urls)
         }
@@ -624,12 +628,44 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
         fputs("{\"event\":\"external-url-routing-installed\"}\n", stderr)
     }
 
-    private static func open(_ urls: [URL]) -> Bool {
-        guard let controller = workspaceHost.controller, !urls.isEmpty else { return false }
-        let opened = urls.filter { controller.openExternalURL($0) }.count
-        fputs("{\"event\":\"external-url-routed\",\"requested\":\(urls.count),\"opened\":\(opened)}\n", stderr)
-        return opened == urls.count
+    /// Takes plain web links now or queues them. Anything else is left to Chromium.
+    private static func accept(_ urls: [URL]) -> Bool {
+        guard !urls.isEmpty, urls.allSatisfy(NativeWorkspaceController.isExternalWebLink) else { return false }
+        pending += urls
+        deliver()
+        if !pending.isEmpty { waitForWorkspace() }
+        return true
     }
+
+    private static func deliver() {
+        guard let controller = workspaceHost.controller else { return }
+        let requested = pending.count
+        pending.removeAll { controller.openExternalURL($0) }
+        fputs("{\"event\":\"external-url-routed\",\"requested\":\(requested),\"opened\":\(requested - pending.count)}\n", stderr)
+    }
+
+    private static func waitForWorkspace() {
+        guard retry == nil else { return }
+        var attempts = 0
+        retry = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                attempts += 1
+                if !pending.isEmpty { deliver() }
+                if pending.isEmpty || attempts >= patience {
+                    if !pending.isEmpty { fputs("{\"event\":\"external-url-dropped\",\"count\":\(pending.count)}\n", stderr) }
+                    pending.removeAll()
+                    timer.invalidate()
+                    retry = nil
+                }
+            }
+        }
+    }
+}
+
+/// Called from the client's registration, before the application runs, so links that launch the app are seen.
+@_cdecl("BatoSwiftInstallExternalURLRouter")
+@MainActor public func installExternalURLRouter() {
+    ExternalURLRouter.install()
 }
 
 @_cdecl("BatoSwiftWorkspaceCommand")
@@ -643,6 +679,10 @@ private typealias OpenProfileWindow = @convention(c) (UnsafePointer<CChar>?, Int
     if command == 6 { controller.openEssential(.downloads) }
     if command == 7 { controller.showSettings() }
     if command == 8 { controller.reopenClosedTab() }
+    if command == 31 { controller.duplicateSelection() }
+    if command == 32 { controller.togglePinSelection() }
+    if command == 33 { controller.closeOtherTemporaryTabs() }
+    if command == 34 { controller.closeTemporaryTabsBelowSelection() }
     if command == 30 { controller.openSiteSettings() }
     if command == 9 { controller.selectAdjacentPage(step: 1) }
     if command == 10 { controller.selectAdjacentPage(step: -1) }
