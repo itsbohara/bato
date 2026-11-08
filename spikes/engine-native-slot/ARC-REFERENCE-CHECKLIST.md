@@ -160,6 +160,22 @@ Test pairs made from two example.com tabs, removed afterwards (the pinned pair w
 - [ ] The split row menu lists "Close  Cmd-W" as its last item; there is no Pin item on a split row (pinning is by dragging into the
       pinned area).
 
+## 6. Space swipe (captured 2026-11-08, `swipe/` private shots and screen-recording frames)
+
+Driven with synthesized phased trackpad scroll events (continuous, began/changed/ended, optional momentum) over the sidebar list; Arc accepts them. Timings come from a 30 fps variable-rate screen recording (about 33 ms resolution). Sidebar is 268pt wide in a 1470pt window.
+- [ ] Content tracks the fingers: the Space header row, the Space's tab/folder list and the Today list slide horizontally together, linearly with finger travel (a synthesized 420 px of scroll moved the list 198pt, constant ratio 0.47 over the whole drag, so no easing or resistance inside the Spaces range).
+- [ ] The neighbour Space's list is built and slides in alongside, flush against the edge: page pitch equals the sidebar width (~268pt), no gap and no divider. Swiping left brings the next Space in from the right; right brings the previous one from the left.
+- [ ] No fade or scale on either list: both stay fully opaque while moving, the outgoing list is simply clipped by the sidebar edge.
+- [ ] Static during the drag: window controls row, sidebar toggle, the Favorites tiles row (Notion/Gmail/Slack tiles stay, only their tint follows the Space colour) and the bottom bar (pager icons and +). Tab-list rows do not shrink or reflow.
+- [ ] Sidebar background colour (Space theme, a gradient with a soft blob) cross-fades continuously between the two Spaces' themes with progress (purple-dark to green seen at ~45% progress as a blend of both); it also tints the Favorites tiles and the window chrome strip.
+- [ ] The pager icon highlight in the bottom bar follows the drag (the neighbour's icon is already coloured before release when more than about half way); not measured to the frame.
+- [ ] Ends: swiping right from the first Space reveals the Library page (Media, Downloads, Easels, Spaces, Boosts, Archived Tabs) as a neighbour page; swiping left from the last Space reveals a "Create a Space" page. So Arc has no rubber band at the Space ends, but the pages beyond them also stop with resistance: past the "Create a Space" page, 500 px of scroll (235pt unresisted) moved the page only ~30pt (~12%) and it returned on release. Bato has no pages beyond its ends, so it uses the same resistance on the first/last Space.
+- [ ] Commit distance: 120-160 px of scroll (56-72pt, 21-27% of the width) released after a 200-250 ms hold springs back to the original Space; 190 px (89pt travel, 33-36%) commits. A short fast flick commits: 100 px over 150 ms (47pt, ~17% of the width, ~300pt/s) switched. So: roughly one third of the width, or a flick velocity of a few hundred pt/s.
+- [ ] Release animation, snap back: ease-out, no overshoot, ~240 ms to settle (57pt offset: 14pt moved in the first frame, then 18, 9, 3, 5, 3, 2, 1, 1, 1).
+- [ ] Release animation, commit: the remaining distance (~150pt) closes in ~120-160 ms with the same ease-out, tint finishing in step.
+- [ ] The web content area does not move. It switches to the target Space's selected tab right at the commit (first frame after release) and shows that Space's page directly, no slide or crossfade of the page card.
+- [ ] Space name label sits in the list (it moves with it). Keyboard (Ctrl-digit) and pager-icon switching were not captured; Bato gives them the same non-interactive slide as an assumption.
+
 ## Not captured / caveats
 
 - Grabber "dragging" colour is indistinguishable from hover; no distinct pressed style seen.
@@ -168,3 +184,4 @@ Test pairs made from two example.com tabs, removed afterwards (the pinned pair w
   ~300 ms); Shift+Ctrl+Tab and >3 entries (row wrapping/scroll) not captured.
 - Vertical split orientation not captured (would require converting the user's split).
 - Opening the Clear action was not exercised (would close real tabs).
+- Space swipe: exact easing curve and spring constants are inferred from ~33 ms frame spacing; the pager icon change point, keyboard/dot-click transition and a momentum-only release are unverified.
