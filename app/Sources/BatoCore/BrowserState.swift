@@ -383,6 +383,9 @@ public struct BrowserState: Codable, Equatable, Sendable {
         return workspace
     }
 
+    /// No tab is selected, so the page area shows the empty card rather than any page.
+    public var showsEmptySpace: Bool { currentWorkspace.activeEntryID == nil }
+
     public var currentSplit: PageSplit? {
         currentWorkspace.splits.first { $0.id == currentWorkspace.activeSplitID }
     }

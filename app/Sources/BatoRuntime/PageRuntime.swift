@@ -53,6 +53,10 @@ public protocol PageEngine: AnyObject {
     func supportsProfile(_ id: UUID) -> Bool
     /// The Profile of the selection about to be shown, so a nil selection hides the right context.
     func activateProfile(_ id: UUID)
+    /// Asks for the Profile's window when it has none, so an empty selection has somewhere to show.
+    /// True while that window is pending: the engine reports readiness through a later presentation.
+    /// Only explicit selections call this; an engine-side close must never reopen the window.
+    func requestWindowIfMissing(for profileID: UUID) -> Bool
     var supportsSplits: Bool { get }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool
     func separateSplit() -> Bool
@@ -81,6 +85,7 @@ public extension PageEngine {
     func destroyProfile(_ id: UUID) -> Bool { false }
     func supportsProfile(_ id: UUID) -> Bool { supportedProfileIDs.contains(id) }
     func activateProfile(_ id: UUID) {}
+    func requestWindowIfMissing(for profileID: UUID) -> Bool { false }
     var supportsSplits: Bool { false }
     func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
     func separateSplit() -> Bool { true }
@@ -636,10 +641,18 @@ public final class PageRuntime {
     /// Closes the temporary tabs below the selection in sidebar order. Saved pages stay.
     @discardableResult
     public func closeTemporaryTabsBelowSelection() -> Bool {
-        closeTemporaryTabs { entries, selected in
-            guard let index = entries.firstIndex(where: { $0.id == selected }) else { return [] }
-            return Array(entries[(index + 1)...])
-        }
+        closeTemporaryTabs(Self.entriesBelow)
+    }
+
+    /// Enable state for Close Tabs to the Right, from sidebar order rather than Chrome's strip order.
+    public var canCloseTemporaryTabsBelowSelection: Bool {
+        guard let selected = state.currentWorkspace.activeEntryID else { return false }
+        return Self.entriesBelow(state.visibleEntries, selected).contains { $0.kind == .temporary }
+    }
+
+    private static func entriesBelow(_ entries: [PageEntry], _ selected: UUID) -> [PageEntry] {
+        guard let index = entries.firstIndex(where: { $0.id == selected }) else { return [] }
+        return Array(entries[(index + 1)...])
     }
 
     private var selectedEntry: PageEntry? {
@@ -993,6 +1006,12 @@ public final class PageRuntime {
     }
 
     private func showSelection() -> Bool {
+        let shown = presentSelection()
+        if shown { lastError = nil }
+        return shown
+    }
+
+    private func presentSelection() -> Bool {
         let workspace = state.currentWorkspace
         guard engine.supportsProfile(workspace.profileID) else {
             lastError = .unsupportedProfile
@@ -1017,7 +1036,7 @@ public final class PageRuntime {
         guard engine.separateSplit() else { lastError = .creationRejected; return false }
         guard let id = workspace.activeEntryID,
               let entry = state.visibleEntries.first(where: { $0.id == id }) else {
-            engine.select(nil)
+            if !engine.requestWindowIfMissing(for: workspace.profileID) { engine.select(nil) }
             return true
         }
         if let page = livePages[id] {
