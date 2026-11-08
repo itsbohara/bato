@@ -35,6 +35,8 @@ public final class NativeWorkspaceController: NSObject {
     private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
     private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
     private var pageIcons: [UUID: NSImage] = [:]
+    private var dropSlotViews: [(view: NSView, kind: SidebarDropSlot.Kind)] = []
+    private let entryDragSource = SidebarEntryDragSource()
     private var splitControls: [String: NSButton] = [:]
     private let peekRow = NSStackView()
     private let peekLabel = NSTextField(labelWithString: "")
@@ -574,6 +576,8 @@ public final class NativeWorkspaceController: NSObject {
         peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 
+        entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
+        entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
         entries.orientation = .vertical
         entries.alignment = .leading
         entries.spacing = 5
@@ -729,6 +733,8 @@ public final class NativeWorkspaceController: NSObject {
         let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
         pageControls.removeAll()
         folderControls.removeAll()
+        dropSlotViews.removeAll()
+        entries.accent = accent
         let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
                               state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
         pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
@@ -765,6 +771,7 @@ public final class NativeWorkspaceController: NSObject {
             dot.setAccessibilityLabel(item.name)
             dot.setAccessibilityValue(isActive ? "current" : nil)
             dot.toolTip = item.name
+            dot.acceptsEntryDrops { [weak self] id in self?.dropEntry(id, onWorkspace: item.id) ?? false }
             dot.widthAnchor.constraint(equalToConstant: 14).isActive = true
             dot.heightAnchor.constraint(equalToConstant: 24).isActive = true
             workspacePager.addArrangedSubview(dot)
@@ -960,6 +967,7 @@ public final class NativeWorkspaceController: NSObject {
         }
         if title == "Tabs" {
             entries.addArrangedSubview(newTabRow)
+            dropSlotViews.append((newTabRow, .newTabRow))
             newTabRow.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
         }
         if pages.isEmpty && title == "Tabs" {
@@ -976,16 +984,19 @@ public final class NativeWorkspaceController: NSObject {
                 row.orientation = .horizontal
                 row.distribution = .fillEqually
                 row.spacing = 4
-                for page in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)] {
-                    row.addArrangedSubview(makePageView(page, tile: true))
+                for (offset, page) in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)].enumerated() {
+                    let tile = makePageView(page, tile: true)
+                    row.addArrangedSubview(tile)
+                    dropSlotViews.append((tile, .tile(index: start + offset)))
                 }
                 while row.arrangedSubviews.count < SidebarStyle.tilesPerRow { row.addArrangedSubview(NSView()) }
                 entries.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
         } else {
-            for page in pages {
+            for (index, page) in pages.enumerated() {
                 let row = makePageView(page, tile: false)
+                dropSlotViews.append((row, .row(section: title == "Tabs" ? .tabs : .pinned(folder: nil), index: index)))
                 entries.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
@@ -1042,6 +1053,10 @@ public final class NativeWorkspaceController: NSObject {
                                   selected: runtime.state.currentWorkspace.activeEntryID == page.id,
                                   accent: accent)
         pageControls[page.id] = (select, close)
+        select.beginDrag = { [weak self, weak row] event in
+            guard let self, let row, self.runtime.state.visibleEntries.contains(where: { $0.id == page.id }) else { return }
+            self.entryDragSource.begin(entryID: page.id, row: row, event: event)
+        }
         TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
         return row
     }
@@ -1305,11 +1320,13 @@ public final class NativeWorkspaceController: NSObject {
             addIndented(heading, leading: indent)
         }
         folderControls[folderID] = (disclosure, title, actions)
+        dropSlotViews.append((heading, .folder(id: folderID, pinCount: pinCount)))
         title.menu = folderMenu(folderID, workspaceID: workspaceID)
         if !folder.isCollapsed {
-            for pinID in folder.pinIDs {
-                guard let pin = workspace.pins.first(where: { $0.id == pinID }) else { continue }
-                addIndented(makePageView(pin, tile: false), leading: 14 + indent)
+            for (index, pin) in folder.pinIDs.compactMap({ id in workspace.pins.first { $0.id == id } }).enumerated() {
+                let row = makePageView(pin, tile: false)
+                dropSlotViews.append((row, .row(section: .pinned(folder: folderID), index: index)))
+                addIndented(row, leading: 14 + indent)
             }
             for child in workspace.subfolders(of: folderID) {
                 addFolder(child, depth: depth + 1, workspace: workspace)
@@ -1417,6 +1434,34 @@ public final class NativeWorkspaceController: NSObject {
         guard let sheet = editor.window else { folderEditor = nil; return }
         window.beginSheet(sheet) { [weak self] _ in self?.folderEditor = nil }
         editor.focusName()
+    }
+
+    private func resolveDrop(entryID: UUID, at point: NSPoint) -> SidebarDropTarget? {
+        guard hasStarted, runtime.state.canPlaceEntry(entryID, in: .tabs) else { return nil }
+        let workspace = runtime.state.currentWorkspace
+        let filed = Set(workspace.folders.flatMap(\.pinIDs))
+        let slots = dropSlotViews.compactMap { slot -> SidebarDropSlot? in
+            guard slot.view.window != nil else { return nil }
+            return SidebarDropSlot(kind: slot.kind, frame: entries.convert(slot.view.bounds, from: slot.view))
+        }
+        guard let target = SidebarDropMap.resolve(point: point, slots: slots,
+                                                  unfiledPinCount: workspace.pins.filter { !filed.contains($0.id) }.count),
+              runtime.state.canPlaceEntry(entryID, in: target.section) else { return nil }
+        return target
+    }
+
+    private func performDrop(entryID: UUID, target: SidebarDropTarget) -> Bool {
+        guard hasStarted else { return false }
+        let placed = runtime.placeEntry(entryID, in: target.section, at: target.index)
+        render()
+        return placed
+    }
+
+    private func dropEntry(_ entryID: UUID, onWorkspace destinationID: UUID) -> Bool {
+        guard hasStarted, runtime.state.canMoveEntry(entryID, toWorkspace: destinationID) else { return false }
+        let moved = runtime.moveEntry(entryID, toWorkspace: destinationID)
+        render()
+        return moved
     }
 
     private func perform(_ command: () -> Bool) {
@@ -1900,14 +1945,6 @@ private final class WindowDragView: NSView {
 }
 
 @MainActor
-private final class SidebarEntries: NSStackView {
-    // NSClipView uses the document's coordinate direction when its height is
-    // shorter than the viewport. Top-origin content stays below address entry
-    // instead of being bottom-aligned above the workspace footer.
-    override var isFlipped: Bool { true }
-}
-
-@MainActor
 private final class SidebarScrollView: NSScrollView {
     let swipe = WorkspaceSwipeRecognizer()
     override func scrollWheel(with event: NSEvent) {
@@ -2020,6 +2057,9 @@ private enum CopiedToast {
 @MainActor
 private final class ActionButton: NSButton {
     private let invoke: () -> Void
+    /// Set only on page rows: a press that moves past the drag threshold starts a drag instead of a click.
+    var beginDrag: ((NSEvent) -> Void)?
+    private var dropHandler: ((UUID) -> Bool)?
     init(title: String, invoke: @escaping () -> Void) {
         self.invoke = invoke
         super.init(frame: .zero)
@@ -2030,6 +2070,45 @@ private final class ActionButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
     @objc private func runAction() { invoke() }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let beginDrag, isEnabled, !event.modifierFlags.contains(.control) else { return super.mouseDown(with: event) }
+        let origin = event.locationInWindow
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp {
+                if bounds.contains(convert(next.locationInWindow, from: nil)) { performClick(nil) }
+                return
+            }
+            if hypot(next.locationInWindow.x - origin.x, next.locationInWindow.y - origin.y) > 4 {
+                beginDrag(next)
+                return
+            }
+        }
+    }
+
+    func acceptsEntryDrops(_ handler: @escaping (UUID) -> Bool) {
+        dropHandler = handler
+        registerForDraggedTypes([.batoEntry])
+        wantsLayer = true
+        layer?.cornerRadius = 7
+    }
+
+    private func droppedEntry(_ sender: any NSDraggingInfo) -> UUID? {
+        sender.draggingPasteboard.string(forType: .batoEntry).flatMap(UUID.init(uuidString:))
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard dropHandler != nil, droppedEntry(sender) != nil else { return [] }
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
+        return .move
+    }
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) { layer?.backgroundColor = nil }
+    override func draggingEnded(_ sender: any NSDraggingInfo) { layer?.backgroundColor = nil }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        layer?.backgroundColor = nil
+        guard let id = droppedEntry(sender) else { return false }
+        return dropHandler?(id) ?? false
+    }
 }
 
 @MainActor

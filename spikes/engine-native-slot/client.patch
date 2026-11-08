@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,75 @@
+@@ -2313,6 +2317,76 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -306,6 +306,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -324,7 +325,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2409,19 @@
+@@ -2336,12 +2410,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2005,7 +2006,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,54 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -2041,7 +2042,8 @@
 +                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
-+                                              'WorkspaceSwipe.swift', 'TabAudio.swift'])]:
++                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
++                                              'SidebarDragDrop.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -4477,7 +4479,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1336 @@
+@@ -0,0 +1,1417 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -5484,6 +5486,87 @@
 +        }
 +    }
 +
++    /// Where a dragged entry lands. Indices count the destination list as displayed, before the entry leaves it.
++    public enum SidebarSection: Equatable, Sendable {
++        case favorites
++        case pinned(folder: UUID?)
++        case tabs
++    }
++
++    /// The section currently listing the entry, in the active workspace and its Profile.
++    public func sidebarSection(of id: UUID) -> SidebarSection? {
++        let workspace = currentWorkspace
++        if profiles[currentProfileIndex].favorites.contains(where: { $0.id == id }) { return .favorites }
++        if workspace.pins.contains(where: { $0.id == id }) { return .pinned(folder: workspace.folder(containingPin: id)?.id) }
++        if workspace.tabs.contains(where: { $0.id == id }) { return .tabs }
++        return nil
++    }
++
++    public func canPlaceEntry(_ id: UUID, in section: SidebarSection) -> Bool {
++        guard sidebarSection(of: id) != nil else { return false }
++        if case .pinned(let folder?) = section { return currentWorkspace.folder(folder) != nil }
++        return true
++    }
++
++    /// Reorders within a section, or moves between Favorites, pins, folders and tabs, converting the entry's
++    /// kind as needed. Selection stays with the entry; a pair is dissolved when its member changes kind.
++    public mutating func placeEntry(_ id: UUID, in section: SidebarSection, at index: Int) throws {
++        try transact { draft in
++            guard let source = draft.sidebarSection(of: id),
++                  var entry = draft.visibleEntries.first(where: { $0.id == id }) else {
++                throw BrowserStateError.missingEntry
++            }
++            guard draft.canPlaceEntry(id, in: section) else { throw BrowserStateError.invalidFolder }
++            let workspace = draft.currentWorkspaceIndex
++            let profile = draft.currentProfileIndex
++            var position = max(0, index)
++            if source == section, let current = draft.sectionContaining(id)?.firstIndex(where: { $0.id == id }),
++               current < position {
++                position -= 1
++            }
++            let kind: EntryKind
++            switch section {
++            case .favorites: kind = .favorite
++            case .pinned: kind = .pinned
++            case .tabs: kind = .temporary
++            }
++            if entry.kind != kind { draft.removeSplits(containing: id) }
++            draft.profiles[profile].favorites.removeAll { $0.id == id }
++            draft.workspaces[workspace].pins.removeAll { $0.id == id }
++            for folder in draft.workspaces[workspace].folders.indices {
++                draft.workspaces[workspace].folders[folder].pinIDs.removeAll { $0 == id }
++            }
++            draft.workspaces[workspace].tabs.removeAll { $0.id == id }
++            entry.kind = kind
++            entry.savedURL = kind == .temporary ? nil : (entry.savedURL ?? entry.lastURL)
++            switch section {
++            case .favorites:
++                draft.profiles[profile].favorites.insert(entry, at: min(position, draft.profiles[profile].favorites.count))
++                for other in draft.workspaces.indices where other != workspace && draft.workspaces[other].activeEntryID == id {
++                    draft.workspaces[other].activeEntryID = nil
++                }
++            case .tabs:
++                draft.workspaces[workspace].tabs.insert(entry, at: min(position, draft.workspaces[workspace].tabs.count))
++            case .pinned(let folder):
++                if let folder {
++                    let target = try draft.currentFolderIndex(folder)
++                    let pinIDs = draft.workspaces[workspace].folders[target].pinIDs
++                    draft.workspaces[workspace].folders[target].pinIDs.insert(id, at: min(position, pinIDs.count))
++                    draft.workspaces[workspace].pins.append(entry)
++                } else {
++                    let filed = Set(draft.workspaces[workspace].folders.flatMap(\.pinIDs))
++                    let unfiled = draft.workspaces[workspace].pins.filter { !filed.contains($0.id) }
++                    if position < unfiled.count,
++                       let anchor = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == unfiled[position].id }) {
++                        draft.workspaces[workspace].pins.insert(entry, at: anchor)
++                    } else {
++                        draft.workspaces[workspace].pins.append(entry)
++                    }
++                }
++            }
++        }
++    }
++
 +    /// Only local pins/tabs can move; Favorites already span their Profile's workspaces.
 +    public func canMoveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
 +        let source = currentWorkspace
@@ -6109,7 +6192,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1034 @@
+@@ -0,0 +1,1046 @@
 +import Foundation
 +import BatoCore
 +
@@ -6569,6 +6652,18 @@
 +    @discardableResult
 +    public func moveEntry(_ id: UUID, direction: EntryMoveDirection) -> Bool {
 +        change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
++    }
++
++    /// Drag-and-drop placement. Only an in-flight close blocks it: saved/temporary semantics must not change mid-close.
++    @discardableResult
++    public func placeEntry(_ id: UUID, in section: BrowserState.SidebarSection, at index: Int) -> Bool {
++        guard !pendingClose.contains(where: { $0.entryID == id }), state.canPlaceEntry(id, in: section) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change(reconcileSelection: state.currentSplit?.contains(id) == true) {
++            try $0.placeEntry(id, in: section, at: index)
++        }
 +    }
 +
 +    /// Moving an active entry hides it after commit; background moves leave focus untouched.
@@ -7266,7 +7361,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2679 @@
+@@ -0,0 +1,2758 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7304,6 +7399,8 @@
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
 +    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
 +    private var pageIcons: [UUID: NSImage] = [:]
++    private var dropSlotViews: [(view: NSView, kind: SidebarDropSlot.Kind)] = []
++    private let entryDragSource = SidebarEntryDragSource()
 +    private var splitControls: [String: NSButton] = [:]
 +    private let peekRow = NSStackView()
 +    private let peekLabel = NSTextField(labelWithString: "")
@@ -7843,6 +7940,8 @@
 +        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +
++        entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
++        entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
 +        entries.orientation = .vertical
 +        entries.alignment = .leading
 +        entries.spacing = 5
@@ -7998,6 +8097,8 @@
 +        let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
 +        pageControls.removeAll()
 +        folderControls.removeAll()
++        dropSlotViews.removeAll()
++        entries.accent = accent
 +        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
 +                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
 +        pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
@@ -8034,6 +8135,7 @@
 +            dot.setAccessibilityLabel(item.name)
 +            dot.setAccessibilityValue(isActive ? "current" : nil)
 +            dot.toolTip = item.name
++            dot.acceptsEntryDrops { [weak self] id in self?.dropEntry(id, onWorkspace: item.id) ?? false }
 +            dot.widthAnchor.constraint(equalToConstant: 14).isActive = true
 +            dot.heightAnchor.constraint(equalToConstant: 24).isActive = true
 +            workspacePager.addArrangedSubview(dot)
@@ -8229,6 +8331,7 @@
 +        }
 +        if title == "Tabs" {
 +            entries.addArrangedSubview(newTabRow)
++            dropSlotViews.append((newTabRow, .newTabRow))
 +            newTabRow.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +        }
 +        if pages.isEmpty && title == "Tabs" {
@@ -8245,16 +8348,19 @@
 +                row.orientation = .horizontal
 +                row.distribution = .fillEqually
 +                row.spacing = 4
-+                for page in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)] {
-+                    row.addArrangedSubview(makePageView(page, tile: true))
++                for (offset, page) in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)].enumerated() {
++                    let tile = makePageView(page, tile: true)
++                    row.addArrangedSubview(tile)
++                    dropSlotViews.append((tile, .tile(index: start + offset)))
 +                }
 +                while row.arrangedSubviews.count < SidebarStyle.tilesPerRow { row.addArrangedSubview(NSView()) }
 +                entries.addArrangedSubview(row)
 +                row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +            }
 +        } else {
-+            for page in pages {
++            for (index, page) in pages.enumerated() {
 +                let row = makePageView(page, tile: false)
++                dropSlotViews.append((row, .row(section: title == "Tabs" ? .tabs : .pinned(folder: nil), index: index)))
 +                entries.addArrangedSubview(row)
 +                row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +            }
@@ -8311,6 +8417,10 @@
 +                                  selected: runtime.state.currentWorkspace.activeEntryID == page.id,
 +                                  accent: accent)
 +        pageControls[page.id] = (select, close)
++        select.beginDrag = { [weak self, weak row] event in
++            guard let self, let row, self.runtime.state.visibleEntries.contains(where: { $0.id == page.id }) else { return }
++            self.entryDragSource.begin(entryID: page.id, row: row, event: event)
++        }
 +        TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
 +        return row
 +    }
@@ -8574,11 +8684,13 @@
 +            addIndented(heading, leading: indent)
 +        }
 +        folderControls[folderID] = (disclosure, title, actions)
++        dropSlotViews.append((heading, .folder(id: folderID, pinCount: pinCount)))
 +        title.menu = folderMenu(folderID, workspaceID: workspaceID)
 +        if !folder.isCollapsed {
-+            for pinID in folder.pinIDs {
-+                guard let pin = workspace.pins.first(where: { $0.id == pinID }) else { continue }
-+                addIndented(makePageView(pin, tile: false), leading: 14 + indent)
++            for (index, pin) in folder.pinIDs.compactMap({ id in workspace.pins.first { $0.id == id } }).enumerated() {
++                let row = makePageView(pin, tile: false)
++                dropSlotViews.append((row, .row(section: .pinned(folder: folderID), index: index)))
++                addIndented(row, leading: 14 + indent)
 +            }
 +            for child in workspace.subfolders(of: folderID) {
 +                addFolder(child, depth: depth + 1, workspace: workspace)
@@ -8686,6 +8798,34 @@
 +        guard let sheet = editor.window else { folderEditor = nil; return }
 +        window.beginSheet(sheet) { [weak self] _ in self?.folderEditor = nil }
 +        editor.focusName()
++    }
++
++    private func resolveDrop(entryID: UUID, at point: NSPoint) -> SidebarDropTarget? {
++        guard hasStarted, runtime.state.canPlaceEntry(entryID, in: .tabs) else { return nil }
++        let workspace = runtime.state.currentWorkspace
++        let filed = Set(workspace.folders.flatMap(\.pinIDs))
++        let slots = dropSlotViews.compactMap { slot -> SidebarDropSlot? in
++            guard slot.view.window != nil else { return nil }
++            return SidebarDropSlot(kind: slot.kind, frame: entries.convert(slot.view.bounds, from: slot.view))
++        }
++        guard let target = SidebarDropMap.resolve(point: point, slots: slots,
++                                                  unfiledPinCount: workspace.pins.filter { !filed.contains($0.id) }.count),
++              runtime.state.canPlaceEntry(entryID, in: target.section) else { return nil }
++        return target
++    }
++
++    private func performDrop(entryID: UUID, target: SidebarDropTarget) -> Bool {
++        guard hasStarted else { return false }
++        let placed = runtime.placeEntry(entryID, in: target.section, at: target.index)
++        render()
++        return placed
++    }
++
++    private func dropEntry(_ entryID: UUID, onWorkspace destinationID: UUID) -> Bool {
++        guard hasStarted, runtime.state.canMoveEntry(entryID, toWorkspace: destinationID) else { return false }
++        let moved = runtime.moveEntry(entryID, toWorkspace: destinationID)
++        render()
++        return moved
 +    }
 +
 +    private func perform(_ command: () -> Bool) {
@@ -9169,14 +9309,6 @@
 +}
 +
 +@MainActor
-+private final class SidebarEntries: NSStackView {
-+    // NSClipView uses the document's coordinate direction when its height is
-+    // shorter than the viewport. Top-origin content stays below address entry
-+    // instead of being bottom-aligned above the workspace footer.
-+    override var isFlipped: Bool { true }
-+}
-+
-+@MainActor
 +private final class SidebarScrollView: NSScrollView {
 +    let swipe = WorkspaceSwipeRecognizer()
 +    override func scrollWheel(with event: NSEvent) {
@@ -9289,6 +9421,9 @@
 +@MainActor
 +private final class ActionButton: NSButton {
 +    private let invoke: () -> Void
++    /// Set only on page rows: a press that moves past the drag threshold starts a drag instead of a click.
++    var beginDrag: ((NSEvent) -> Void)?
++    private var dropHandler: ((UUID) -> Bool)?
 +    init(title: String, invoke: @escaping () -> Void) {
 +        self.invoke = invoke
 +        super.init(frame: .zero)
@@ -9299,6 +9434,45 @@
 +    }
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
 +    @objc private func runAction() { invoke() }
++
++    override func mouseDown(with event: NSEvent) {
++        guard let beginDrag, isEnabled, !event.modifierFlags.contains(.control) else { return super.mouseDown(with: event) }
++        let origin = event.locationInWindow
++        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
++            if next.type == .leftMouseUp {
++                if bounds.contains(convert(next.locationInWindow, from: nil)) { performClick(nil) }
++                return
++            }
++            if hypot(next.locationInWindow.x - origin.x, next.locationInWindow.y - origin.y) > 4 {
++                beginDrag(next)
++                return
++            }
++        }
++    }
++
++    func acceptsEntryDrops(_ handler: @escaping (UUID) -> Bool) {
++        dropHandler = handler
++        registerForDraggedTypes([.batoEntry])
++        wantsLayer = true
++        layer?.cornerRadius = 7
++    }
++
++    private func droppedEntry(_ sender: any NSDraggingInfo) -> UUID? {
++        sender.draggingPasteboard.string(forType: .batoEntry).flatMap(UUID.init(uuidString:))
++    }
++
++    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
++        guard dropHandler != nil, droppedEntry(sender) != nil else { return [] }
++        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
++        return .move
++    }
++    override func draggingExited(_ sender: (any NSDraggingInfo)?) { layer?.backgroundColor = nil }
++    override func draggingEnded(_ sender: any NSDraggingInfo) { layer?.backgroundColor = nil }
++    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
++        layer?.backgroundColor = nil
++        guard let id = droppedEntry(sender) else { return false }
++        return dropHandler?(id) ?? false
++    }
 +}
 +
 +@MainActor
@@ -16294,5 +16468,225 @@
 +                  $0.firstItem === select && $0.firstAttribute == .trailing && $0.secondAttribute == .leading
 +              }) else { return }
 +        trailing.constant = reserve ? -22 : -2
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift
+@@ -0,0 +1,217 @@
++import AppKit
++import BatoCore
++
++extension NSPasteboard.PasteboardType {
++    static let batoEntry = NSPasteboard.PasteboardType("com.itsbohara.bato.sidebar-entry")
++}
++
++/// A sidebar view a drag can land on or next to, in the sidebar entries' coordinate space.
++struct SidebarDropSlot: Equatable {
++    enum Kind: Equatable {
++        case tile(index: Int)
++        case row(section: BrowserState.SidebarSection, index: Int)
++        case folder(id: UUID, pinCount: Int)
++        case newTabRow
++    }
++    var kind: Kind
++    var frame: NSRect
++}
++
++struct SidebarDropTarget: Equatable {
++    enum Indicator: Equatable {
++        case line(NSRect)
++        case highlight(NSRect)
++    }
++    var section: BrowserState.SidebarSection
++    var index: Int
++    var indicator: Indicator
++}
++
++/// Pure hit-testing from a pointer to a placement, so every move kind is covered without AppKit drags.
++enum SidebarDropMap {
++    static let lineThickness: CGFloat = 2
++    private static let rowGap: CGFloat = 2.5
++
++    static func resolve(point: NSPoint, slots: [SidebarDropSlot], unfiledPinCount: Int) -> SidebarDropTarget? {
++        for slot in slots {
++            if case .folder(let id, let count) = slot.kind, slot.frame.contains(point) {
++                return SidebarDropTarget(section: .pinned(folder: id), index: count, indicator: .highlight(slot.frame))
++            }
++        }
++        let tiles = slots.filter { if case .tile = $0.kind { return true } else { return false } }
++        if let lastTile = tiles.last, point.y <= lastTile.frame.maxY + 4 {
++            return resolveTile(point: point, tiles: tiles)
++        }
++        let candidates = slots.filter {
++            switch $0.kind {
++            case .row, .newTabRow: return true
++            case .tile, .folder: return false
++            }
++        }
++        guard let nearest = candidates.min(by: { distance(point.y, $0.frame) < distance(point.y, $1.frame) }) else { return nil }
++        let frame = nearest.frame
++        switch nearest.kind {
++        case .row(let section, let index):
++            let after = point.y >= frame.midY
++            return SidebarDropTarget(section: section, index: after ? index + 1 : index,
++                                     indicator: .line(horizontalLine(at: after ? frame.maxY : frame.minY, in: frame)))
++        case .newTabRow:
++            if point.y < frame.midY {
++                return SidebarDropTarget(section: .pinned(folder: nil), index: unfiledPinCount,
++                                         indicator: .line(horizontalLine(at: frame.minY, in: frame)))
++            }
++            return SidebarDropTarget(section: .tabs, index: 0, indicator: .line(horizontalLine(at: frame.maxY, in: frame)))
++        case .tile, .folder:
++            return nil
++        }
++    }
++
++    private static func resolveTile(point: NSPoint, tiles: [SidebarDropSlot]) -> SidebarDropTarget? {
++        guard let nearest = tiles.min(by: { distance(point.y, $0.frame) < distance(point.y, $1.frame) }) else { return nil }
++        let row = tiles.filter { $0.frame.minY == nearest.frame.minY }
++        guard let last = row.last else { return nil }
++        for slot in row {
++            guard case .tile(let index) = slot.kind, point.x < slot.frame.midX else { continue }
++            return SidebarDropTarget(section: .favorites, index: index, indicator: .line(verticalLine(at: slot.frame.minX - 2, in: slot.frame)))
++        }
++        guard case .tile(let index) = last.kind else { return nil }
++        return SidebarDropTarget(section: .favorites, index: index + 1, indicator: .line(verticalLine(at: last.frame.maxX + 2, in: last.frame)))
++    }
++
++    private static func distance(_ y: CGFloat, _ frame: NSRect) -> CGFloat {
++        y < frame.minY ? frame.minY - y : (y > frame.maxY ? y - frame.maxY : 0)
++    }
++
++    private static func horizontalLine(at edge: CGFloat, in frame: NSRect) -> NSRect {
++        let centre = edge + (edge == frame.minY ? -rowGap : rowGap)
++        return NSRect(x: frame.minX + 6, y: centre - lineThickness / 2, width: frame.width - 12, height: lineThickness)
++    }
++
++    private static func verticalLine(at x: CGFloat, in frame: NSRect) -> NSRect {
++        NSRect(x: x - lineThickness / 2, y: frame.minY + 4, width: lineThickness, height: frame.height - 8)
++    }
++}
++
++/// The stack holding every sidebar row. It is also the one drag destination: rows register slots, this view
++/// resolves the pointer against them and draws the insertion line or folder highlight.
++@MainActor
++final class SidebarEntries: NSStackView {
++    // NSClipView uses the document's coordinate direction when its height is
++    // shorter than the viewport. Top-origin content stays below address entry
++    // instead of being bottom-aligned above the workspace footer.
++    override var isFlipped: Bool { true }
++
++    var resolveDrop: ((UUID, NSPoint) -> SidebarDropTarget?)?
++    var performDrop: ((UUID, SidebarDropTarget) -> Bool)?
++    var accent: NSColor = .controlAccentColor
++    private let indicator = NSView()
++    private var pending: SidebarDropTarget?
++
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        registerForDraggedTypes([.batoEntry])
++        indicator.wantsLayer = true
++        indicator.isHidden = true
++        indicator.setAccessibilityElement(false)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    private func entryID(_ sender: any NSDraggingInfo) -> UUID? {
++        sender.draggingPasteboard.string(forType: .batoEntry).flatMap(UUID.init(uuidString:))
++    }
++
++    private func update(_ sender: any NSDraggingInfo) -> NSDragOperation {
++        guard let id = entryID(sender),
++              let target = resolveDrop?(id, convert(sender.draggingLocation, from: nil)) else {
++            pending = nil
++            indicator.isHidden = true
++            return []
++        }
++        pending = target
++        show(target.indicator)
++        return .move
++    }
++
++    private func show(_ shape: SidebarDropTarget.Indicator) {
++        if indicator.superview !== self { addSubview(indicator, positioned: .above, relativeTo: nil) }
++        let color = SidebarStyle.vivid(accent)
++        switch shape {
++        case .line(let frame):
++            indicator.frame = frame
++            indicator.layer?.cornerRadius = SidebarDropMap.lineThickness / 2
++            indicator.layer?.backgroundColor = color.cgColor
++            indicator.layer?.borderWidth = 0
++        case .highlight(let frame):
++            indicator.frame = frame
++            indicator.layer?.cornerRadius = SidebarMetrics.cornerRadius
++            indicator.layer?.backgroundColor = color.withAlphaComponent(0.18).cgColor
++            indicator.layer?.borderColor = color.cgColor
++            indicator.layer?.borderWidth = 1.5
++        }
++        indicator.isHidden = false
++    }
++
++    private func clear() {
++        pending = nil
++        indicator.isHidden = true
++    }
++
++    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
++    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
++    override func draggingExited(_ sender: (any NSDraggingInfo)?) { clear() }
++    override func draggingEnded(_ sender: any NSDraggingInfo) { clear() }
++    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { pending != nil }
++    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
++        defer { clear() }
++        guard let id = entryID(sender), let target = pending else { return false }
++        return performDrop?(id, target) ?? false
++    }
++}
++
++/// Owns drag sessions for sidebar rows; it holds no state so a re-render mid-drag cannot orphan it.
++@MainActor
++final class SidebarEntryDragSource: NSObject, NSDraggingSource {
++    private weak var draggedRow: NSView?
++
++    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
++        context == .withinApplication ? .move : []
++    }
++
++    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
++        draggedRow?.alphaValue = 1
++        draggedRow = nil
++    }
++
++    func begin(entryID: UUID, row: NSView, event: NSEvent) {
++        let item = NSPasteboardItem()
++        item.setString(entryID.uuidString, forType: .batoEntry)
++        let dragging = NSDraggingItem(pasteboardWriter: item)
++        let lift: CGFloat = 8
++        let image = Self.liftedImage(of: row, margin: lift)
++        dragging.setDraggingFrame(row.bounds.insetBy(dx: -lift, dy: -lift), contents: image)
++        row.beginDraggingSession(with: [dragging], event: event, source: self)
++        row.alphaValue = 0.35
++        draggedRow = row
++    }
++
++    private static func liftedImage(of row: NSView, margin: CGFloat) -> NSImage {
++        let snapshot = row.bitmapImageRepForCachingDisplay(in: row.bounds)
++        if let snapshot { row.cacheDisplay(in: row.bounds, to: snapshot) }
++        let size = NSSize(width: row.bounds.width + margin * 2, height: row.bounds.height + margin * 2)
++        let image = NSImage(size: size)
++        image.lockFocus()
++        let body = NSRect(x: margin, y: margin, width: row.bounds.width, height: row.bounds.height)
++        NSGraphicsContext.saveGraphicsState()
++        let shadow = NSShadow()
++        shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
++        shadow.shadowBlurRadius = 8
++        shadow.shadowOffset = NSSize(width: 0, height: -2)
++        shadow.set()
++        NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
++        NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius).fill()
++        NSGraphicsContext.restoreGraphicsState()
++        snapshot?.draw(in: body)
++        image.unlockFocus()
++        return image
 +    }
 +}
