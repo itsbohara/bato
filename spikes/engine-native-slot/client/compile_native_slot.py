@@ -21,7 +21,8 @@ def main():
               '-I', str(modules)]
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
-                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
+                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
+                                        'SidebarPeekDismissal.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',

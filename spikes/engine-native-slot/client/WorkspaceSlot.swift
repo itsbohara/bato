@@ -405,12 +405,18 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     /// restores the docked or hidden sidebar the user had.
     private var fullscreenRevealed = false
     private var fullscreenObservers: [NSObjectProtocol] = []
+    private var resignObserver: NSObjectProtocol?
+    /// Runs while the sidebar floats: a reveal that did not come from the pointer (Cmd-T, menus, focus
+    /// restoration) never gets a `mouseExited`, so without this it stays over the page.
+    private var peekPoll: Timer?
+    /// The floating sidebar was revealed by `focusNative`, not by the pointer.
+    private var revealedByFocusRequest = false
     let token: UInt64
     /// The first slot owns organization; later slots are windows of other Profiles that borrow its sidebar.
     init(token: UInt64, directory: URL?) {
         self.token = token
         root.onEnter = { [weak self] in self?.reveal() }
-        root.onExit = { [weak self] in self?.dismissPeek() }
+        root.onExit = { [weak self] in self?.dismissPeek(on: .pointerExited) }
         root.onResize = { [weak self] width in
             guard let self else { return }
             _ = self.setGeometry(width: Int32(min(400, max(220, width.rounded()))), mode: self.mode)
@@ -493,10 +499,17 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
                         guard let self else { return }
                         self.fullscreenRevealed = false
                         self.root.mode = entering ? 0 : self.mode
+                        self.syncPeekPoll()
                         self.root.layoutSubtreeIfNeeded()
                         self.updateCard()
                     }
                 })
+            }
+        }
+        if resignObserver == nil, let window = root.window {
+            resignObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.dismissPeek(on: .windowResigned) }
             }
         }
         if keyObserver == nil, let window = root.window {
@@ -526,7 +539,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         }
     }
     func focusNative() {
-        if mode == 0, !setGeometry(mode: 2) { return }
+        if mode == 0 {
+            guard setGeometry(mode: 2) else { return }
+            revealedByFocusRequest = true
+        }
         _ = nativeFocus?(token)
     }
     /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
@@ -550,27 +566,32 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         guard NSApp.isActive, let window = root.window else { return false }
         return window.isKeyWindow && window.attachedSheet == nil && NSApp.modalWindow == nil
     }
-    @discardableResult private func setGeometry(width requested: Int32? = nil, mode next: Int32) -> Bool {
-        guard canInteract, !changingGeometry else { return false }
+    @discardableResult private func setGeometry(width requested: Int32? = nil, mode next: Int32,
+                                                requiresKey: Bool = true) -> Bool {
+        guard !requiresKey || canInteract, !changingGeometry else { return false }
         changingGeometry = true
         defer { changingGeometry = false }
         guard sidebarGeometry?(token, requested ?? width, next) == 1 else { return false }
         width = requested ?? width
+        revealedByFocusRequest = false
         mode = next
         root.mode = next
         root.layoutSubtreeIfNeeded()
         updateCard()
+        syncPeekPoll()
         return true
     }
     private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
-    @discardableResult private func setFullscreenReveal(_ revealed: Bool) -> Bool {
-        guard canInteract, !changingGeometry else { return false }
+    @discardableResult private func setFullscreenReveal(_ revealed: Bool, requiresKey: Bool = true) -> Bool {
+        guard !requiresKey || canInteract, !changingGeometry else { return false }
         changingGeometry = true
         defer { changingGeometry = false }
         guard sidebarGeometry?(token, width, revealed ? 2 : 0) == 1 else { return false }
         fullscreenRevealed = revealed
+        revealedByFocusRequest = false
         root.mode = revealed ? 2 : 0
         root.layoutSubtreeIfNeeded()
+        syncPeekPoll()
         return true
     }
     @discardableResult func toggle() -> Bool {
@@ -587,26 +608,49 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         guard mode == 0, canInteract, !menuTracking else { return }
         _ = setGeometry(mode: 2) // Hover never steals focus from the page.
     }
-    private func dismissPeek(force: Bool = false) {
-        if isFullscreen {
-            guard fullscreenRevealed, canInteract, !menuTracking else { return }
-            if !force, let focused = root.window?.firstResponder as? NSView,
-               focused === root || focused.isDescendant(of: root) { return }
-            if setFullscreenReveal(false), force { _ = pageFocus?(token) }
+    private var sidebarHasFocus: Bool {
+        guard let focused = root.window?.firstResponder as? NSView else { return false }
+        return focused === root || focused.isDescendant(of: root)
+    }
+    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : mode == 2 }
+    private var pointerInsideSidebar: Bool {
+        guard let window = root.window else { return false }
+        return root.bounds.contains(root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
+    }
+    private func dismissPeek(on event: SidebarPeekDismissal.Event) {
+        guard isFloating, let window = root.window else { return }
+        let incidental = revealedByFocusRequest && window.firstResponder === controller?.focusTarget
+        let context = SidebarPeekDismissal.Context(
+            pointerInside: pointerInsideSidebar, sidebarFocused: sidebarHasFocus, focusIsIncidental: incidental,
+            interactive: window.attachedSheet == nil && NSApp.modalWindow == nil && !menuTracking)
+        guard SidebarPeekDismissal.shouldDismiss(on: event, context) else { return }
+        let requiresKey = event != .windowResigned
+        let hidden = isFullscreen ? setFullscreenReveal(false, requiresKey: requiresKey)
+                                  : setGeometry(mode: 0, requiresKey: requiresKey)
+        // Focus would otherwise stay on the hidden sidebar.
+        if hidden, event == .pageClicked || incidental { _ = pageFocus?(token) }
+    }
+    private func syncPeekPoll() {
+        guard isFloating else {
+            peekPoll?.invalidate()
+            peekPoll = nil
             return
         }
-        guard mode == 2, canInteract, !menuTracking else { return }
-        if !force, let focused = root.window?.firstResponder as? NSView,
-           focused === root || focused.isDescendant(of: root) { return }
-        if setGeometry(mode: 0), force { _ = pageFocus?(token) }
+        guard peekPoll == nil else { return }
+        peekPoll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dismissPeek(on: .pointerPoll) }
+        }
     }
     private func installPointerMonitor() {
         guard pointerMonitor == nil else { return }
-        pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                if let self, event.window === self.root.window,
-                   !self.root.bounds.contains(self.root.convert(event.locationInWindow, from: nil)) {
-                    self.dismissPeek(force: true)
+                guard let self, event.window === self.root.window else { return event }
+                if event.type == .keyDown {
+                    // Command chords (Cmd-S, Cmd-T) are handled by their own commands.
+                    if !event.modifierFlags.contains(.command), !self.sidebarHasFocus { self.dismissPeek(on: .pageKey) }
+                } else if !self.root.bounds.contains(self.root.convert(event.locationInWindow, from: nil)) {
+                    self.dismissPeek(on: .pageClicked)
                 }
                 return event // Preserve the original page event.
             }
@@ -622,6 +666,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         pointerMonitor = nil
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
         keyObserver = nil
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
+        peekPoll?.invalidate()
+        peekPoll = nil
         for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
         menuObservers.removeAll()
         fullscreenObservers.removeAll()
