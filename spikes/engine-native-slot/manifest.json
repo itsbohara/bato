@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "8ad9a99b652978b0614ac24262765607558599b7d5badf0d64e9889af766560b",
+  "patch_sha256": "11923fac69596ada4694e0ae1103fcfc889b0fd7d26410b92ab57d77dac9c9c0",
   "files": [
     {
       "root": "cef",
@@ -165,6 +165,12 @@
       "path": "components/new_or_sad_tab_strings.grdp",
       "original_sha256": "257ab14f948f2e8aeb216b388b3122c2b7f4522294fd0160775830743effc025",
       "patched_sha256": "84fbc3fe9514f661f7a2d26b54c8df0aab4c04a49b40c4c7fc57a1e4b359475d"
+    },
+    {
+      "root": "chromium",
+      "path": "ui/native_theme/os_settings_provider_mac.mm",
+      "original_sha256": "3e6df164c1734612fa788a0dcbdcdf9a0d7cfee758a78c885d45bbf07dc55e9d",
+      "patched_sha256": "b6711eb6ac7217e189dcc2d385fea00f83a0ea2ffa7b3c597248811cb7291708"
     }
   ]
 }

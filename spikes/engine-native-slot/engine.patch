@@ -6770,3 +6770,18 @@
            <ph name="BEGIN_LIST">&lt;ul&gt;</ph>
              <ph name="LIST_ITEM">&lt;li&gt;</ph>Your browsing history
              <ph name="LIST_ITEM">&lt;li&gt;</ph>Cookies and site data
+--- a/ui/native_theme/os_settings_provider_mac.mm
++++ b/ui/native_theme/os_settings_provider_mac.mm
+@@ -138,9 +138,9 @@
+
+ NativeTheme::PreferredContrast OsSettingsProviderMac::PreferredContrast()
+     const {
+-  return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast
+-             ? NativeTheme::PreferredContrast::kMore
+-             : OsSettingsProvider::PreferredContrast();
++  // Bato ignores macOS Increase Contrast: it would switch the browser chrome to
++  // Chromium's near-black toolbar and light separators, unlike the native shell.
++  return NativeTheme::PreferredContrast::kNoPreference;
+ }
+
+ bool OsSettingsProviderMac::PrefersReducedTransparency() const {
