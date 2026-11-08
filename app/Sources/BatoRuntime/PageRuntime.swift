@@ -112,7 +112,9 @@ public enum PageRuntimeError: Error, Equatable {
 /// candidate and then throw. Live page closures can be cancelled by the engine.
 @MainActor
 public final class PageRuntime {
-    public private(set) var state: BrowserState
+    public private(set) var state: BrowserState {
+        didSet { recordSelection() }
+    }
     public private(set) var livePages: [UUID: LivePage] = [:]
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
@@ -130,6 +132,8 @@ public final class PageRuntime {
     }
     public private(set) var peekSession = PeekSession()
     public var onStateChange: ((BrowserState) -> Void)?
+    /// Order pages were last selected in, per workspace, for the Ctrl-Tab switcher.
+    public private(set) var recentTabs = RecentTabs()
     /// Saves like `commit` and keeps the previous document as a recoverable snapshot; used for Profile delete.
     public var snapshotCommit: ((BrowserState) throws -> Void)?
     public var supportsSplits: Bool { engine.supportsSplits }
@@ -182,6 +186,18 @@ public final class PageRuntime {
         self.state = state
         self.engine = engine
         self.commit = commit
+        recordSelection()
+    }
+
+    private func recordSelection() {
+        if let id = state.currentWorkspace.activeEntryID {
+            recentTabs.record(entryID: id, workspaceID: state.activeWorkspaceID)
+        }
+    }
+
+    /// Switcher stops for the current workspace, most recently used first, pairs as one.
+    public func tabSwitcherItems() -> [TabSwitchItem] {
+        recentTabs.items(in: state) { id in pendingClose.contains { $0.entryID == id } }
     }
 
     /// Explicit so clients can finish callback wiring before creation begins.
@@ -469,6 +485,38 @@ public final class PageRuntime {
     @discardableResult
     public func updateSplitRatio(_ id: UUID, ratio: Double) -> Bool {
         change { try $0.updateSplitRatio(id, ratio: ratio) }
+    }
+
+    /// Drag-and-drop placement of a pair as a unit; selection and presentation are unchanged.
+    @discardableResult
+    public func placeSplit(_ id: UUID, in section: BrowserState.SidebarSection, at index: Int) -> Bool {
+        guard let pair = state.currentWorkspace.splits.first(where: { $0.id == id }),
+              !pendingClose.contains(where: { pair.contains($0.entryID) }), state.canPlaceSplit(id, in: section) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: false) { try $0.placeSplit(id, in: section, at: index) }
+    }
+
+    /// Moves a pair and both pages to another workspace; a displayed pair leaves the selection empty, like a single page.
+    @discardableResult
+    public func moveSplit(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
+        guard let pair = state.currentWorkspace.splits.first(where: { $0.id == id }),
+              !pendingClose.contains(where: { pair.contains($0.entryID) }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: state.currentSplit?.id == id) { try $0.moveSplit(id, toWorkspace: destinationID) }
+    }
+
+    @discardableResult
+    public func swapSplitSides(_ id: UUID) -> Bool {
+        change { try $0.swapSplitSides(id) }
+    }
+
+    @discardableResult
+    public func setSplitOrientation(_ id: UUID, to orientation: SplitOrientation) -> Bool {
+        change { try $0.setSplitOrientation(id, to: orientation) }
     }
 
     /// Reorders organization without changing page visibility or close semantics.

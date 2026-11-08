@@ -1002,9 +1002,9 @@ public struct BrowserState: Codable, Equatable, Sendable {
     /// The page one step from the selection in sidebar order, wrapping at the ends.
     /// With nothing selected, forward starts at the first page and backward at the last.
     public func adjacentEntryID(step: Int) -> UUID? {
-        let entries = visibleEntries
+        let entries = visibleEntriesCollapsingPairs
         guard !entries.isEmpty, step != 0 else { return nil }
-        guard let active = currentWorkspace.activeEntryID,
+        guard let active = currentWorkspace.activeEntryID.map({ leadingEntryID(ofPairContaining: $0) }),
               let index = entries.firstIndex(where: { $0.id == active }) else {
             return step > 0 ? entries.first?.id : entries.last?.id
         }
@@ -1082,7 +1082,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     /// Where a dragged entry lands. Indices count the destination list as displayed, before the entry leaves it.
-    public enum SidebarSection: Equatable, Sendable {
+    public enum SidebarSection: Hashable, Sendable {
         case favorites
         case pinned(folder: UUID?)
         case tabs
@@ -1112,9 +1112,8 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 throw BrowserStateError.missingEntry
             }
             guard draft.canPlaceEntry(id, in: section) else { throw BrowserStateError.invalidFolder }
-            let workspace = draft.currentWorkspaceIndex
-            let profile = draft.currentProfileIndex
-            var position = max(0, index)
+            let rows = draft.sidebarRows()[section] ?? []
+            var position = draft.modelPosition(forDisplayedRow: index, in: rows) ?? draft.sidebarEntries(in: section).count
             if source == section, let current = draft.sectionContaining(id)?.firstIndex(where: { $0.id == id }),
                current < position {
                 position -= 1
@@ -1126,37 +1125,13 @@ public struct BrowserState: Codable, Equatable, Sendable {
             case .tabs: kind = .temporary
             }
             if entry.kind != kind { draft.removeSplits(containing: id) }
-            draft.profiles[profile].favorites.removeAll { $0.id == id }
-            draft.workspaces[workspace].pins.removeAll { $0.id == id }
-            for folder in draft.workspaces[workspace].folders.indices {
-                draft.workspaces[workspace].folders[folder].pinIDs.removeAll { $0 == id }
-            }
-            draft.workspaces[workspace].tabs.removeAll { $0.id == id }
+            draft.detachFromSidebar([id])
             entry.kind = kind
             entry.savedURL = kind == .temporary ? nil : (entry.savedURL ?? entry.lastURL)
-            switch section {
-            case .favorites:
-                draft.profiles[profile].favorites.insert(entry, at: min(position, draft.profiles[profile].favorites.count))
-                for other in draft.workspaces.indices where other != workspace && draft.workspaces[other].activeEntryID == id {
+            try draft.insertIntoSidebar([entry], section: section, at: position)
+            if section == .favorites {
+                for other in draft.workspaces.indices where other != draft.currentWorkspaceIndex && draft.workspaces[other].activeEntryID == id {
                     draft.workspaces[other].activeEntryID = nil
-                }
-            case .tabs:
-                draft.workspaces[workspace].tabs.insert(entry, at: min(position, draft.workspaces[workspace].tabs.count))
-            case .pinned(let folder):
-                if let folder {
-                    let target = try draft.currentFolderIndex(folder)
-                    let pinIDs = draft.workspaces[workspace].folders[target].pinIDs
-                    draft.workspaces[workspace].folders[target].pinIDs.insert(id, at: min(position, pinIDs.count))
-                    draft.workspaces[workspace].pins.append(entry)
-                } else {
-                    let filed = Set(draft.workspaces[workspace].folders.flatMap(\.pinIDs))
-                    let unfiled = draft.workspaces[workspace].pins.filter { !filed.contains($0.id) }
-                    if position < unfiled.count,
-                       let anchor = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == unfiled[position].id }) {
-                        draft.workspaces[workspace].pins.insert(entry, at: anchor)
-                    } else {
-                        draft.workspaces[workspace].pins.append(entry)
-                    }
                 }
             }
         }
@@ -1341,9 +1316,6 @@ public struct BrowserState: Codable, Equatable, Sendable {
             }
             let focused = focusedEntryID ?? split.leftEntryID
             guard split.contains(focused) else { throw BrowserStateError.invalidSplit }
-            if let previous = draft.currentSplit, previous.id != id, !previous.isPinned {
-                draft.workspaces[draft.currentWorkspaceIndex].splits.removeAll { $0.id == previous.id }
-            }
             draft.workspaces[draft.currentWorkspaceIndex].activeSplitID = id
             draft.workspaces[draft.currentWorkspaceIndex].activeEntryID = focused
         }
@@ -1351,11 +1323,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
 
     public mutating func deactivateSplit() throws {
         try transact { draft in
-            let index = draft.currentWorkspaceIndex
-            if let pair = draft.currentSplit, !pair.isPinned {
-                draft.workspaces[index].splits.removeAll { $0.id == pair.id }
-            }
-            draft.workspaces[index].activeSplitID = nil
+            draft.workspaces[draft.currentWorkspaceIndex].activeSplitID = nil
         }
     }
 
@@ -1395,19 +1363,15 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Selecting either member of a pair shows the pair; leaving it only hides it, so a pair survives tab switching.
     private mutating func selectEntryInPlace(_ id: UUID) {
         let index = currentWorkspaceIndex
-        if currentSplit?.contains(id) != true {
-            if let pair = currentSplit, !pair.isPinned {
-                workspaces[index].splits.removeAll { $0.id == pair.id }
-            }
-            workspaces[index].activeSplitID = nil
-        }
+        workspaces[index].activeSplitID = workspaces[index].splits.first { $0.contains(id) }?.id
         workspaces[index].activeEntryID = id
     }
 
     /// Removing a side leaves the other page selected when this pair was displayed.
-    private mutating func removeSplits(containing id: UUID) {
+    mutating func removeSplits(containing id: UUID) {
         for index in workspaces.indices {
             if let pair = workspaces[index].splits.first(where: { $0.id == workspaces[index].activeSplitID && $0.contains(id) }) {
                 workspaces[index].activeSplitID = nil
@@ -1432,11 +1396,11 @@ public struct BrowserState: Codable, Equatable, Sendable {
         return nil
     }
 
-    private var currentWorkspaceIndex: Int { workspaces.firstIndex(where: { $0.id == activeWorkspaceID })! }
-    private var currentProfileIndex: Int { profiles.firstIndex(where: { $0.id == currentWorkspace.profileID })! }
+    var currentWorkspaceIndex: Int { workspaces.firstIndex(where: { $0.id == activeWorkspaceID })! }
+    var currentProfileIndex: Int { profiles.firstIndex(where: { $0.id == currentWorkspace.profileID })! }
     private var allEntries: [PageEntry] { profiles.flatMap(\.favorites) + workspaces.flatMap { $0.pins + $0.tabs } }
 
-    private mutating func transact<T>(_ mutation: (inout BrowserState) throws -> T) throws -> T {
+    mutating func transact<T>(_ mutation: (inout BrowserState) throws -> T) throws -> T {
         try validate()
         var draft = self
         let result = try mutation(&draft)
@@ -1484,7 +1448,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
-    private func currentFolderIndex(_ id: UUID) throws -> Int {
+    func currentFolderIndex(_ id: UUID) throws -> Int {
         guard let index = currentWorkspace.folders.firstIndex(where: { $0.id == id }) else {
             throw BrowserStateError.missingFolder
         }

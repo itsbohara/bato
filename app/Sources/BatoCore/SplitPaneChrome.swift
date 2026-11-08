@@ -48,3 +48,45 @@ public enum SplitPaneChrome {
         entryID == split.leftEntryID ? 0 : entryID == split.rightEntryID ? 1 : nil
     }
 }
+
+/// Geometry of the resize grabber drawn in the gap between two panes. Frames are in one coordinate space and the
+/// first pane is the left or top one.
+public enum SplitGrabber {
+    public static let pillThickness: CGFloat = 2
+    public static let pillLength: CGFloat = 24
+    /// Extra reach on each side of the gap, so the thin gap is easy to hit.
+    public static let hitSlop: CGFloat = 4
+    public static let minimumRatio = 0.15
+
+    public static func isHorizontal(first: CGRect, second: CGRect) -> Bool { first.maxX <= second.minX }
+
+    public static func hitRect(first: CGRect, second: CGRect) -> CGRect {
+        if isHorizontal(first: first, second: second) {
+            return CGRect(x: first.maxX - hitSlop, y: min(first.minY, second.minY),
+                          width: second.minX - first.maxX + 2 * hitSlop, height: max(first.maxY, second.maxY) - min(first.minY, second.minY))
+        }
+        return CGRect(x: min(first.minX, second.minX), y: first.maxY - hitSlop,
+                      width: max(first.maxX, second.maxX) - min(first.minX, second.minX), height: second.minY - first.maxY + 2 * hitSlop)
+    }
+
+    /// A short fully rounded pill centred in the gap: vertical between side-by-side panes, horizontal between stacked ones.
+    public static func pillRect(first: CGRect, second: CGRect) -> CGRect {
+        let hit = hitRect(first: first, second: second)
+        if isHorizontal(first: first, second: second) {
+            return CGRect(x: hit.midX - pillThickness / 2, y: hit.midY - pillLength / 2, width: pillThickness, height: pillLength)
+        }
+        return CGRect(x: hit.midX - pillLength / 2, y: hit.midY - pillThickness / 2, width: pillLength, height: pillThickness)
+    }
+
+    /// The first pane's share of the space for a pointer position, keeping the gap centred under the pointer.
+    public static func ratio(at point: CGPoint, first: CGRect, second: CGRect) -> Double {
+        let horizontal = isHorizontal(first: first, second: second)
+        let start = horizontal ? first.minX : first.minY
+        let end = horizontal ? second.maxX : second.maxY
+        let gap = horizontal ? second.minX - first.maxX : second.minY - first.maxY
+        let total = end - start - gap
+        guard total > 0 else { return 0.5 }
+        let position = (horizontal ? point.x : point.y) - start - gap / 2
+        return min(max(Double(position / total), minimumRatio), 1 - minimumRatio)
+    }
+}

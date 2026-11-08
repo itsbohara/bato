@@ -63,7 +63,7 @@ final class PeekAdoptionTests: XCTestCase {
         }
     }
 
-    func testAdoptedSelectionDiscardsTransientSplitWithoutChangingExistingEntries() throws {
+    func testAdoptedSelectionHidesTransientSplitWithoutChangingExistingEntries() throws {
         var state = try splitState(pinned: false)
         let before = state
         let adoptedID = UUID()
@@ -72,7 +72,7 @@ final class PeekAdoptionTests: XCTestCase {
 
         XCTAssertNil(state.currentSplit)
         XCTAssertNil(state.currentWorkspace.activeSplitID)
-        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        XCTAssertEqual(state.currentWorkspace.splits, before.currentWorkspace.splits)
         XCTAssertEqual(state.currentWorkspace.activeEntryID, adoptedID)
         XCTAssertEqual(state.currentWorkspace.pins, before.currentWorkspace.pins)
         XCTAssertEqual(state.currentWorkspace.folders, before.currentWorkspace.folders)

@@ -884,18 +884,20 @@ extension BrowserStateTests {
 }
 
 extension BrowserStateTests {
-    func testUnpinnedPairIsDiscardedWhenLeavingAndSavedPairCanRestore() throws {
+    func testLeavingAPairHidesItAndSelectingEitherMemberShowsItAgain() throws {
         var state = BrowserState.initial()
         let left = try state.addTab(url: saved, title: "Left")
         let right = try state.addTab(url: saved, title: "Right")
-        _ = try state.createSplit(with: left)
+        let transient = try state.createSplit(with: left)
         try state.deactivateSplit()
-        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
-        XCTAssertTrue(state.canCreateSplit(with: left))
-        _ = try state.createSplit(with: left)
+        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
         _ = try state.addTab(url: saved, title: "Unrelated")
-        XCTAssertTrue(state.currentWorkspace.splits.isEmpty)
+        XCTAssertNil(state.currentSplit)
+        XCTAssertEqual(state.currentWorkspace.splits.map(\.id), [transient])
         try state.selectEntry(right)
+        XCTAssertEqual(state.currentSplit?.id, transient)
+        XCTAssertEqual(state.currentWorkspace.activeEntryID, right)
+        try state.dissolveSplit(transient)
         let pair = try state.createSplit(with: left)
         try state.pinSplit(pair)
         try state.deactivateSplit()
@@ -907,7 +909,7 @@ extension BrowserStateTests {
 }
 
 extension BrowserStateTests {
-    func testActivatingSavedPairDiscardsPreviousTransientPair() throws {
+    func testActivatingSavedPairKeepsOtherPairs() throws {
         var state = BrowserState.initial()
         let first = try state.addTab(url: saved, title: "One")
         let second = try state.addTab(url: saved, title: "Two")
@@ -918,8 +920,8 @@ extension BrowserStateTests {
         let transient = try state.createSplit(with: third)
         try state.activateSplit(savedPair, focusedEntryID: second)
         XCTAssertEqual(state.currentSplit?.id, savedPair)
-        XCTAssertFalse(state.currentWorkspace.splits.contains { $0.id == transient })
-        XCTAssertEqual(state.currentWorkspace.splits.count, 1)
+        XCTAssertTrue(state.currentWorkspace.splits.contains { $0.id == transient })
+        XCTAssertEqual(state.currentWorkspace.splits.count, 2)
     }
 }
 
