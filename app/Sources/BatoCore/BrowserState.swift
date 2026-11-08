@@ -666,13 +666,23 @@ public struct BrowserState: Codable, Equatable, Sendable {
         profile.color ?? workspaces.first { $0.profileID == profile.id }?.color ?? "#B47879"
     }
 
+    /// The first palette colour no workspace of the Profile uses, so a new Space does not repeat a neighbour.
+    public func nextWorkspaceColor(in palette: [String], profileID: UUID) -> String {
+        let used = Set(workspaces.filter { $0.profileID == profileID }.map { $0.color.uppercased() })
+        return palette.first { !used.contains($0.uppercased()) } ?? palette.first ?? "#B47879"
+    }
+
     @discardableResult
-    public mutating func addWorkspace(name: String, profileID: UUID) throws -> UUID {
+    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil) throws -> UUID {
         try transact { draft in
             guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             try Self.validateName(name)
-            let workspace = Workspace(profileID: profileID, name: name)
+            var workspace = Workspace(profileID: profileID, name: name)
+            if let color {
+                try Self.validateColor(color)
+                workspace.color = color.uppercased()
+            }
             draft.workspaces.append(workspace)
             return workspace.id
         }

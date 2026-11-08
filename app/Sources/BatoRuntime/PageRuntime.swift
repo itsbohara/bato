@@ -211,9 +211,9 @@ public final class PageRuntime {
     }
 
     @discardableResult
-    public func addWorkspace(name: String) -> Bool {
+    public func addWorkspace(name: String, color: String? = nil) -> Bool {
         change { candidate in
-            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID)
+            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID, color: color)
             try candidate.activateWorkspace(id)
         }
     }
