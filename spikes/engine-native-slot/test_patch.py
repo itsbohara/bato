@@ -61,7 +61,9 @@ class NativeSlotPatchTest(unittest.TestCase):
         exports = re.findall(r'CEF_EXPORT\s+\w+\s+(bato_native_slot_\w+)\(', header)
         self.assertIn('bato_native_slot_peek_present_v1', exports)
         self.assertIn('bato_native_slot_register_peek_interaction_callbacks_v1', exports)
-        self.assertEqual(len(exports), 22)
+        self.assertEqual(len(exports), 24)
+        self.assertIn('bato_native_slot_present_split_v2', exports)
+        self.assertIn('bato_native_slot_register_split_layout_callbacks_v1', exports)
         for name in exports:
             self.assertRegex(installed, r'extern "C" CEF_EXPORT \w+ ' + name + r'\(')
 
@@ -74,6 +76,16 @@ class NativeSlotPatchTest(unittest.TestCase):
         self.assertIn('leading_exclusion.vertical_padding', added)
         self.assertIn('cef::NativeSidebarOwnsTabs(this) ? 0 : 44', added)
         self.assertNotIn('Inset(gfx::Insets::TLBR(44, reserved_width', added)
+
+    def test_split_pane_toolbar_policy(self):
+        added = '\n'.join(line[1:] for line in (HERE / 'engine.patch').read_text().splitlines()
+                          if line.startswith('+') and not line.startswith('+++'))
+        self.assertIn('constexpr int kNativePaneToolbarHeight = 40;', added)
+        self.assertIn('start_rect.Inset(gfx::Insets::TLBR(kNativePaneToolbarHeight, 0, 0, 0))', added)
+        self.assertIn('SetNativePaneChrome(HasNativePaneToolbars())', added)
+        self.assertIn('multi_contents->IsInSplitView()', added)
+        self.assertIn('split_tabs::SplitTabLayout::kStacked', added)
+        self.assertIn('kNativeSplitButtonSlot', added)
 
 
 if __name__ == '__main__':

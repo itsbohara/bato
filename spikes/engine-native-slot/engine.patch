@@ -55,7 +55,7 @@
        content::WebContents* source_contents,
 --- a/cef/libcef/browser/chrome/browser_util.h
 +++ b/cef/libcef/browser/chrome/browser_util.h
-@@ -10,12 +10,34 @@
+@@ -10,12 +10,38 @@
  #include "build/build_config.h"
  #include "chrome/browser/ui/browser.h"
 
@@ -80,6 +80,10 @@
 +// True once the window was refused a sidebar, so layout drops its reservation.
 +bool NativeSlotRefused(const BrowserView* view);
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds);
++// Reports displayed split pane frames (BrowserView coordinates, toolbar band included) to the
++// client. `in_split` false clears them. Only windows that own a native sidebar report.
++void NativeSplitLayout(BrowserView* view, bool in_split, bool stacked,
++                       const gfx::Rect& first, const gfx::Rect& second);
 +void NativeSlotUpdate(BrowserView* view, bool teardown, bool hide);
 +// Offers an eligible Shift-click link navigation to the native client as a
 +// Peek. Returns true when the client accepted it, in which case the caller
@@ -159,7 +163,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,1334 @@
+@@ -49,3 +49,1366 @@
  }
 
  }  // namespace cef
@@ -213,6 +217,7 @@
 +BatoPageCallbacksV1 g_page_callbacks = {};
 +BatoAudioCallbacksV1 g_audio_callbacks = {};
 +BatoSplitCallbacksV1 g_split_callbacks = {};
++BatoSplitLayoutCallbacksV1 g_split_layout_callbacks = {};
 +BatoPeekCallbacksV1 g_peek_callbacks = {};
 +BatoPeekInteractionCallbacksV1 g_peek_interaction_callbacks = {};
 +uint64_t g_peek_generation = 0;
@@ -1048,8 +1053,9 @@
 +  g_split_callbacks = *callbacks;
 +  return 1;
 +}
-+extern "C" CEF_EXPORT int bato_native_slot_present_split_v1(
-+    uint64_t token, int left_id, int right_id, int focused_id, double ratio) {
++extern "C" CEF_EXPORT int bato_native_slot_present_split_v2(
++    uint64_t token, int left_id, int right_id, int focused_id, double ratio, int stacked) {
++  if (stacked != 0 && stacked != 1) return 0;
 +  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || left_id <= 0 ||
 +      right_id <= 0 || left_id == right_id ||
 +      (focused_id != left_id && focused_id != right_id) ||
@@ -1084,8 +1090,10 @@
 +    if (li < 0 || ri < 0) return 0;
 +  }
 +  auto split = ls.value_or(split_tabs::SplitTabId::CreateEmpty());
++  const auto layout = stacked ? split_tabs::SplitTabLayout::kStacked
++                              : split_tabs::SplitTabLayout::kSideBySide;
 +  if (!ls) split = model->AddToNewSplit({li, ri},
-+      split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kSideBySide, ratio),
++      split_tabs::SplitTabVisualData(layout, ratio),
 +      split_tabs::SplitTabCreatedSource::kToolbarButton);
 +  if (FindSlot(token) != view) return 0;
 +  li = model->GetIndexOfWebContents(left->GetWebContents());
@@ -1098,6 +1106,10 @@
 +  ri = model->GetIndexOfWebContents(right->GetWebContents());
 +  if (li < 0 || ri < 0 || model->GetSplitForTab(li) != split ||
 +      model->GetSplitForTab(ri) != split) return 0;
++  if (auto* data = model->GetSplitData(split); data && data->visual_data()->split_layout() != layout) {
++    model->UpdateSplitLayout(split, layout);
++  }
++  if (FindSlot(token) != view) return 0;
 +  model->UpdateSplitRatio(split, ratio);
 +  if (FindSlot(token) != view) return 0;
 +  li = model->GetIndexOfWebContents(left->GetWebContents());
@@ -1113,6 +1125,19 @@
 +      model->GetSplitForTab(ri) != split) return 0;
 +  current->second.split_left = left_id;
 +  current->second.split_right = right_id;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_present_split_v1(
++    uint64_t token, int left_id, int right_id, int focused_id, double ratio) {
++  return bato_native_slot_present_split_v2(token, left_id, right_id, focused_id, ratio, 0);
++}
++extern "C" CEF_EXPORT int bato_native_slot_register_split_layout_callbacks_v1(
++    const BatoSplitLayoutCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_split_layout_callbacks.version || g_slot_registration_closed ||
++      (CefContext::Get() && CefContext::Get()->initialized()) || !callbacks ||
++      callbacks->size != sizeof(BatoSplitLayoutCallbacksV1) || callbacks->version != 1 ||
++      !callbacks->changed) return 0;
++  g_split_layout_callbacks = *callbacks;
 +  return 1;
 +}
 +extern "C" CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token) {
@@ -1348,6 +1373,17 @@
 +  }
 +  if (reservation) return mode == 1 ? width : 0;
 +  return mode == 0 ? 6 : width;
++}
++void NativeSplitLayout(BrowserView* view, bool in_split, bool stacked,
++                       const gfx::Rect& first, const gfx::Rect& second) {
++  CEF_REQUIRE_UIT();
++  auto found = Slots().find(view);
++  if (found == Slots().end() || !found->second.token || !found->second.adapter ||
++      !g_split_layout_callbacks.changed) return;
++  g_split_layout_callbacks.changed(
++      g_split_layout_callbacks.context, found->second.token, in_split ? 1 : 0, stacked ? 1 : 0,
++      first.x(), first.y(), first.width(), first.height(),
++      second.x(), second.y(), second.width(), second.height());
 +}
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds) {
 +  CEF_REQUIRE_UIT();
@@ -1631,7 +1667,15 @@
    // Since the user may be triggering navigation from another UI element such as
 --- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
-@@ -39,7 +39,19 @@
+@@ -22,6 +22,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
++#include "chrome/browser/ui/views/frame/multi_contents_view.h"
+ #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+ #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+@@ -39,7 +40,22 @@
 
  #if BUILDFLAG(ENABLE_CEF)
  #include "cef/libcef/browser/chrome/browser_delegate.h"
@@ -1648,11 +1692,14 @@
 +// Room the client's show-sidebar button takes after the traffic lights while the
 +// sidebar reserves no width; must equal SidebarMetrics.revealButtonSlot.
 +constexpr int kNativeSidebarToggleSlot = 38;
++// Room at the toolbar's trailing end for the client's split button; must equal
++// ContentCardFrameView's split button side plus its edge gap.
++constexpr int kNativeSplitButtonSlot = 40;
 +}  // namespace
 
  BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
      BrowserView& browser_view)
-@@ -123,18 +135,95 @@
+@@ -123,18 +139,97 @@
      auto local_params = params.InLocalCoordinates(
          use_browser_bounds ? browser_bounds : params.visual_client_area);
  #if BUILDFLAG(IS_MAC)
@@ -1714,6 +1761,8 @@
 +              local_params.leading_exclusion.content.width() +
 +              kNativeSidebarToggleSlot);
 +        }
++        local_params.trailing_exclusion.content = gfx::SizeF(
++            kNativeSplitButtonSlot, static_cast<float>(top_row));
 +        // The exclusion's height sets the toolbar row. Padding it to the
 +        // toolbar's minimum keeps that row and the sidebar's top edge equal.
 +        local_params.leading_exclusion.vertical_padding = std::max(
@@ -1750,6 +1799,22 @@
  #endif
      return local_params;
    }
+@@ -175,6 +270,15 @@
+ }
+
+ bool BrowserViewLayoutDelegateImpl::IsToolbarVisible() const {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  // A displayed pair in a native-sidebar window shows one native toolbar row per pane.
++  if (auto* multi_contents = browser_view_->multi_contents_view();
++      multi_contents && multi_contents->IsInSplitView() &&
++      !multi_contents->IsPeekPresentationActive() &&
++      cef::NativeSidebarOwnsTabs(&browser_view_.get())) {
++    return false;
++  }
++#endif
+   return browser_view_->IsToolbarVisible();
+ }
+
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
 @@ -1132,6 +1132,13 @@
@@ -2032,7 +2097,22 @@
 
    // SplitTabHighlightController::Delegate:
    void SetHighlightActiveContentsView(bool needs_attention) override;
-@@ -268,6 +303,9 @@
+@@ -262,12 +297,24 @@
+
+   int GetInactiveIndex() const;
+
++  // True while a pair is displayed in a window whose native client draws each pane's toolbar
++  // row, so Chrome's toolbar, outlines and mini toolbars stand down.
++  bool HasNativePaneToolbars() const;
++  void ReportNativePaneFrames(const views::ProposedLayout& layout);
++  bool reported_native_panes_ = false;
++  gfx::Rect reported_first_pane_;
++  gfx::Rect reported_second_pane_;
++  split_tabs::SplitTabLayout reported_native_layout_ = split_tabs::SplitTabLayout::kSideBySide;
++
+   void OnWebContentsFocused(views::WebView*);
+   void OnNtpFooterFocused(views::WebView*);
+   void OnActorOverlayFocused(views::WebView*);
    void OnReadAnythingOverlayFocused(ContentsContainerView* container,
                                      views::WebView* web_view);
 
@@ -2042,7 +2122,7 @@
    ViewSizes GetViewSizes(gfx::Rect available_space) const;
 
    // Clamps to the minimum of kMinWebContentsSize or
-@@ -340,6 +378,18 @@
+@@ -340,6 +387,18 @@
    gfx::Insets split_view_insets_;
 
    bool active_contents_view_highlighted_ = false;
@@ -2071,10 +2151,21 @@
  #include "ui/gfx/geometry/outsets.h"
  #include "ui/gfx/geometry/rect.h"
  #include "ui/gfx/geometry/rounded_corners_f.h"
-@@ -53,6 +54,30 @@
+@@ -52,7 +53,41 @@
+ #include "ui/views/layout/proposed_layout.h"
  #include "ui/views/view_class_properties.h"
 
++#if BUILDFLAG(ENABLE_CEF)
++#include "cef/libcef/browser/chrome/browser_util.h"
++#endif
++
  namespace {
++// Height of each pane's native toolbar row; must equal SplitPaneChrome.toolbarHeight
++// (BatoCore/SplitPaneChrome.swift).
++constexpr int kNativePaneToolbarHeight = 40;
++}  // namespace
++
++namespace {
 +// Swallows pointer input over the live parent and reports a plain click.
 +class PeekScrimView : public ScrimView {
 + public:
@@ -2102,7 +2193,7 @@
  constexpr int kSnapDistance = 15;
  }
 
-@@ -135,6 +160,14 @@
+@@ -135,6 +170,14 @@
    lens_overlay_view->SetLayoutManager(std::make_unique<views::FillLayout>());
    lens_overlay_view_ = AddChildView(std::move(lens_overlay_view));
 
@@ -2117,7 +2208,7 @@
    for (auto& contents_container_view : contents_container_views_) {
      auto& view_map = container_focusable_map_[contents_container_view];
 
-@@ -192,6 +225,7 @@
+@@ -192,6 +235,7 @@
    }
    drop_target_view_ = nullptr;
    lens_overlay_view_ = nullptr;
@@ -2125,7 +2216,7 @@
    resize_area_ = nullptr;
    contents_separators_.Reset();
    background_view_ = nullptr;
-@@ -227,7 +261,9 @@
+@@ -227,7 +271,9 @@
 
    background_view_->SetRoundedCorners(radii);
 
@@ -2136,7 +2227,7 @@
      GetActiveContentsContainerView()->SetRoundedCorners(radii);
      GetInactiveContentsContainerView()->SetRoundedCorners(
          gfx::RoundedCornersF());
-@@ -277,6 +313,99 @@
+@@ -277,6 +323,99 @@
            &tabs::TabInterface::MaybeGetFromContents))
        .Then(&SadTabHelper::From)
        .Then(&SadTabHelper::ReinstallInWebView);
@@ -2236,7 +2327,23 @@
  }
 
  void MultiContentsView::ShowSplitView(
-@@ -507,8 +636,8 @@
+@@ -494,6 +633,15 @@
+   }
+ }
+
++bool MultiContentsView::HasNativePaneToolbars() const {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  return IsInSplitView() && !IsPeekPresentationActive() &&
++         cef::NativeSidebarOwnsTabs(browser_view_);
++#else
++  return false;
++#endif
++}
++
+ // TODO(crbug.com/397777917): Consider using FlexSpecification weights and
+ // interior margins instead of a custom layout once this bug is resolved.
+ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
+@@ -507,8 +655,8 @@
 
    gfx::Rect available_space = gfx::Rect(width, height);
 
@@ -2247,10 +2354,11 @@
    layouts.child_layouts.emplace_back(background_view_.get(), show_background,
                                       available_space);
 
-@@ -520,6 +649,24 @@
+@@ -520,7 +668,26 @@
    available_space =
        CalculateSeparatorLayouts(available_space, layouts.child_layouts);
 
+-  if (IsInSplitView()) {
 +  if (IsPeekPresentationActive()) {
 +    // The live parent fills the normal area; the scrim dims it; the preview
 +    // (the first container, see BeginPeekPresentation) floats inset above both.
@@ -2269,10 +2377,62 @@
 +    layouts.host_size = gfx::Size(width, height);
 +    return layouts;
 +  }
-   if (IsInSplitView()) {
++  // The native client's card margin already surrounds the panes.
++  if (IsInSplitView() && !HasNativePaneToolbars()) {
      available_space.Inset(split_view_insets_);
    }
-@@ -799,12 +946,19 @@
+   ViewSizes sizes = GetViewSizes(available_space);
+@@ -542,6 +709,11 @@
+                          gfx::Size(available_space.width(), sizes.end));
+   }
+
++  if (HasNativePaneToolbars()) {
++    // The client draws each pane's toolbar row over this band.
++    start_rect.Inset(gfx::Insets::TLBR(kNativePaneToolbarHeight, 0, 0, 0));
++    end_rect.Inset(gfx::Insets::TLBR(kNativePaneToolbarHeight, 0, 0, 0));
++  }
+   layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
+                                      contents_container_views_[0]->GetVisible(),
+                                      start_rect);
+@@ -558,7 +730,37 @@
+   return layouts;
+ }
+
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++void MultiContentsView::ReportNativePaneFrames(const views::ProposedLayout& layout) {
++  const auto* first = layout.GetLayoutFor(contents_container_views_[0].get());
++  const auto* second = layout.GetLayoutFor(contents_container_views_[1].get());
++  gfx::Rect first_pane, second_pane;
++  const bool in_split = HasNativePaneToolbars() && first && second;
++  if (in_split) {
++    // Reported frames include the toolbar band above each container.
++    const gfx::Insets band = gfx::Insets::TLBR(-kNativePaneToolbarHeight, 0, 0, 0);
++    first_pane = views::View::ConvertRectToTarget(this, browser_view_, first->bounds);
++    second_pane = views::View::ConvertRectToTarget(this, browser_view_, second->bounds);
++    first_pane.Inset(band);
++    second_pane.Inset(band);
++  }
++  if (in_split == reported_native_panes_ && first_pane == reported_first_pane_ &&
++      second_pane == reported_second_pane_ &&
++      GetSplitLayout() == reported_native_layout_) return;
++  reported_native_panes_ = in_split;
++  reported_first_pane_ = first_pane;
++  reported_second_pane_ = second_pane;
++  reported_native_layout_ = GetSplitLayout();
++  cef::NativeSplitLayout(browser_view_, in_split,
++                         GetSplitLayout() == split_tabs::SplitTabLayout::kStacked,
++                         first_pane, second_pane);
++}
++#endif
++
+ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
++#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
++  ReportNativePaneFrames(layout);
++#endif
+   if (!target_content_bounds_) {
+     for (auto& contents : contents_container_views_) {
+       contents->SetTargetContentBounds(std::nullopt);
+@@ -799,12 +1001,22 @@
    for (auto& contents_container_view : contents_container_views_) {
      const bool is_active =
          contents_container_view->contents_view() == GetActiveContentsView();
@@ -2280,12 +2440,15 @@
 +    // normal content corners.
      contents_container_view->SetRoundedCorners(
 -        is_in_split
-+        is_in_split || (IsPeekPresentationActive() && is_active)
++        HasNativePaneToolbars()
++            ? gfx::RoundedCornersF()
++        : is_in_split || (IsPeekPresentationActive() && is_active)
              ? kSplitViewContentRoundedCorners
 -            : (is_active ? GetBackgroundRadii() : gfx::RoundedCornersF()));
 +            : (is_active || IsPeekPresentationActive()
 +                   ? GetBackgroundRadii()
 +                   : gfx::RoundedCornersF()));
++    contents_container_view->SetNativePaneChrome(HasNativePaneToolbars());
      contents_container_view->UpdateBorderAndOverlay(
          is_in_split, is_active, is_active && active_contents_view_highlighted_);
 +  }
@@ -2296,7 +2459,7 @@
 
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,211 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -2352,6 +2515,22 @@
 +CEF_EXPORT int bato_native_slot_register_split_callbacks_v1(const BatoSplitCallbacksV1* callbacks);
 +CEF_EXPORT int bato_native_slot_present_split_v1(uint64_t token, int left, int right, int focused, double ratio);
 +CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token);
++// Like present_split_v1 with an explicit arrangement: stacked 0 places `left` left of
++// `right`; stacked 1 places `left` above `right`. The ratio is the first pane's share.
++CEF_EXPORT int bato_native_slot_present_split_v2(uint64_t token, int left, int right, int focused,
++                                                 double ratio, int stacked);
++// Pane frames while a pair is displayed, in the window content view's flipped (top-left origin)
++// points, including each pane's toolbar band. in_split 0 means no pair is displayed.
++// May run inside a Views layout pass: clients must defer view mutation.
++typedef struct BatoSplitLayoutCallbacksV1 {
++  size_t size;
++  uint32_t version;
++  void* context;
++  void (*changed)(void* context, uint64_t token, int in_split, int stacked,
++                  double x0, double y0, double w0, double h0,
++                  double x1, double y1, double w1, double h1);
++} BatoSplitLayoutCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_split_layout_callbacks_v1(const BatoSplitLayoutCallbacksV1* callbacks);
 +// Requests Views focus ownership for the native host. Returns 1 when the live
 +// host owns Views focus; the client may then focus/select its editable field.
 +CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
@@ -6916,4 +7095,77 @@
 +
    is_vertical_tabs_enabled_ =
        pref_service_->GetBoolean(prefs::kVerticalTabsEnabled);
+
+--- a/chrome/browser/ui/views/frame/contents_container_view.cc
++++ b/chrome/browser/ui/views/frame/contents_container_view.cc
+@@ -196,6 +196,20 @@
+   return accessible_panes;
+ }
+
++void ContentsContainerView::SetNativePaneChrome(bool enabled) {
++  if (native_pane_chrome_ == enabled) {
++    return;
++  }
++  native_pane_chrome_ = enabled;
++  if (is_in_split_) {
++    SetBorder(enabled ? nullptr
++                      : views::CreateEmptyBorder(gfx::Insets(
++                            kSplitViewContentPadding +
++                            ContentsContainerOutline::kThickness)));
++    UpdateBorderRoundedCorners();
++  }
++}
++
+ void ContentsContainerView::UpdateBorderAndOverlay(bool is_in_split,
+                                                    bool is_active,
+                                                    bool is_highlighted) {
+@@ -215,15 +229,23 @@
+     }
+   } else {
+     if (split_changed) {
+-      SetBorder(views::CreateEmptyBorder(gfx::Insets(
+-          kSplitViewContentPadding + ContentsContainerOutline::kThickness)));
++      SetBorder(native_pane_chrome_
++                    ? nullptr
++                    : views::CreateEmptyBorder(gfx::Insets(
++                          kSplitViewContentPadding +
++                          ContentsContainerOutline::kThickness)));
+       UpdateBorderRoundedCorners();
+     }
+
+-    container_outline_->UpdateState(is_active, is_highlighted);
+-    // Mini toolbar should only be visible for the inactive contents
+-    // container view or both depending on configuration.
+-    mini_toolbar_->UpdateState(is_active, is_highlighted);
++    if (native_pane_chrome_) {
++      container_outline_->SetVisible(false);
++      mini_toolbar_->SetVisible(false);
++    } else {
++      container_outline_->UpdateState(is_active, is_highlighted);
++      // Mini toolbar should only be visible for the inactive contents
++      // container view or both depending on configuration.
++      mini_toolbar_->UpdateState(is_active, is_highlighted);
++    }
+     if (capture_contents_border_view_) {
+       capture_contents_border_view_->SetIsInSplit(true);
+     }
+--- a/chrome/browser/ui/views/frame/contents_container_view.h
++++ b/chrome/browser/ui/views/frame/contents_container_view.h
+@@ -119,6 +119,9 @@
+                               SkColor outline_color,
+                               int font_size);
+
++  // Native pane chrome replaces the split outline, padding and mini toolbar.
++  void SetNativePaneChrome(bool enabled);
++
+   void UpdateBorderAndOverlay(bool is_in_split,
+                               bool is_active,
+                               bool is_highlighted);
+@@ -167,6 +170,7 @@
+       const views::SizeBounds& size_bounds) const override;
+
+   bool is_in_split_ = false;
++  bool native_pane_chrome_ = false;
+
+   raw_ptr<BrowserView> browser_view_ = nullptr;
 

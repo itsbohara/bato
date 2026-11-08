@@ -53,6 +53,22 @@ typedef struct BatoSplitCallbacksV1 {
 CEF_EXPORT int bato_native_slot_register_split_callbacks_v1(const BatoSplitCallbacksV1* callbacks);
 CEF_EXPORT int bato_native_slot_present_split_v1(uint64_t token, int left, int right, int focused, double ratio);
 CEF_EXPORT int bato_native_slot_separate_split_v1(uint64_t token);
+// Like present_split_v1 with an explicit arrangement: stacked 0 places `left` left of
+// `right`; stacked 1 places `left` above `right`. The ratio is the first pane's share.
+CEF_EXPORT int bato_native_slot_present_split_v2(uint64_t token, int left, int right, int focused,
+                                                 double ratio, int stacked);
+// Pane frames while a pair is displayed, in the window content view's flipped (top-left origin)
+// points, including each pane's toolbar band. in_split 0 means no pair is displayed.
+// May run inside a Views layout pass: clients must defer view mutation.
+typedef struct BatoSplitLayoutCallbacksV1 {
+  size_t size;
+  uint32_t version;
+  void* context;
+  void (*changed)(void* context, uint64_t token, int in_split, int stacked,
+                  double x0, double y0, double w0, double h0,
+                  double x1, double y1, double w1, double h1);
+} BatoSplitLayoutCallbacksV1;
+CEF_EXPORT int bato_native_slot_register_split_layout_callbacks_v1(const BatoSplitLayoutCallbacksV1* callbacks);
 // Requests Views focus ownership for the native host. Returns 1 when the live
 // host owns Views focus; the client may then focus/select its editable field.
 CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
