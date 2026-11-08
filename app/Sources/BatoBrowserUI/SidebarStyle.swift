@@ -9,14 +9,22 @@ enum SidebarStyle {
     static let tilesPerRow = 3
     static var rowFont: NSFont { NSFont.systemFont(ofSize: 14) }
     static var actionFont: NSFont { NSFont.systemFont(ofSize: 13) }
-    static let commandBarRadius: CGFloat = 22
-    static let commandBarRowHeight: CGFloat = 48
-    static let commandBarSize = NSSize(width: 680, height: 470)
+    static let commandBarRadius: CGFloat = 12
+    static let commandBarRowHeight: CGFloat = 50
+    static let commandBarHeaderHeight: CGFloat = 56
+    static let commandBarInset: CGFloat = 8
+    static let commandBarMaxRows = 7
+    static let commandBarWidth: CGFloat = 760
     static let downloadsPopoverWidth: CGFloat = 320
     static let downloadsPopoverMaxListHeight: CGFloat = 360
 
+    /// Dia's selected row sinks into the tint (dark pill); on light it is a white lift, as in Arc.
+    private static let selectedRowFill = NSColor(name: nil) {
+        $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.white.withAlphaComponent(0.55)
+    }
+
     static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
-        if selected { return NSColor.labelColor.withAlphaComponent(0.16) }
+        if selected { return selectedRowFill }
         if hovered { return NSColor.labelColor.withAlphaComponent(0.07) }
         if tile { return NSColor.labelColor.withAlphaComponent(0.12) }
         return nil

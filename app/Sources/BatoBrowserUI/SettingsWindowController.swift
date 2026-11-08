@@ -466,7 +466,7 @@ private final class SettingsSidebarButton: NSControl {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 10
-        label.font = .systemFont(ofSize: 17, weight: .medium)
+        label.font = .systemFont(ofSize: 17)
         icon.symbolConfiguration = .init(pointSize: 17, weight: .regular)
         let stack = NSStackView(views: [icon, label])
         stack.spacing = 12
@@ -499,6 +499,7 @@ private final class SettingsSidebarButton: NSControl {
         }
         let color: NSColor = isSelected ? .alternateSelectedControlTextColor : .labelColor
         label.textColor = color
+        label.font = .systemFont(ofSize: 17, weight: isSelected ? .semibold : .regular)
         icon.contentTintColor = color
         setAccessibilityValue(isSelected ? "selected" : nil)
     }

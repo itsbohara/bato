@@ -64,6 +64,13 @@ public final class NativeWorkspaceController: NSObject {
     private weak var pendingCommandBarWindow: NSWindow?
     private var commandBarNavigationTarget: LivePage?
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
+    private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
+    /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
+    public func makeCardFrame() -> ContentCardFrameView {
+        let frame = ContentCardFrameView(accent: accent)
+        cardFrames.add(frame)
+        return frame
+    }
 
     /// Load failures throw without replacing the existing document. The factory
     /// receives the organization's launch Profile, which stays bound to the engine's original context
@@ -91,6 +98,9 @@ public final class NativeWorkspaceController: NSObject {
         self.recovery = recovery
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
+        let closedTabsStore = ClosedTabsStore(directory: directory)
+        runtime.restoreClosedTabs(closedTabsStore.load())
+        runtime.closedTabsDidChange = { try? closedTabsStore.save($0) }
         let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
         sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
         root = sidebar
@@ -273,7 +283,7 @@ public final class NativeWorkspaceController: NSObject {
         commandBarNavigationTarget = target
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
-                                       providerChanged: { [weak self] in self?.setSearchProvider($0) }) { [weak self] query in
+                                       pageIcon: { [weak self] in self?.pageIcons[$0] }) { [weak self] query in
             guard let self else { return [] }
             return CommandBarResults.make(query: query, state: self.runtime.state,
                                           provider: self.commandBarSearchProvider,
@@ -489,7 +499,10 @@ public final class NativeWorkspaceController: NSObject {
         heading.alignment = .centerY
         heading.distribution = .fill
         heading.spacing = 2
-        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight).isActive = true
+        // The toolbar row sits one card margin below the window top, and AppKit centres the traffic lights
+        // about 3pt lower than the row's midpoint; measured against the toolbar in a real window.
+        heading.edgeInsets = NSEdgeInsets(top: SidebarMetrics.headingDrop, left: 0, bottom: 0, right: 0)
+        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight + SidebarMetrics.headingDrop).isActive = true
 
         newTabButton.title = "New Tab"
         newTabButton.image = sidebarSymbol("plus", size: 14)
@@ -667,6 +680,7 @@ public final class NativeWorkspaceController: NSObject {
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
+        for frame in cardFrames.allObjects { frame.accent = accent }
         let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
         switcherButton.title = workspace.name
         switcherButton.image = colorDot(workspaceColor(workspace.color))
@@ -1760,6 +1774,9 @@ enum SidebarMetrics {
     static let sideInset: CGFloat = 10
     /// Must equal kNativeSidebarTopRowHeight in the engine overlay: the sidebar spans the window top and its first row shares the traffic lights' row.
     static let topRowHeight: CGFloat = 46
+    /// How far the heading row sits below the window top: the 8pt card margin (ContentCardFrameView.margin) plus 3pt,
+    /// so it shares the toolbar and traffic lights centre line.
+    static let headingDrop: CGFloat = 11
     /// Space the three traffic lights occupy at the row's leading edge, net of the side inset.
     static let trafficLightClearance: CGFloat = 62
     /// Gap between the green light and the workspace label, net of the row's own 2pt item spacing.
@@ -2373,5 +2390,75 @@ private final class ProfileEditor: NSWindowController {
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window, returnCode: response)
         window.orderOut(nil)
+    }
+}
+
+/// Paints the sidebar's tint in the gutter around the page card, with a rounded cut-out where the
+/// content shows through. The engine reserves the same gutter in Chrome's layout; it is purely
+/// visual and never takes input, so pointer events reach the page and toolbar underneath.
+@MainActor
+public final class ContentCardFrameView: NSView {
+    public static let margin: CGFloat = 8
+    static let cornerRadius: CGFloat = 12
+    var accent: NSColor { didSet { needsDisplay = true } }
+    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
+    public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
+    /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
+    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true } }
+    public var isCardShown = true { didSet { isHidden = !isCardShown } }
+
+    init(accent: NSColor) {
+        self.accent = accent
+        super.init(frame: .zero)
+        autoresizingMask = [.width, .height]
+        // Sibling layers composite by zPosition, not subview order, so Chromium re-adding a native
+        // view (new tab, DevTools, Peek) above this one cannot cover the gutter.
+        wantsLayer = true
+        layer?.zPosition = 1000
+        AppearanceWatcher.start()
+        NotificationCenter.default.addObserver(self, selector: #selector(redraw),
+                                               name: AppearanceWatcher.didChange, object: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+    @objc private func redraw() { needsDisplay = true }
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    public override var isFlipped: Bool { true }
+    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    public override func isAccessibilityElement() -> Bool { false }
+
+    private var cardRect: NSRect {
+        let margin = Self.margin
+        let leading = sidebarWidth + margin
+        return NSRect(x: leading, y: margin, width: max(0, bounds.width - leading - margin),
+                      height: max(0, bounds.height - 2 * margin))
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
+        let highContrast = AppearanceWatcher.increaseContrast
+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: highContrast)
+        let ring = NSBezierPath(rect: bounds)
+        ring.append(card)
+        ring.windingRule = .evenOdd
+        NSGraphicsContext.saveGraphicsState()
+        ring.addClip()
+        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
+        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
+        shadow.shadowBlurRadius = 8
+        shadow.shadowOffset = NSSize(width: 0, height: -1)
+        shadow.set()
+        NSColor.black.setFill()
+        card.fill()
+        NSShadow().set()
+        (highContrast ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.labelColor.withAlphaComponent(0.14)).setStroke()
+        card.lineWidth = highContrast ? 2 : 1
+        card.stroke()
+        NSGraphicsContext.restoreGraphicsState()
     }
 }

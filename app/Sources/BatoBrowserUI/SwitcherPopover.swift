@@ -120,7 +120,7 @@ private final class SwitcherRow: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: isHeader ? 24 : 30),
+            heightAnchor.constraint(equalToConstant: isHeader ? 24 : 27),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),

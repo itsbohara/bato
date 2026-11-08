@@ -7,27 +7,27 @@ import BatoCore
 final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let field = NSTextField(string: "")
     private let glyph = NSImageView()
-    private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private var provider: CommandBarSearchProvider
-    private let providerChanged: (CommandBarSearchProvider) -> Void
     private let table = CommandBarTable()
-    private let hint = NSTextField(labelWithString: "")
-    private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private let openButton = GoPillButton()
+    private let scroll = NSScrollView()
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private let stack = NSStackView()
+    private var listHeight: NSLayoutConstraint!
     private var refreshedQuery = ""
     private let resultsForQuery: (String) -> [CommandBarResult]
+    private let pageIcon: (UUID) -> NSImage?
     private var results: [CommandBarResult] = []
     private(set) var chosenAction: CommandBarAction?
     var query: String { field.stringValue }
 
     init(query: String = "", error: String? = nil,
          provider: CommandBarSearchProvider = .duckDuckGo,
-         providerChanged: @escaping (CommandBarSearchProvider) -> Void,
+         pageIcon: @escaping (UUID) -> NSImage? = { _ in nil },
          results: @escaping (String) -> [CommandBarResult]) {
         self.provider = provider
-        self.providerChanged = providerChanged
+        self.pageIcon = pageIcon
         resultsForQuery = results
-        let panel = CommandBarPanel(contentRect: NSRect(origin: .zero, size: SidebarStyle.commandBarSize),
+        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: SidebarStyle.commandBarWidth, height: 300),
                                     styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.title = "New Tab"
@@ -38,15 +38,11 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         panel.hasShadow = true
         super.init(window: panel)
         let surface = CommandBarSurface()
-        surface.wantsLayer = true
-        surface.layer?.cornerRadius = SidebarStyle.commandBarRadius
-        surface.layer?.borderWidth = 0.5
-        surface.layer?.masksToBounds = true
         panel.contentView = surface
         field.stringValue = query
-        field.placeholderString = "Search or enter a URL"
-        field.font = .systemFont(ofSize: 22, weight: .regular)
-        field.controlSize = .large
+        field.font = .systemFont(ofSize: 19, weight: .medium)
+        field.placeholderAttributedString = NSAttributedString(string: "Search or Enter URL...", attributes: [
+            .font: NSFont.systemFont(ofSize: 19, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -55,27 +51,22 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         field.delegate = self
         field.cell?.sendsActionOnEndEditing = false
         glyph.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
-        glyph.symbolConfiguration = .init(pointSize: 17, weight: .regular)
+        glyph.symbolConfiguration = .init(pointSize: 18, weight: .medium)
         glyph.contentTintColor = .secondaryLabelColor
         glyph.setContentHuggingPriority(.required, for: .horizontal)
-        providerPicker.addItems(withTitles: CommandBarSearchProvider.allCases.map(\.title))
-        if let index = CommandBarSearchProvider.allCases.firstIndex(of: provider) { providerPicker.selectItem(at: index) }
-        providerPicker.target = self
-        providerPicker.action = #selector(changeProvider)
-        providerPicker.setAccessibilityLabel("Web search provider")
-        providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
-        providerPicker.toolTip = "Search provider (also in Settings > General)"
-        providerPicker.isBordered = false
-        providerPicker.controlSize = .small
-        providerPicker.font = .systemFont(ofSize: 12)
-        let inputRow = NSStackView(views: [glyph, field])
-        inputRow.spacing = 10
-        inputRow.alignment = .centerY
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        for view in [glyph, field] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(view)
+        }
+        let separator = NSBox()
+        separator.boxType = .separator
         table.dataSource = self
         table.delegate = self
         table.headerView = nil
         table.rowHeight = SidebarStyle.commandBarRowHeight
+        table.intercellSpacing = .zero
         table.backgroundColor = .clear
         table.selectionHighlightStyle = .regular
         table.allowsEmptySelection = false
@@ -90,54 +81,54 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         table.doubleAction = #selector(openSelected)
         table.openSelection = { [weak self] in self?.openSelected() }
         table.cancel = { [weak self] in self?.dismiss(.cancel) }
-        let scroll = NSScrollView()
         scroll.documentView = table
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
-        hint.lineBreakMode = .byTruncatingTail
-        hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        hint.setAccessibilityIdentifier("bato-command-bar-hint")
-        errorLabel.font = .systemFont(ofSize: 11)
-        errorLabel.textColor = .systemRed
-        errorLabel.stringValue = error ?? ""
-        errorLabel.setAccessibilityIdentifier("bato-command-bar-error")
-        openButton.target = self
-        openButton.action = #selector(openSelected)
-        openButton.keyEquivalent = "\r"
-        openButton.setAccessibilityLabel("Go")
-        openButton.setAccessibilityIdentifier("bato-command-bar-open")
-        panel.defaultButtonCell = openButton.cell as? NSButtonCell
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [providerPicker, hint, spacer, openButton])
-        footer.spacing = 12
-        footer.alignment = .centerY
-        let divider = NSBox()
-        divider.boxType = .separator
-        let stack = NSStackView(views: [inputRow, divider, scroll, errorLabel, footer])
+        scroll.hasVerticalScroller = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let listHost = NSView()
+        listHost.translatesAutoresizingMaskIntoConstraints = false
+        listHost.addSubview(scroll)
+        status.font = .systemFont(ofSize: 12)
+        status.textColor = .secondaryLabelColor
+        status.setAccessibilityIdentifier("bato-command-bar-hint")
+        if let error, !error.isEmpty { status.stringValue = error; status.textColor = .systemRed }
+        let statusHost = NSView()
+        statusHost.translatesAutoresizingMaskIntoConstraints = false
+        status.translatesAutoresizingMaskIntoConstraints = false
+        statusHost.addSubview(status)
+        stack.setViews([header, separator, listHost, statusHost], in: .top)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         surface.addSubview(stack)
+        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
+        let inset = SidebarStyle.commandBarInset
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 22),
-            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -22),
-            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -18),
-            inputRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            field.heightAnchor.constraint(equalToConstant: 40),
-            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
-            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: surface.topAnchor),
+            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            header.heightAnchor.constraint(equalToConstant: SidebarStyle.commandBarHeaderHeight),
+            glyph.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 20),
+            glyph.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            glyph.widthAnchor.constraint(equalToConstant: 22),
+            field.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 12),
+            field.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -20),
+            field.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            listHost.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scroll.leadingAnchor.constraint(equalTo: listHost.leadingAnchor, constant: inset),
+            scroll.trailingAnchor.constraint(equalTo: listHost.trailingAnchor, constant: -inset),
+            scroll.topAnchor.constraint(equalTo: listHost.topAnchor, constant: inset),
+            scroll.bottomAnchor.constraint(equalTo: listHost.bottomAnchor, constant: -inset),
+            listHeight,
+            statusHost.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            status.leadingAnchor.constraint(equalTo: statusHost.leadingAnchor, constant: 20),
+            status.trailingAnchor.constraint(equalTo: statusHost.trailingAnchor, constant: -20),
+            status.topAnchor.constraint(equalTo: statusHost.topAnchor),
+            status.bottomAnchor.constraint(equalTo: statusHost.bottomAnchor, constant: -10)
         ])
-        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         refresh()
     }
 
@@ -158,16 +149,29 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         refreshedQuery = query
-        openButton.isEnabled = results.indices.contains(table.selectedRow)
         if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
-            hint.stringValue = message
-        } else {
-            hint.stringValue = "↑↓ choose · Esc cancel"
+            status.stringValue = message
+            status.textColor = .secondaryLabelColor
+        } else if status.textColor == .secondaryLabelColor {
+            status.stringValue = ""
         }
+        fitToResults()
+    }
+
+    /// The panel hugs its rows, as Arc's does. Resizing a sheet re-centres it, so the top edge is pinned back.
+    private func fitToResults() {
+        listHeight.constant = CGFloat(min(results.count, SidebarStyle.commandBarMaxRows)) * SidebarStyle.commandBarRowHeight
+        status.superview?.isHidden = status.stringValue.isEmpty
+        guard let window else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let height = ceil(stack.fittingSize.height)
+        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
+        window.setFrameTopLeftPoint(topLeft)
     }
 
     func controlTextDidChange(_ notification: Notification) {
-        errorLabel.stringValue = ""
+        if status.textColor == .systemRed { status.stringValue = ""; status.textColor = .secondaryLabelColor }
         refresh()
     }
 
@@ -190,60 +194,35 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { results.count }
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        openButton.isEnabled = results.indices.contains(table.selectedRow)
-    }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedRowView() }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PaletteRowView() }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard results.indices.contains(row) else { return nil }
         let result = results[row]
         let symbol: String
+        var detail = ""
+        var trailing = "Open"
+        var selectedTrailing = "Open"
+        var image: NSImage?
         switch result.action {
-        case .open: symbol = "arrow.up.right"
-        case .navigateCurrent: symbol = "arrow.right"
-        case .peek: symbol = "rectangle.center.inset.filled"
-        case .activate: symbol = "rectangle.on.rectangle"
-        case .command: symbol = "command"
+        case .open(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString
+        case .navigateCurrent(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString; trailing = "Go"; selectedTrailing = "Go"
+        case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
+        case .activate(let page):
+            symbol = "rectangle.on.rectangle"
+            detail = page.entry.lastURL.absoluteString
+            trailing = page.workspaceName.uppercased()
+            selectedTrailing = "Switch to Tab"
+            image = pageIcon(page.entryID) ?? SidebarStyle.letterIcon(for: page.entry.title, url: page.entry.lastURL, size: 16)
+        case .command: symbol = "command"; trailing = "Command"; selectedTrailing = "Run"
         }
-        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
-        image.symbolConfiguration = .init(pointSize: 15, weight: .regular)
-        image.contentTintColor = .secondaryLabelColor
-        let title = NSTextField(labelWithString: result.title)
-        title.font = .systemFont(ofSize: 15)
-        title.lineBreakMode = .byTruncatingTail
-        let detail = NSTextField(labelWithString: result.subtitle)
-        detail.font = .systemFont(ofSize: 13)
-        detail.textColor = .secondaryLabelColor
-        detail.lineBreakMode = .byTruncatingMiddle
-        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
-        let rowView = NSStackView(views: [image, title, detail])
-        rowView.spacing = 10
-        rowView.alignment = .firstBaseline
-        rowView.translatesAutoresizingMaskIntoConstraints = false
-        let cell = NSTableCellView()
-        cell.textField = title
-        cell.addSubview(rowView)
-        NSLayoutConstraint.activate([
-            rowView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
-            rowView.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
-            rowView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 20)
-        ])
+        let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        let cell = PaletteCell(result: result, icon: image ?? symbolImage ?? NSImage(), iconIsSymbol: image == nil,
+                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing)
         return cell
     }
 
-    @objc private func changeProvider() {
-        let choices = CommandBarSearchProvider.allCases
-        guard choices.indices.contains(providerPicker.indexOfSelectedItem) else { return }
-        provider = choices[providerPicker.indexOfSelectedItem]
-        providerChanged(provider)
-        refresh()
-    }
-
-    @objc private func cancelBar() { dismiss(.cancel) }
     @objc private func openSelected() {
         guard results.indices.contains(table.selectedRow) else { return }
         chosenAction = results[table.selectedRow].action
@@ -253,41 +232,6 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window, returnCode: response)
         window.orderOut(nil)
-    }
-}
-
-/// The "Go" pill: a light capsule with dark text, as in Dia, instead of a stock push button.
-@MainActor
-private final class GoPillButton: NSButton {
-    init() {
-        super.init(frame: .zero)
-        title = "Go  ⏎"
-        isBordered = false
-        font = .systemFont(ofSize: 15, weight: .semibold)
-        wantsLayer = true
-        layer?.cornerRadius = 15
-        focusRingType = .none
-        heightAnchor.constraint(equalToConstant: 30).isActive = true
-        widthAnchor.constraint(equalToConstant: 78).isActive = true
-        refreshColors()
-    }
-    required init?(coder: NSCoder) { fatalError("Not supported") }
-    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
-    override func viewDidChangeEffectiveAppearance() { refreshColors() }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        NotificationCenter.default.removeObserver(self)
-        if window != nil {
-            NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged), name: AppearanceWatcher.didChange, object: nil)
-        }
-    }
-    @objc private func contrastChanged() { refreshColors() }
-    private func refreshColors() {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 1 : 0.88).cgColor
-            attributedTitle = NSAttributedString(string: title, attributes: [
-                .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
-        }
     }
 }
 
@@ -320,13 +264,31 @@ private final class CommandBarTable: NSTableView {
     }
 }
 
+/// Translucent panel: vibrancy under a dark or light tint so the page stays faintly visible around and behind it.
 @MainActor
-private final class CommandBarSurface: NSView {
-    override var wantsUpdateLayer: Bool { true }
+private final class CommandBarSurface: NSVisualEffectView {
+    private let tint = CommandBarTint()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = SidebarStyle.commandBarRadius
+        layer?.masksToBounds = true
+        tint.frame = bounds
+        tint.autoresizingMask = [.width, .height]
+        addSubview(tint)
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        layer?.borderColor = NSColor.separatorColor.cgColor
-        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 0.5
+        super.updateLayer()
+        layer?.borderColor = NSColor(name: nil) {
+            $0.isDark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.12)
+        }.cgColor
+        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 1
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -339,5 +301,108 @@ private final class CommandBarSurface: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
+        tint.needsDisplay = true
+    }
+}
+
+@MainActor
+private final class CommandBarTint: NSView {
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = (effectiveAppearance.isDark
+                ? NSColor(srgbRed: 0.098, green: 0.098, blue: 0.106, alpha: 0.9)
+                : NSColor.white.withAlphaComponent(0.72)).cgColor
+        }
+    }
+}
+
+/// Selected row: a saturated indigo pill, as in Arc, in both appearances.
+@MainActor
+private final class PaletteRowView: NSTableRowView {
+    static let accent = NSColor(srgbRed: 0.357, green: 0.357, blue: 0.839, alpha: 1)
+    override var isEmphasized: Bool { get { true } set {} }
+    override var isSelected: Bool {
+        didSet { (subviews.first as? PaletteCell)?.apply(selected: isSelected) }
+    }
+    override func drawSelection(in dirtyRect: NSRect) {
+        Self.accent.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1), xRadius: 8, yRadius: 8).fill()
+    }
+    override func addSubview(_ view: NSView) {
+        super.addSubview(view)
+        (view as? PaletteCell)?.apply(selected: isSelected)
+    }
+}
+
+@MainActor
+private final class PaletteCell: NSTableCellView {
+    private let icon = NSImageView()
+    private let detail = NSTextField(labelWithString: "")
+    private let trailing = NSTextField(labelWithString: "")
+    private let arrowBox = NSView()
+    private let arrow = NSImageView()
+    private let unselectedTrailing: String
+    private let selectedTrailing: String
+    private let iconIsSymbol: Bool
+
+    init(result: CommandBarResult, icon image: NSImage, iconIsSymbol: Bool, detail text: String,
+         unselectedTrailing: String, selectedTrailing: String) {
+        self.unselectedTrailing = unselectedTrailing
+        self.selectedTrailing = selectedTrailing
+        self.iconIsSymbol = iconIsSymbol
+        super.init(frame: .zero)
+        icon.image = image
+        icon.imageScaling = .scaleProportionallyDown
+        let title = NSTextField(labelWithString: result.title)
+        title.font = .systemFont(ofSize: 14, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        textField = title
+        detail.stringValue = text
+        detail.font = .systemFont(ofSize: 13)
+        detail.lineBreakMode = .byTruncatingMiddle
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing.font = .systemFont(ofSize: 12, weight: .semibold)
+        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
+        arrow.translatesAutoresizingMaskIntoConstraints = false
+        arrowBox.wantsLayer = true
+        arrowBox.layer?.cornerRadius = 5
+        arrowBox.translatesAutoresizingMaskIntoConstraints = false
+        arrowBox.addSubview(arrow)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [icon, title, detail, spacer, trailing, arrowBox])
+        row.spacing = 10
+        row.setCustomSpacing(12, after: spacer)
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
+            arrowBox.widthAnchor.constraint(equalToConstant: 22),
+            arrowBox.heightAnchor.constraint(equalToConstant: 22),
+            arrow.centerXAnchor.constraint(equalTo: arrowBox.centerXAnchor),
+            arrow.centerYAnchor.constraint(equalTo: arrowBox.centerYAnchor)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func apply(selected: Bool) {
+        textField?.textColor = selected ? .white : .labelColor
+        detail.textColor = selected ? NSColor.white.withAlphaComponent(0.7) : .secondaryLabelColor
+        trailing.stringValue = selected ? selectedTrailing : unselectedTrailing
+        trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.85) : .secondaryLabelColor
+        if iconIsSymbol { icon.contentTintColor = selected ? .white : .secondaryLabelColor }
+        let arrowColor = selected ? PaletteRowView.accent : NSColor.secondaryLabelColor
+        arrow.image = NSImage(systemSymbolName: "arrow.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .bold).applying(.init(paletteColors: [arrowColor])))
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            arrowBox.layer?.backgroundColor = (selected ? NSColor.white : NSColor.labelColor.withAlphaComponent(0.08)).cgColor
+        }
     }
 }
