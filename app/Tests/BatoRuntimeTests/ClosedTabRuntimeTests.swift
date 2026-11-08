@@ -120,4 +120,36 @@ struct ClosedTabRuntimeTests {
         #expect(runtime.state.currentWorkspace.tabs.map(\.title).sorted() == ["A", "B"])
         #expect(!runtime.canReopenClosedTab)
     }
+
+    @Test func historyIsReportedOnChangeAndRestoredIntoANewRuntime() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: url("a"), title: "A")
+        let profileID = state.currentWorkspace.profileID
+        let runtime = try PageRuntime(state: state, engine: ClosingEngine(profileID), commit: { _ in })
+        var reported: [UUID: ClosedTabStack] = [:]
+        runtime.closedTabsDidChange = { reported = $0 }
+        #expect(runtime.closeEntry(first))
+        #expect(reported[profileID]?.tabs.map(\.title) == ["A"])
+
+        let relaunched = try PageRuntime(state: state, engine: ClosingEngine(profileID), commit: { _ in })
+        relaunched.restoreClosedTabs(reported)
+        #expect(relaunched.canReopenClosedTab)
+        #expect(relaunched.reopenClosedTab())
+        #expect(relaunched.state.currentWorkspace.tabs.map(\.title) == ["A", "A"])
+    }
+
+    @Test func restoreDropsUnknownProfilesAndUnreopenableURLs() throws {
+        let state = BrowserState.initial()
+        let profileID = state.currentWorkspace.profileID
+        let workspaceID = state.currentWorkspace.id
+        let runtime = try PageRuntime(state: state, engine: ClosingEngine(profileID), commit: { _ in })
+        let stranger = UUID()
+        runtime.restoreClosedTabs([
+            profileID: ClosedTabStack(tabs: [
+                ClosedTab(profileID: profileID, workspaceID: workspaceID, title: "file", url: URL(string: "file:///etc/hosts")!, index: 0)]),
+            stranger: ClosedTabStack(tabs: [
+                ClosedTab(profileID: stranger, workspaceID: UUID(), title: "gone", url: url("x"), index: 0)]),
+        ])
+        #expect(!runtime.canReopenClosedTab)
+    }
 }

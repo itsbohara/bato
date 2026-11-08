@@ -109,7 +109,11 @@ public final class PageRuntime {
     public private(set) var livePages: [UUID: LivePage] = [:]
     public private(set) var pendingClose: Set<LivePage> = []
     public private(set) var lastError: PageRuntimeError?
-    private var closedTabs: [UUID: ClosedTabStack] = [:]
+    private var closedTabs: [UUID: ClosedTabStack] = [:] {
+        didSet { closedTabsDidChange?(closedTabs) }
+    }
+    /// Called after every change to the closed-tab history, for persisting it.
+    public var closedTabsDidChange: (([UUID: ClosedTabStack]) -> Void)?
     /// Live pages being closed to archive their tab, with the time the archive was requested.
     private var pendingArchive: [UUID: Date] = [:]
     /// Time source for archive activity and records; tests replace it.
@@ -525,6 +529,16 @@ public final class PageRuntime {
         guard pendingClose.insert(page).inserted else { return true }
         engine.requestClose(page)
         return true
+    }
+
+    /// Loads persisted closed-tab history, keeping only tabs of existing Profiles with a reopenable URL.
+    public func restoreClosedTabs(_ stacks: [UUID: ClosedTabStack]) {
+        let profileIDs = Set(state.workspaces.map(\.profileID))
+        closedTabs = stacks.reduce(into: [:]) { result, entry in
+            guard profileIDs.contains(entry.key) else { return }
+            let stack = ClosedTabStack(tabs: entry.value.tabs.filter { BrowserState.isValidPageURL($0.url) })
+            if !stack.isEmpty { result[entry.key] = stack }
+        }
     }
 
     /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's

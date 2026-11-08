@@ -38,7 +38,7 @@ public struct PageEntry: Identifiable, Codable, Equatable, Sendable {
 
 /// A transient organization search result; engine-loaded state stays in the runtime.
 /// A temporary tab that was closed, with where it sat so reopening can put it back.
-public struct ClosedTab: Equatable, Sendable {
+public struct ClosedTab: Equatable, Sendable, Codable {
     public var profileID: UUID
     public var workspaceID: UUID
     public var title: String
@@ -55,11 +55,16 @@ public struct ClosedTab: Equatable, Sendable {
 }
 
 /// The last closed tab comes out first. Past the capacity the oldest is dropped.
-public struct ClosedTabStack: Equatable, Sendable {
+public struct ClosedTabStack: Equatable, Sendable, Codable {
     public static let capacity = 25
     public private(set) var tabs: [ClosedTab] = []
 
     public init() {}
+
+    /// Oldest first, as stored; keeps only the newest `capacity` tabs.
+    public init(tabs: [ClosedTab]) {
+        self.tabs = Array(tabs.suffix(Self.capacity))
+    }
 
     public var last: ClosedTab? { tabs.last }
 
@@ -1319,6 +1324,8 @@ public struct BrowserState: Codable, Equatable, Sendable {
             throw BrowserStateError.invalidColor
         }
     }
+
+    public static func isValidPageURL(_ url: URL) -> Bool { (try? validateURL(url)) != nil }
 
     private static func validateURL(_ url: URL) throws {
         if BrowserEssential.accepts(url) { return }
