@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "72169a5cb1b2abec89fa64a6783d7569336dc5a7154110528f20a246a37a0c71",
+  "patch_sha256": "2b7ff0b64e29bdb0003e9029c4d3f33b9ded71d69e23cc14f92c817c2dbf2462",
   "files": [
     {
       "root": "cef",
@@ -14,7 +14,7 @@
       "root": "cef",
       "path": "BUILD.gn",
       "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
-      "patched_sha256": "d17f5baf649674ecd1634bc18741357322e21d73691bbc533485701439cddf8c"
+      "patched_sha256": "7338d6848f8eff210d40a738c57558c627b788708c52f15177185ba099a5d1ab"
     },
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "b0ca1de1fd74bdf93a2fae89ca6f4c899f27387ed4ced315df89e067f4fcb208"
+      "patched_sha256": "bc6995a0bce35f7c0d83b66a62fb322154d74c49d27b12e17196f0c9e6533f86"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "b2e4817478396386ba0d4f3867d10942f8f9f7f1aff9dd5ab1c410360ba91a2a"
+      "patched_sha256": "1f44aebe3f0ff1bb99bdcee36545307729f618e3c20e6ae40d898edd7c5625eb"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "85040e6352043ed5fdd67f51554f4554c5a8d65835de25ab83d48de14acca784"
+      "patched_sha256": "656ead4c3f46042b434167ee6c024ee2fa31c3d54ff137515714f389144bef7c"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "7b91b24cd42fe52ba57975c0c3d813667dbe561430fd601d2dd0d0a6b8a16369"
+      "patched_sha256": "f3b4e23c79930d6de31fab210d31aa5fae91d394f96eb84bf39800662c71338b"
     },
     {
       "root": "cef",
@@ -368,13 +368,31 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
       "original_sha256": null,
-      "patched_sha256": "9bddeab63ceaa892ddfa20829085671929fd1d036ffdbe64ddd9c7c92c49f3e3"
+      "patched_sha256": "4aed416c6146f59ea1665629886538bd5d2599cdc5e198f96ac0bb9b00b50c21"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift",
       "original_sha256": null,
       "patched_sha256": "d4f19cc50bd0dd2121040d4a6597e5cbdd98c98ac573a797410ed0cbe7250eed"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
+      "original_sha256": null,
+      "patched_sha256": "999eb8af09dac254af3126bca4ccb0057924d0306069d07131dcb7f01828caf3"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoCore/TabSwitcher.swift",
+      "original_sha256": null,
+      "patched_sha256": "2f6188fecf47eb6b3ab35086a5d5116f95facb80a3d3e89af3cdd277b0cc1ad6"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoBrowserUI/TabSwitcherPanel.swift",
+      "original_sha256": null,
+      "patched_sha256": "7d691305ff3e029050de16c311903ccf3f0246ba277b670f52276cca02f1846e"
     }
   ],
   "source_mirrors": {
@@ -434,6 +452,9 @@
     "app/Sources/BatoBrowserUI/SidebarHoverCard.swift": "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift",
     "app/Sources/BatoCore/SidebarPeekDismissal.swift": "tests/cefsimple/bato/BatoCore/SidebarPeekDismissal.swift",
     "app/Sources/BatoCore/SplitPaneChrome.swift": "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
-    "app/Sources/BatoBrowserUI/SplitPaneOverlay.swift": "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift"
+    "app/Sources/BatoBrowserUI/SplitPaneOverlay.swift": "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift",
+    "app/Sources/BatoCore/SidebarRows.swift": "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
+    "app/Sources/BatoCore/TabSwitcher.swift": "tests/cefsimple/bato/BatoCore/TabSwitcher.swift",
+    "app/Sources/BatoBrowserUI/TabSwitcherPanel.swift": "tests/cefsimple/bato/BatoBrowserUI/TabSwitcherPanel.swift"
   }
 }

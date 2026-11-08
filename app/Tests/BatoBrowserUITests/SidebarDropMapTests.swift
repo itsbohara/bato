@@ -112,3 +112,12 @@ final class SidebarDropMapTests: XCTestCase {
         XCTAssertEqual(plan.line, line)
     }
 }
+
+final class TabSwitcherPanelTests: XCTestCase {
+    func testVisibleRangeKeepsSelectionInsideTheWindow() {
+        XCTAssertEqual(TabSwitcherPanel.visibleRange(count: 5, selected: 4), 0..<5)
+        XCTAssertEqual(TabSwitcherPanel.visibleRange(count: 20, selected: 0), 0..<6)
+        XCTAssertEqual(TabSwitcherPanel.visibleRange(count: 20, selected: 10), 7..<13)
+        XCTAssertEqual(TabSwitcherPanel.visibleRange(count: 20, selected: 19), 14..<20)
+    }
+}

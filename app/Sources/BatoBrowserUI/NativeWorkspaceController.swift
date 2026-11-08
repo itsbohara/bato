@@ -38,11 +38,14 @@ public final class NativeWorkspaceController: NSObject {
     private var dropSlotViews: [(view: NSView, kind: SidebarDropSlot.Kind)] = []
     private let entryDragSource = SidebarEntryDragSource()
     private let hoverCard = SidebarHoverCard()
-    private var splitControls: [String: NSButton] = [:]
     private let peekRow = NSStackView()
     private let peekLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var hasStarted = false
+    private var tabSwitcher: TabSwitcherSession?
+    private var tabSwitcherPanel: TabSwitcherPanel?
+    private var tabSwitcherTimer: Timer?
+    private var tabSwitcherMonitor: Any?
     private var sheetObserver: NSObjectProtocol?
     private var workspaceEditor: WorkspaceEditor?
     private var folderEditor: FolderEditor?
@@ -76,6 +79,10 @@ public final class NativeWorkspaceController: NSObject {
         frame.showsEmptyState = runtime.state.showsEmptySpace
         frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
         frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
+        frame.onSplitRatio = { [weak self] ratio in
+            guard let self, let split = self.runtime.state.currentSplit else { return }
+            _ = self.runtime.updateSplitRatio(split.id, ratio: ratio)
+        }
         frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
         cardFrames.add(frame)
         return frame
@@ -176,6 +183,7 @@ public final class NativeWorkspaceController: NSObject {
     public func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        installTabSwitcherMonitor()
         sheetObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndSheetNotification, object: root.window, queue: .main) { [weak self] _ in
             // Let the sheet finish detaching before the engine is asked to select or close.
@@ -256,6 +264,88 @@ public final class NativeWorkspaceController: NSObject {
     private func performWhenIdle(_ command: () -> Bool) {
         guard commandBar == nil, pageFinder == nil, root.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         perform(command)
+    }
+
+    // MARK: Ctrl-Tab switcher
+
+    private var canSwitchTabs: Bool {
+        hasStarted && commandBar == nil && pageFinder == nil && workspaceEditor == nil && folderEditor == nil &&
+            root.window?.attachedSheet == nil && NSApp.modalWindow == nil
+    }
+
+    /// Ctrl-Tab is taken here, before Chromium, because releasing Control is what commits the choice and only
+    /// a monitor sees both. Menus and Cmd-Option-arrows keep stepping through the sidebar.
+    private func installTabSwitcherMonitor() {
+        guard tabSwitcherMonitor == nil else { return }
+        tabSwitcherMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            nonisolated(unsafe) let unsafeEvent = event
+            let consumed = MainActor.assumeIsolated { self?.handleTabSwitcher(unsafeEvent) == true }
+            return consumed ? nil : event
+        }
+    }
+
+    private func handleTabSwitcher(_ event: NSEvent) -> Bool {
+        guard event.window != nil, event.window === root.window else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        switch event.type {
+        case .keyDown:
+            if tabSwitcher != nil, event.keyCode == 53 { endTabSwitcher(commit: false); return true }
+            guard event.keyCode == 48, flags.contains(.control), flags.isDisjoint(with: [.command, .option]) else {
+                return tabSwitcher != nil
+            }
+            advanceTabSwitcher(step: flags.contains(.shift) ? -1 : 1)
+            return true
+        case .flagsChanged:
+            if tabSwitcher != nil, !flags.contains(.control) { endTabSwitcher(commit: true) }
+            return false
+        default:
+            return false
+        }
+    }
+
+    private func advanceTabSwitcher(step: Int) {
+        if tabSwitcher != nil {
+            tabSwitcher?.advance(step: step)
+            showTabSwitcher()
+            return
+        }
+        guard canSwitchTabs, let session = TabSwitcherSession(items: runtime.tabSwitcherItems(), step: step) else { return }
+        tabSwitcher = session
+        tabSwitcherTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard self?.tabSwitcher != nil else { return }
+                self?.tabSwitcher?.holdElapsed()
+                self?.showTabSwitcher()
+            }
+        }
+    }
+
+    private func showTabSwitcher() {
+        guard let session = tabSwitcher, session.phase == .showing || tabSwitcherPanel?.isShowing == true, let window = root.window else { return }
+        let panel = tabSwitcherPanel ?? TabSwitcherPanel { [weak self] id in self?.switcherContent(for: id) }
+        tabSwitcherPanel = panel
+        panel.show(session, over: window)
+    }
+
+    private func switcherContent(for id: UUID) -> TabSwitchRowContent? {
+        guard let page = runtime.state.visibleEntries.first(where: { $0.id == id }) else { return nil }
+        let title = pageTitle(page)
+        let size = SidebarStyle.rowIconSize + 4
+        let icon = (pageIcons[id]?.copy() as? NSImage).map { icon -> NSImage in icon.size = NSSize(width: size, height: size); return icon }
+            ?? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: size)
+        return TabSwitchRowContent(title: title, host: SidebarHoverCardContent(title: title, url: page.lastURL).host, icon: icon)
+    }
+
+    /// Ends the switcher; a commit selects the chosen item, selecting either member of a pair shows both panes.
+    private func endTabSwitcher(commit: Bool) {
+        guard let session = tabSwitcher else { return }
+        tabSwitcher = nil
+        tabSwitcherTimer?.invalidate()
+        tabSwitcherTimer = nil
+        tabSwitcherPanel?.hide()
+        tabSwitcherPanel = nil
+        guard commit, case .commit(let item) = session.controlReleased(), canSwitchTabs else { return }
+        performWhenIdle { runtime.selectEntry(item.selectionEntryID) }
     }
 
     /// Opens History, Downloads or Chromium's settings as a tab of the current Profile.
@@ -815,8 +905,6 @@ public final class NativeWorkspaceController: NSObject {
             guard let role = ordered.firstIndex(where: { root.window?.firstResponder === $0 }) else { return nil }
             return (id, role)
         }.first
-        let focusedSplit = splitControls.first { root.window?.firstResponder === $0.value }?.key
-        splitControls.removeAll()
         let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
         pageControls.removeAll()
         folderControls.removeAll()
@@ -830,19 +918,14 @@ public final class NativeWorkspaceController: NSObject {
             entries.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        let favorites = state.profiles.first(where: { $0.id == workspace.profileID })?.favorites ?? []
-        if let split = state.currentSplit { addActiveSplit(split, workspaceID: workspace.id) }
-        addSavedSplits(workspaceID: workspace.id)
-        addSection("Favorites", pages: favorites)
-        let filedIDs = Set(workspace.folders.flatMap(\.pinIDs))
-        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) }, includeEmpty: !workspace.folders.isEmpty)
-        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
-        addSection("Tabs", pages: workspace.tabs)
+        let rows = state.sidebarRows()
+        addSection("Favorites", rows: rows[.favorites] ?? [])
+        addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
+        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
+        addSection("Tabs", rows: rows[.tabs] ?? [])
         entries.restoreFavoritesZone()
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
-        } else if let focusedSplit, let control = splitControls[focusedSplit] {
-            root.window?.makeFirstResponder(control)
         } else if let focusedFolder, let controls = folderControls[focusedFolder.id] {
             let ordered = [controls.disclosure, controls.title, controls.actions]
             root.window?.makeFirstResponder(ordered[focusedFolder.role])
@@ -902,159 +985,11 @@ public final class NativeWorkspaceController: NSObject {
         return true
     }
 
-    private func splitTitle(_ split: PageSplit) -> String {
-        let pages = runtime.state.currentWorkspace.pins + runtime.state.currentWorkspace.tabs
-        let left = pages.first { $0.id == split.leftEntryID }
-        let right = pages.first { $0.id == split.rightEntryID }
-        return "\(left.map(pageTitle) ?? "Page") + \(right.map(pageTitle) ?? "Page")"
-    }
-
     private func pageTitle(_ page: PageEntry) -> String {
         page.title.isEmpty ? (page.lastURL.host ?? "Page") : page.title
     }
 
-    private func addActiveSplit(_ split: PageSplit, workspaceID: UUID) {
-        let heading = NSTextField(labelWithString: "Split view")
-        heading.font = .systemFont(ofSize: 11, weight: .semibold)
-        heading.textColor = .secondaryLabelColor
-        entries.addArrangedSubview(heading)
-        let pages = runtime.state.currentWorkspace.pins + runtime.state.currentWorkspace.tabs
-        let isClosing = runtime.pendingClose.contains { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }
-        let sides = NSStackView()
-        sides.orientation = .horizontal
-        sides.distribution = .fillEqually
-        sides.spacing = 4
-        for (position, entryID) in (split.orientation == .horizontal ? [("left", split.leftEntryID), ("right", split.rightEntryID)]
-                                                     : [("top", split.leftEntryID), ("bottom", split.rightEntryID)]) {
-            guard let page = pages.first(where: { $0.id == entryID }) else { continue }
-            let button = ActionButton(title: pageTitle(page)) { [weak self] in
-                guard let self, self.canRunSplitAction(in: workspaceID),
-                      self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
-                self.perform { self.runtime.activateSplit(split.id, focusedEntryID: entryID) }
-            }
-            configureTextAction(button, symbol: "rectangle.split.2x1")
-            let iconSize = SidebarStyle.rowIconSize
-            if let icon = pageIcons[page.id]?.copy() as? NSImage {
-                icon.size = NSSize(width: iconSize, height: iconSize)
-                button.image = icon
-            } else {
-                button.image = SidebarStyle.letterIcon(for: pageTitle(page), url: page.lastURL, size: iconSize)
-            }
-            button.contentTintColor = runtime.state.currentWorkspace.activeEntryID == entryID ? accent : .secondaryLabelColor
-            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
-            button.setAccessibilityLabel("Focus \(position) page: \(pageTitle(page))")
-            let key = "bato-split-\(position)-\(split.id.uuidString)"
-            button.setAccessibilityIdentifier(key)
-            splitControls[key] = button
-            button.isEnabled = !isClosing
-            sides.addArrangedSubview(button)
-        }
-        entries.addArrangedSubview(sides)
-        sides.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
-        let actions = NSStackView()
-        actions.orientation = .horizontal
-        actions.spacing = 4
-        if !split.isPinned {
-            let pin = ActionButton(title: "Pin pair") { [weak self] in
-                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
-                self.perform { self.runtime.pinSplit(split.id) }
-            }
-            configureTextAction(pin, symbol: "pin")
-            pin.toolTip = "Save both destinations as a pinned pair."
-            pin.isEnabled = !isClosing
-            let key = "bato-pin-split-\(split.id.uuidString)"
-            pin.setAccessibilityIdentifier(key)
-            splitControls[key] = pin
-            actions.addArrangedSubview(pin)
-        }
-        let separate = ActionButton(title: "Separate") { [weak self] in
-            guard let self, self.canRunSplitAction(in: workspaceID) else { return }
-            self.perform { split.isPinned ? self.runtime.deactivateSplit() : self.runtime.dissolveSplit(split.id) }
-        }
-        configureTextAction(separate, symbol: "rectangle.split.2x1")
-        separate.toolTip = split.isPinned ? "Show the focused page alone. The saved pair remains available." : "Separate the pages. Both pages remain available."
-        separate.setAccessibilityLabel("Separate split")
-        separate.isEnabled = !isClosing
-        let key = "bato-separate-split-\(split.id.uuidString)"
-        separate.setAccessibilityIdentifier(key)
-        splitControls[key] = separate
-        actions.addArrangedSubview(separate)
-        let optionsKey = "bato-split-options-\(split.id.uuidString)"
-        let options = ActionButton(title: "") { [weak self] in
-            guard let self, let anchor = self.splitControls[optionsKey] else { return }
-            self.showSplitOptions(split.id, workspaceID: workspaceID, anchor: anchor)
-        }
-        configureIcon(options, symbol: "ellipsis", label: "Split options")
-        options.setAccessibilityIdentifier(optionsKey)
-        options.toolTip = "Adjust split widths"
-        options.isEnabled = !isClosing
-        splitControls[optionsKey] = options
-        actions.addArrangedSubview(options)
-        entries.addArrangedSubview(actions)
-        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
-    }
-
-    private func showSplitOptions(_ splitID: UUID, workspaceID: UUID, anchor: NSView) {
-        guard canRunSplitAction(in: workspaceID),
-              let split = runtime.state.currentSplit, split.id == splitID,
-              !runtime.pendingClose.contains(where: { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }) else { return }
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for (title, adjustment) in (split.orientation == .horizontal
-            ? [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)]
-            : [("Enlarge Top Page", 0.1), ("Equal Size", 0.0), ("Enlarge Bottom Page", -0.1)]) {
-            let item = ActionMenuItem(title: title) { [weak self] in
-                guard let self, self.canRunSplitAction(in: workspaceID),
-                      let current = self.runtime.state.currentSplit, current.id == splitID,
-                      !self.runtime.pendingClose.contains(where: { $0.entryID == current.leftEntryID || $0.entryID == current.rightEntryID }) else { return }
-                let ratio = adjustment == 0 ? 0.5 : min(0.9, max(0.1, current.dividerRatio + adjustment))
-                self.perform { self.runtime.updateSplitRatio(splitID, ratio: ratio) }
-            }
-            let target = adjustment == 0 ? 0.5 : min(0.9, max(0.1, split.dividerRatio + adjustment))
-            item.isEnabled = abs(target - split.dividerRatio) > 0.0001
-            menu.addItem(item)
-        }
-        requestNativeFocus?()
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
-    }
-
-    private func addSavedSplits(workspaceID: UUID) {
-        let splits = runtime.state.currentWorkspace.splits.filter(\.isPinned)
-        guard !splits.isEmpty else { return }
-        for split in splits {
-            let button = ActionButton(title: splitTitle(split)) { [weak self] in
-                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
-                self.perform { self.runtime.activateSplit(split.id) }
-            }
-            configureTextAction(button, symbol: "rectangle.split.2x1")
-            button.alignment = .left
-            button.contentTintColor = runtime.state.currentWorkspace.activeSplitID == split.id ? accent : .secondaryLabelColor
-            let isClosing = runtime.pendingClose.contains { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }
-            button.isEnabled = runtime.supportsSplits && !isClosing
-            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
-            let key = "bato-saved-split-\(split.id.uuidString)"
-            button.setAccessibilityIdentifier(key)
-            button.setAccessibilityLabel("Open saved pair: \(splitTitle(split))")
-            splitControls[key] = button
-            let menu = NSMenu()
-            menu.autoenablesItems = false
-            let remove = ActionMenuItem(title: "Remove Split Pair") { [weak self] in
-                guard let self, self.canRunSplitAction(in: workspaceID) else { return }
-                self.perform { self.runtime.dissolveSplit(split.id) }
-            }
-            remove.toolTip = "Keep both pages and remove only the pair."
-            remove.isEnabled = !isClosing
-            menu.addItem(remove)
-            button.menu = menu
-            entries.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
-        }
-        if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(14, after: last) }
-    }
-
-    private func addSection(_ title: String, pages: [PageEntry], includeEmpty: Bool = false) {
+    private func addSection(_ title: String, rows pages: [SidebarRow], includeEmpty: Bool = false) {
         // Shared Favorites deserve space when present, without three empty
         // diagnostic sections competing with a new workspace's first tab.
         guard !pages.isEmpty || title == "Tabs" || includeEmpty else { return }
@@ -1083,7 +1018,8 @@ public final class NativeWorkspaceController: NSObject {
                 row.orientation = .horizontal
                 row.distribution = .fillEqually
                 row.spacing = 4
-                for (offset, page) in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)].enumerated() {
+                for (offset, favorite) in pages[start..<min(start + SidebarStyle.tilesPerRow, pages.count)].enumerated() {
+                    guard case .page(let page) = favorite.content else { continue }
                     let tile = makePageView(page, tile: true)
                     row.addArrangedSubview(tile)
                     dropSlotViews.append((tile, .tile(index: start + offset)))
@@ -1093,14 +1029,21 @@ public final class NativeWorkspaceController: NSObject {
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
         } else {
-            for (index, page) in pages.enumerated() {
-                let row = makePageView(page, tile: false)
+            for (index, entry) in pages.enumerated() {
+                let row = makeRowView(entry)
                 dropSlotViews.append((row, .row(section: title == "Tabs" ? .tabs : .pinned(folder: nil), index: index)))
                 entries.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             }
         }
         if let last = entries.arrangedSubviews.last { entries.setCustomSpacing(12, after: last) }
+    }
+
+    private func makeRowView(_ row: SidebarRow) -> NSView {
+        switch row.content {
+        case .page(let page): return makePageView(page, tile: false)
+        case .pair(let split, let left, let right): return makePairView(split, left: left, right: right)
+        }
     }
 
     private func makePageView(_ page: PageEntry, tile: Bool) -> NSView {
@@ -1167,6 +1110,185 @@ public final class NativeWorkspaceController: NSObject {
         }
         TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
         return row
+    }
+
+    /// One pill split into two halves, each with its own favicon, title and close; the pair is one row of the list.
+    private func makePairView(_ split: PageSplit, left: PageEntry, right: PageEntry) -> NSView {
+        let workspaceID = runtime.state.activeWorkspaceID
+        let isDisplayed = runtime.state.currentSplit?.id == split.id
+        let activeID = runtime.state.currentWorkspace.activeEntryID
+        let halves = [left, right].enumerated().map { index, page -> SidebarPairHalf in
+            let title = pageTitle(page)
+            let isClosing = runtime.pendingClose.contains { $0.entryID == page.id }
+            let select = ActionButton(title: title) { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID),
+                      self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
+                self.perform { self.runtime.activateSplit(split.id, focusedEntryID: page.id) }
+            }
+            select.isBordered = false
+            select.bezelStyle = .recessed
+            select.focusRingType = .none
+            select.alignment = .left
+            select.font = SidebarStyle.rowFont
+            let iconSize = SidebarStyle.rowIconSize
+            if let icon = pageIcons[page.id]?.copy() as? NSImage {
+                icon.size = NSSize(width: iconSize, height: iconSize)
+                select.image = icon
+                select.imageScaling = .scaleProportionallyDown
+            } else {
+                select.image = SidebarStyle.letterIcon(for: title, url: page.lastURL, size: iconSize)
+            }
+            select.imagePosition = .imageLeading
+            select.imageHugsTitle = true
+            select.setButtonType(.momentaryPushIn)
+            select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            select.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            (select.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+            let position = split.orientation == .horizontal ? (index == 0 ? "left" : "right") : (index == 0 ? "top" : "bottom")
+            select.setAccessibilityIdentifier("bato-split-\(position)-\(split.id.uuidString)")
+            select.setAccessibilityLabel("Focus \(position) page: \(title)")
+            select.setAccessibilityHelp(page.lastURL.absoluteString)
+            select.isEnabled = !isClosing
+            let close = ActionButton(title: "") { [weak self] in
+                guard let self else { return }
+                self.perform { self.runtime.closeEntry(page.id) }
+            }
+            close.image = sidebarSymbol("xmark", size: 9)
+            close.imagePosition = .imageOnly
+            close.isBordered = false
+            close.bezelStyle = .recessed
+            close.focusRingType = .none
+            close.contentTintColor = .secondaryLabelColor
+            close.setAccessibilityLabel("Close \(title)")
+            close.setAccessibilityIdentifier("bato-close-\(page.id.uuidString)")
+            close.toolTip = page.kind == .temporary ? "Close tab" : "Unload saved page"
+            close.isEnabled = !isClosing
+            pageControls[page.id] = (select, close)
+            return SidebarPairHalf(select: select, close: close, card: SidebarHoverCardContent(title: page.title, url: page.lastURL),
+                                   isFocused: activeID == page.id)
+        }
+        let pairClose = ActionButton(title: "") { [weak self] in
+            guard let self else { return }
+            self.perform {
+                let closedLeft = self.runtime.closeEntry(split.leftEntryID)
+                let closedRight = self.runtime.closeEntry(split.rightEntryID)
+                return closedLeft || closedRight
+            }
+        }
+        pairClose.image = sidebarSymbol("xmark", size: 9)
+        pairClose.imagePosition = .imageOnly
+        pairClose.isBordered = false
+        pairClose.bezelStyle = .recessed
+        pairClose.focusRingType = .none
+        pairClose.contentTintColor = .secondaryLabelColor
+        pairClose.toolTip = "Close both tabs"
+        pairClose.setAccessibilityLabel("Close both tabs")
+        pairClose.setAccessibilityIdentifier("bato-close-split-\(split.id.uuidString)")
+        let row = SidebarPairView(halves: halves, pairClose: pairClose, selected: isDisplayed, accent: accent)
+        row.setAccessibilityIdentifier("bato-split-row-\(split.id.uuidString)")
+        row.hoverChanged = { [weak self, weak row] half in
+            guard let self, let row else { return }
+            guard let half, self.hasStarted, self.root.window?.attachedSheet == nil else { return self.hoverCard.dismiss() }
+            self.hoverCard.schedule(halves[half].card, anchor: row.halfView(half))
+        }
+        let menu = pairMenu(split, workspaceID: workspaceID)
+        row.menu = menu
+        for half in halves {
+            half.select.menu = menu
+            half.select.beginDrag = { [weak self, weak row] event in
+                guard let self, let row, self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
+                self.hoverCard.dismiss()
+                self.entries.setFavoritesZone(visible: false)
+                self.entryDragSource.begin(entryID: split.leftEntryID, row: row, event: event)
+            }
+        }
+        return row
+    }
+
+    private func pairMenu(_ split: PageSplit, workspaceID: UUID) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let state = runtime.state
+        let isClosing = runtime.pendingClose.contains { split.contains($0.entryID) }
+        let canAct = runtime.supportsSplits && !isClosing
+        let splitID = split.id
+        let current = state.currentWorkspace
+        func item(_ title: String, enabled: Bool = true, _ action: @escaping () -> Bool) -> ActionMenuItem {
+            let item = ActionMenuItem(title: title) { [weak self] in
+                guard let self, self.canRunSplitAction(in: workspaceID),
+                      self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == splitID }) else { return }
+                self.perform(action)
+            }
+            item.isEnabled = enabled && canAct
+            return item
+        }
+        if !split.isPinned {
+            let pin = item("Pin Pair") { [weak self] in self?.runtime.pinSplit(splitID) ?? false }
+            pin.toolTip = "Save both destinations as a pinned pair."
+            menu.addItem(pin)
+        }
+        let separate = item("Separate All Tabs") { [weak self] in self?.runtime.dissolveSplit(splitID) ?? false }
+        separate.toolTip = "Both pages remain available as separate rows."
+        menu.addItem(separate)
+        menu.addItem(.separator())
+        menu.addItem(item("Swap Sides") { [weak self] in self?.runtime.swapSplitSides(splitID) ?? false })
+        let toVertical = split.orientation == .horizontal
+        menu.addItem(item(toVertical ? "Convert to Vertical Split View" : "Convert to Horizontal Split View") { [weak self] in
+            self?.runtime.setSplitOrientation(splitID, to: toVertical ? .vertical : .horizontal) ?? false
+        })
+        let displayed = state.currentSplit?.id == splitID
+        let widths = NSMenuItem(title: "Adjust Widths", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for (title, adjustment) in [("Widen First Page", 0.1), ("Equal Size", 0.0), ("Widen Second Page", -0.1)] {
+            let target = adjustment == 0 ? 0.5 : min(0.9, max(0.1, split.dividerRatio + adjustment))
+            submenu.addItem(item(title, enabled: displayed && abs(target - split.dividerRatio) > 0.0001) { [weak self] in
+                self?.runtime.updateSplitRatio(splitID, ratio: target) ?? false
+            })
+        }
+        widths.submenu = submenu
+        widths.isEnabled = displayed && canAct
+        menu.addItem(widths)
+        menu.addItem(.separator())
+        for entryID in [split.leftEntryID, split.rightEntryID] {
+            guard let page = (state.currentWorkspace.pins + state.currentWorkspace.tabs).first(where: { $0.id == entryID }) else { continue }
+            let tabItem = NSMenuItem(title: pageTitle(page), action: nil, keyEquivalent: "")
+            tabItem.image = pageIcons[entryID].flatMap { ($0.copy() as? NSImage) }.map { icon in icon.size = NSSize(width: 14, height: 14); return icon }
+            let tabMenu = NSMenu()
+            tabMenu.autoenablesItems = false
+            tabMenu.addItem(item("Separate from Split View") { [weak self] in self?.runtime.dissolveSplit(splitID) ?? false })
+            tabMenu.addItem(.separator())
+            let copyItem = ActionMenuItem(title: "Copy Link") { [weak self] in
+                self?.copyLink(entryID: entryID, workspaceID: workspaceID, profileID: current.profileID)
+            }
+            copyItem.isEnabled = canAct
+            tabMenu.addItem(copyItem)
+            tabMenu.addItem(.separator())
+            tabMenu.addItem(item("Close Tab") { [weak self] in self?.runtime.closeEntry(entryID) ?? false })
+            tabItem.submenu = tabMenu
+            menu.addItem(tabItem)
+        }
+        menu.addItem(.separator())
+        let transfer = NSMenuItem(title: "Move to Workspace", action: nil, keyEquivalent: "")
+        let destinations = NSMenu()
+        destinations.autoenablesItems = false
+        for destination in state.workspaces where destination.id != current.id && destination.profileID == current.profileID {
+            let destinationID = destination.id
+            destinations.addItem(item(destination.name, enabled: state.canMoveSplit(splitID, toWorkspace: destinationID)) { [weak self] in
+                self?.runtime.moveSplit(splitID, toWorkspace: destinationID) ?? false
+            })
+        }
+        transfer.submenu = destinations
+        transfer.isEnabled = destinations.items.contains(where: \.isEnabled)
+        menu.addItem(transfer)
+        menu.addItem(.separator())
+        menu.addItem(item("Close Both Tabs") { [weak self] in
+            guard let self else { return false }
+            let closedLeft = self.runtime.closeEntry(split.leftEntryID)
+            let closedRight = self.runtime.closeEntry(split.rightEntryID)
+            return closedLeft || closedRight
+        })
+        return menu
     }
 
     private func configurePageMenu(_ select: NSButton, page: PageEntry) {
@@ -1387,7 +1509,7 @@ public final class NativeWorkspaceController: NSObject {
         inset.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
     }
 
-    private func addFolder(_ folder: PageFolder, depth: Int, workspace: Workspace) {
+    private func addFolder(_ folder: PageFolder, depth: Int, workspace: Workspace, rows: [BrowserState.SidebarSection: [SidebarRow]]) {
         let workspaceID = workspace.id
         let folderID = folder.id
         let indent = CGFloat(depth - 1) * Self.folderIndent
@@ -1442,13 +1564,13 @@ public final class NativeWorkspaceController: NSObject {
         dropSlotViews.append((heading, .folder(id: folderID, pinCount: pinCount)))
         title.menu = folderMenu(folderID, workspaceID: workspaceID)
         if !folder.isCollapsed {
-            for (index, pin) in folder.pinIDs.compactMap({ id in workspace.pins.first { $0.id == id } }).enumerated() {
-                let row = makePageView(pin, tile: false)
+            for (index, entry) in (rows[.pinned(folder: folderID)] ?? []).enumerated() {
+                let row = makeRowView(entry)
                 dropSlotViews.append((row, .row(section: .pinned(folder: folderID), index: index)))
                 addIndented(row, leading: 14 + indent)
             }
             for child in workspace.subfolders(of: folderID) {
-                addFolder(child, depth: depth + 1, workspace: workspace)
+                addFolder(child, depth: depth + 1, workspace: workspace, rows: rows)
             }
         }
         if depth == 1, let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
@@ -1556,7 +1678,7 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private func resolveDrop(entryID: UUID, at point: NSPoint) -> SidebarDropTarget? {
-        guard hasStarted, runtime.state.canPlaceEntry(entryID, in: .tabs) else { return nil }
+        guard hasStarted, canDrag(entryID) else { return nil }
         let workspace = runtime.state.currentWorkspace
         let filed = Set(workspace.folders.flatMap(\.pinIDs))
         let slots = dropSlotViews.compactMap { slot -> SidebarDropSlot? in
@@ -1565,20 +1687,35 @@ public final class NativeWorkspaceController: NSObject {
         }
         guard let target = SidebarDropMap.resolve(point: point, slots: (entries.favoritesZoneSlot.map { [$0] } ?? []) + slots,
                                                   unfiledPinCount: workspace.pins.filter { !filed.contains($0.id) }.count),
-              runtime.state.canPlaceEntry(entryID, in: target.section) else { return nil }
+              canPlace(entryID, in: target.section) else { return nil }
         return target
+    }
+
+    /// A drag carries one entry id; the left member of a pair stands for the whole pair.
+    private func canDrag(_ entryID: UUID) -> Bool {
+        runtime.state.split(containingEntry: entryID) != nil || runtime.state.canPlaceEntry(entryID, in: .tabs)
+    }
+
+    private func canPlace(_ entryID: UUID, in section: BrowserState.SidebarSection) -> Bool {
+        if let split = runtime.state.split(containingEntry: entryID) { return runtime.state.canPlaceSplit(split.id, in: section) }
+        return runtime.state.canPlaceEntry(entryID, in: section)
     }
 
     private func performDrop(entryID: UUID, target: SidebarDropTarget) -> Bool {
         guard hasStarted else { return false }
-        let placed = runtime.placeEntry(entryID, in: target.section, at: target.index)
+        let placed = runtime.state.split(containingEntry: entryID).map { runtime.placeSplit($0.id, in: target.section, at: target.index) }
+            ?? runtime.placeEntry(entryID, in: target.section, at: target.index)
         render()
         return placed
     }
 
     private func dropEntry(_ entryID: UUID, onWorkspace destinationID: UUID) -> Bool {
-        guard hasStarted, runtime.state.canMoveEntry(entryID, toWorkspace: destinationID) else { return false }
-        let moved = runtime.moveEntry(entryID, toWorkspace: destinationID)
+        let state = runtime.state
+        let split = state.split(containingEntry: entryID)
+        guard hasStarted, split.map({ state.canMoveSplit($0.id, toWorkspace: destinationID) })
+                ?? state.canMoveEntry(entryID, toWorkspace: destinationID) else { return false }
+        let moved = split.map { runtime.moveSplit($0.id, toWorkspace: destinationID) }
+            ?? runtime.moveEntry(entryID, toWorkspace: destinationID)
         render()
         return moved
     }
@@ -2027,6 +2164,138 @@ private final class SidebarPageView: AdaptiveSidebarView {
             NSColor.clear.setFill()
         }
         path.fill()
+    }
+}
+
+private struct SidebarPairHalf {
+    let select: ActionButton
+    let close: ActionButton
+    let card: SidebarHoverCardContent
+    /// The pane's page is the selected one while the pair is not displayed (a saved pair shown as a single page).
+    let isFocused: Bool
+}
+
+/// Arc's split row: one rounded pill, two equal halves side by side. The whole pill takes the selected fill
+/// while the pair is shown; each half shows its own close on hover (or on both while selected).
+@MainActor
+private final class SidebarPairView: AdaptiveSidebarView {
+    private let halves: [SidebarPairHalf]
+    private let containers: [NSView]
+    private let selected: Bool
+    private var hoveredHalf: Int? {
+        didSet {
+            guard hoveredHalf != oldValue else { return }
+            needsDisplay = true
+            updateCloseVisibility()
+            hoverChanged?(hoveredHalf)
+        }
+    }
+    var hoverChanged: ((Int?) -> Void)?
+    private var tracking: NSTrackingArea?
+    let pairClose: ActionButton
+
+    init(halves: [SidebarPairHalf], pairClose: ActionButton, selected: Bool, accent: NSColor) {
+        self.halves = halves
+        self.pairClose = pairClose
+        self.selected = selected
+        containers = halves.map { _ in NSView() }
+        super.init(frame: .zero)
+        heightAnchor.constraint(equalToConstant: SidebarStyle.rowHeight).isActive = true
+        for (index, half) in halves.enumerated() {
+            let container = containers[index]
+            container.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(container)
+            half.select.translatesAutoresizingMaskIntoConstraints = false
+            half.close.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(half.select)
+            container.addSubview(half.close)
+            NSLayoutConstraint.activate([
+                container.topAnchor.constraint(equalTo: topAnchor),
+                container.bottomAnchor.constraint(equalTo: bottomAnchor),
+                half.select.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+                half.select.trailingAnchor.constraint(equalTo: half.close.leadingAnchor, constant: -1),
+                half.select.topAnchor.constraint(equalTo: container.topAnchor),
+                half.select.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                half.close.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -3),
+                half.close.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                half.close.widthAnchor.constraint(equalToConstant: 20),
+                half.close.heightAnchor.constraint(equalToConstant: 24)
+            ])
+        }
+        pairClose.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pairClose)
+        NSLayoutConstraint.activate([
+            pairClose.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            pairClose.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pairClose.widthAnchor.constraint(equalToConstant: 20),
+            pairClose.heightAnchor.constraint(equalToConstant: 24),
+            containers[0].leadingAnchor.constraint(equalTo: leadingAnchor),
+            containers[1].trailingAnchor.constraint(equalTo: trailingAnchor),
+            containers[0].trailingAnchor.constraint(equalTo: containers[1].leadingAnchor),
+            containers[0].widthAnchor.constraint(equalTo: containers[1].widthAnchor)
+        ])
+        updateCloseVisibility()
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func halfView(_ index: Int) -> NSView { containers[index] }
+
+    /// A displayed pair shows a close on each half while hovered; a hidden one shows a single close, at the far
+    /// right, for the whole pair.
+    private func updateCloseVisibility() {
+        for half in halves {
+            half.close.isHidden = !selected
+            half.close.alphaValue = hoveredHalf != nil ? 1 : 0
+        }
+        pairClose.isHidden = selected
+        pairClose.alphaValue = hoveredHalf != nil ? 1 : 0
+    }
+
+    private func half(at event: NSEvent) -> Int {
+        convert(event.locationInWindow, from: nil).x < bounds.midX ? 0 : 1
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hoveredHalf = half(at: event) }
+    override func mouseMoved(with event: NSEvent) { hoveredHalf = half(at: event) }
+    override func mouseExited(with event: NSEvent) { hoveredHalf = nil }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
+            return super.otherMouseUp(with: event)
+        }
+        (selected ? halves[half(at: event)].close : pairClose).performClick(nil)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = SidebarMetrics.cornerRadius
+        let pill = bounds.insetBy(dx: 0.5, dy: 1)
+        if selected {
+            SidebarStyle.rowFill(selected: true, hovered: false, tile: false)?.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius).fill()
+            // Each half sits in the container as a lighter rounded rect, with a gap between them.
+            let inner = pill.insetBy(dx: 3.5, dy: 3.5)
+            let width = (inner.width - 4) / 2
+            NSColor.labelColor.withAlphaComponent(0.10).setFill()
+            for index in 0..<2 {
+                let rect = NSRect(x: inner.minX + CGFloat(index) * (width + 4), y: inner.minY, width: width, height: inner.height)
+                NSBezierPath(roundedRect: rect, xRadius: radius - 2, yRadius: radius - 2).fill()
+            }
+        } else if hoveredHalf != nil {
+            SidebarStyle.rowFill(selected: false, hovered: true, tile: false)?.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius).fill()
+        }
+        if !selected {
+            NSColor.labelColor.withAlphaComponent(0.30).setFill()
+            NSBezierPath(rect: NSRect(x: bounds.midX - 0.5, y: bounds.midY - 8, width: 1, height: 16)).fill()
+        }
     }
 }
 
@@ -2814,10 +3083,21 @@ public final class ContentCardFrameView: NSView {
     public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
     /// Displayed split panes in this view's flipped coordinates; each is its own rounded card with the tint between.
     public var paneCards: [NSRect] = [] {
-        didSet { guard paneCards != oldValue else { return }; needsDisplay = true; updateSplitButton() }
+        didSet {
+            guard paneCards != oldValue else { return }
+            needsDisplay = true
+            updateSplitButton()
+            updateGrabber()
+        }
     }
     /// Pane that holds focus, outlined in the workspace accent.
     public var focusedPane: Int? { didSet { needsDisplay = true } }
+    /// Called with the first pane's share of the space while the grabber between two panes is dragged.
+    var onSplitRatio: ((Double) -> Void)?
+    private var grabberHovered = false { didSet { if grabberHovered != oldValue { needsDisplay = true } } }
+    private var grabberDragging = false { didSet { if grabberDragging != oldValue { needsDisplay = true } } }
+    private var grabberTracking: NSTrackingArea?
+    private var grabberMonitor: Any?
     /// The toolbar's split button, shown only while no pair is displayed.
     var onAddSplit: ((SplitSide) -> Void)?
     var canAddSplit = false { didSet { updateSplitButton() } }
@@ -2935,6 +3215,88 @@ public final class ContentCardFrameView: NSView {
                                           width: side, height: side)
     }
 
+    // MARK: Split grabber
+
+    /// The strip between two panes that takes the resize drag, in this view's coordinates; nil unless a pair is shown.
+    var grabberHitRect: NSRect? {
+        guard paneCards.count == 2 else { return nil }
+        return SplitGrabber.hitRect(first: paneCards[0], second: paneCards[1])
+    }
+
+    /// The pill drawn in the middle of the gap.
+    var grabberPillRect: NSRect? {
+        guard paneCards.count == 2 else { return nil }
+        return SplitGrabber.pillRect(first: paneCards[0], second: paneCards[1])
+    }
+
+    private func updateGrabber() {
+        if let grabberTracking { removeTrackingArea(grabberTracking) }
+        grabberTracking = nil
+        if let hit = grabberHitRect {
+            let area = NSTrackingArea(rect: hit, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+            addTrackingArea(area)
+            grabberTracking = area
+            if grabberMonitor == nil {
+                grabberMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                    nonisolated(unsafe) let unsafeEvent = event
+                    let consumed = MainActor.assumeIsolated { self?.routeGrabber(unsafeEvent) == true }
+                    return consumed ? nil : event
+                }
+            }
+        } else {
+            grabberHovered = false
+            grabberDragging = false
+            if let grabberMonitor { NSEvent.removeMonitor(grabberMonitor) }
+            grabberMonitor = nil
+        }
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        guard event.trackingArea === grabberTracking else { return super.mouseEntered(with: event) }
+        grabberHovered = true
+        resizeCursor.push()
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        guard event.trackingArea === grabberTracking else { return super.mouseExited(with: event) }
+        grabberHovered = false
+        if !grabberDragging { NSCursor.pop() }
+    }
+
+    private var resizeCursor: NSCursor {
+        guard paneCards.count == 2 else { return .arrow }
+        return SplitGrabber.isHorizontal(first: paneCards[0], second: paneCards[1]) ? .resizeLeftRight : .resizeUpDown
+    }
+
+    /// True when the event belongs to a grabber drag. Chromium's views sit above this one, so the press is taken here.
+    private func routeGrabber(_ event: NSEvent) -> Bool {
+        guard event.window === window, paneCards.count == 2, !isHidden else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        switch event.type {
+        case .leftMouseDown:
+            guard let hit = grabberHitRect, hit.contains(point) else { return false }
+            grabberDragging = true
+            return true
+        case .leftMouseDragged:
+            guard grabberDragging else { return false }
+            let ratio = SplitGrabber.ratio(at: point, first: paneCards[0], second: paneCards[1])
+            if abs(ratio - lastGrabberRatio) > 0.004 {
+                lastGrabberRatio = ratio
+                onSplitRatio?(ratio)
+            }
+            resizeCursor.set()
+            return true
+        case .leftMouseUp:
+            guard grabberDragging else { return false }
+            grabberDragging = false
+            if !(grabberHitRect?.contains(point) ?? false) { NSCursor.pop() }
+            return true
+        default:
+            return false
+        }
+    }
+    private var lastGrabberRatio = 0.5
+
     /// The page card in screen coordinates (y up), for anchoring panels to it.
     var cardRectOnScreen: NSRect? {
         guard let window else { return nil }
@@ -2986,6 +3348,13 @@ public final class ContentCardFrameView: NSView {
             outline.lineWidth = width
             SidebarStyle.vivid(accent).setStroke()
             outline.stroke()
+        }
+        if let pill = grabberPillRect {
+            let active = grabberHovered || grabberDragging
+            let dark = effectiveAppearance.isDark
+            (dark ? (active ? NSColor(srgbRed: 0.58, green: 0.57, blue: 0.60, alpha: 1) : NSColor(srgbRed: 0.34, green: 0.31, blue: 0.36, alpha: 1))
+                  : NSColor.black.withAlphaComponent(active ? 0.5 : 0.25)).setFill()
+            NSBezierPath(roundedRect: pill, xRadius: min(pill.width, pill.height) / 2, yRadius: min(pill.width, pill.height) / 2).fill()
         }
         if showsEmptyState { drawEmptyState(in: paths[0]) }
     }
