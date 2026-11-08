@@ -461,6 +461,7 @@ public final class NativeWorkspaceController: NSObject {
             view.editAddress = { [weak self] in self?.editAddress() ?? false }
             view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
             view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
+            view.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
         }
 
         workspaceActions.target = self
@@ -557,7 +558,8 @@ public final class NativeWorkspaceController: NSObject {
         entries.alignment = .leading
         entries.spacing = 5
         entries.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView()
+        let scroll = SidebarScrollView()
+        scroll.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -1480,6 +1482,13 @@ public final class NativeWorkspaceController: NSObject {
         editor.focusName()
     }
 
+    private func swipeWorkspace(_ direction: WorkspaceSwipe.Direction) {
+        let state = runtime.state
+        guard let index = state.workspaces.firstIndex(where: { $0.id == state.activeWorkspaceID }),
+              let target = WorkspaceSwipe.target(from: index, direction: direction, count: state.workspaces.count) else { return }
+        switchWorkspace(state.workspaces[target].id)
+    }
+
     private func switchWorkspace(_ id: UUID) {
         guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
               id != runtime.state.activeWorkspaceID else { return }
@@ -1751,7 +1760,6 @@ private final class SidebarPageView: AdaptiveSidebarView {
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
-        let contrast = AppearanceWatcher.increaseContrast
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
         if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
             fill.setFill()
@@ -1759,11 +1767,6 @@ private final class SidebarPageView: AdaptiveSidebarView {
             NSColor.clear.setFill()
         }
         path.fill()
-        if contrast && (selected || tile) {
-            (selected ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).setStroke()
-            path.lineWidth = 1
-            path.stroke()
-        }
     }
 }
 
@@ -1839,11 +1842,23 @@ private final class SidebarEntries: NSStackView {
 }
 
 @MainActor
+private final class SidebarScrollView: NSScrollView {
+    let swipe = WorkspaceSwipeRecognizer()
+    override func scrollWheel(with event: NSEvent) {
+        if !swipe.handle(event) { super.scrollWheel(with: event) }
+    }
+}
+
+@MainActor
 private final class WorkspaceRoot: AdaptiveSidebarView {
+    let swipe = WorkspaceSwipeRecognizer()
+    override func scrollWheel(with event: NSEvent) {
+        if !swipe.handle(event) { super.scrollWheel(with: event) }
+    }
     var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: AppearanceWatcher.increaseContrast)
+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
         NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
     }
     var keyEquivalentsEnabled = true
@@ -2474,8 +2489,7 @@ public final class ContentCardFrameView: NSView {
 
     public override func draw(_ dirtyRect: NSRect) {
         let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
-        let highContrast = AppearanceWatcher.increaseContrast
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: highContrast)
+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
         let ring = NSBezierPath(rect: bounds)
         ring.append(card)
         ring.windingRule = .evenOdd
@@ -2491,8 +2505,8 @@ public final class ContentCardFrameView: NSView {
         NSColor.black.setFill()
         card.fill()
         NSShadow().set()
-        (highContrast ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.labelColor.withAlphaComponent(0.14)).setStroke()
-        card.lineWidth = highContrast ? 2 : 1
+        NSColor.labelColor.withAlphaComponent(0.14).setStroke()
+        card.lineWidth = 1
         card.stroke()
         NSGraphicsContext.restoreGraphicsState()
     }

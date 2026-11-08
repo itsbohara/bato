@@ -58,20 +58,14 @@ enum SidebarStyle {
     }
 
     /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
-    /// Dia; the system background only keeps the result from going neon. Increase Contrast keeps a
-    /// lighter wash so text stays legible, but still clearly coloured. Resolved under `appearance`, so
+    /// Dia; the system background only keeps the result from going neon. Resolved under `appearance`, so
     /// the result is correct whichever appearance the caller happens to be drawing in.
-    static func tint(_ accent: NSColor, appearance: NSAppearance, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
+    static func tint(_ accent: NSColor, appearance: NSAppearance) -> (top: NSColor, bottom: NSColor) {
         var result: (top: NSColor, bottom: NSColor)?
         appearance.performAsCurrentDrawingAppearance {
             let dark = appearance.isDark
             let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
             let hue = vivid(accent)
-            if highContrast {
-                result = (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
-                          base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
-                return
-            }
             let body = dark ? darkened(hue) : hue
             result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
                       base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
@@ -81,9 +75,8 @@ enum SidebarStyle {
 
     /// Tile edge: white only shows on dark; light mode needs a dark hairline.
     static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
-    /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.
+    /// Card fill in Settings.
     static let cardFill = NSColor.labelColor.withAlphaComponent(0.06)
-    static var cardStroke: NSColor? { AppearanceWatcher.increaseContrast ? NSColor.separatorColor : nil }
 
     /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
     /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.

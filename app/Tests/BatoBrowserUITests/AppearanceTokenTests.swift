@@ -40,21 +40,19 @@ final class AppearanceTokenTests: XCTestCase {
 
     func testTintResolvesPerAppearance() {
         let accent = color("#527FAD")
-        let lightTint = SidebarStyle.tint(accent, appearance: light, highContrast: false).top
-        let darkTint = SidebarStyle.tint(accent, appearance: dark, highContrast: false).top
+        let lightTint = SidebarStyle.tint(accent, appearance: light).top
+        let darkTint = SidebarStyle.tint(accent, appearance: dark).top
         XCTAssertGreaterThan(luminance(lightTint), luminance(darkTint))
     }
 
     func testPrimaryTextIsLegibleOnEveryTintInBothAppearances() {
         for hex in palette {
             for appearance in [light, dark] {
-                for highContrast in [false, true] {
-                    let tint = SidebarStyle.tint(color(hex), appearance: appearance, highContrast: highContrast)
-                    let label = resolved(.labelColor, in: appearance)
-                    for background in [tint.top, tint.bottom] {
-                        XCTAssertGreaterThanOrEqual(contrast(label, over: background), 4.5,
-                                                    "\(hex) \(appearance.name.rawValue) highContrast=\(highContrast)")
-                    }
+                let tint = SidebarStyle.tint(color(hex), appearance: appearance)
+                let label = resolved(.labelColor, in: appearance)
+                for background in [tint.top, tint.bottom] {
+                    XCTAssertGreaterThanOrEqual(contrast(label, over: background), 4.5,
+                                                "\(hex) \(appearance.name.rawValue)")
                 }
             }
         }
@@ -63,7 +61,7 @@ final class AppearanceTokenTests: XCTestCase {
     func testSecondaryTextStaysReadableOnTint() {
         for hex in palette {
             for appearance in [light, dark] {
-                let tint = SidebarStyle.tint(color(hex), appearance: appearance, highContrast: false)
+                let tint = SidebarStyle.tint(color(hex), appearance: appearance)
                 let secondary = resolved(.secondaryLabelColor, in: appearance)
                 XCTAssertGreaterThanOrEqual(contrast(secondary, over: tint.top), 3, "\(hex) \(appearance.name.rawValue)")
             }

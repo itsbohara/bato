@@ -543,8 +543,6 @@ private final class SettingsGroup: NSView {
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = SidebarStyle.cardFill.cgColor
-            layer?.borderColor = SidebarStyle.cardStroke?.cgColor
-            layer?.borderWidth = SidebarStyle.cardStroke == nil ? 0 : 1
         }
     }
 }

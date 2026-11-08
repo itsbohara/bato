@@ -243,7 +243,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,73 @@
+@@ -2313,6 +2317,74 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -299,6 +299,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/UBlockOffer.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -317,7 +318,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2407,19 @@
+@@ -2336,12 +2408,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -1962,7 +1963,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -1997,7 +1998,8 @@
 +                                              'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
 +                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
-+                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift'])]:
++                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
++                                              'WorkspaceSwipe.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -7133,7 +7135,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2499 @@
+@@ -0,0 +1,2513 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7597,6 +7599,7 @@
 +            view.editAddress = { [weak self] in self?.editAddress() ?? false }
 +            view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
 +            view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
++            view.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
 +        }
 +
 +        workspaceActions.target = self
@@ -7693,7 +7696,8 @@
 +        entries.alignment = .leading
 +        entries.spacing = 5
 +        entries.translatesAutoresizingMaskIntoConstraints = false
-+        let scroll = NSScrollView()
++        let scroll = SidebarScrollView()
++        scroll.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
 +        scroll.drawsBackground = false
 +        scroll.hasVerticalScroller = true
 +        scroll.autohidesScrollers = true
@@ -8616,6 +8620,13 @@
 +        editor.focusName()
 +    }
 +
++    private func swipeWorkspace(_ direction: WorkspaceSwipe.Direction) {
++        let state = runtime.state
++        guard let index = state.workspaces.firstIndex(where: { $0.id == state.activeWorkspaceID }),
++              let target = WorkspaceSwipe.target(from: index, direction: direction, count: state.workspaces.count) else { return }
++        switchWorkspace(state.workspaces[target].id)
++    }
++
 +    private func switchWorkspace(_ id: UUID) {
 +        guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
 +              id != runtime.state.activeWorkspaceID else { return }
@@ -8887,7 +8898,6 @@
 +    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
 +    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let contrast = AppearanceWatcher.increaseContrast
 +        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
 +        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
 +            fill.setFill()
@@ -8895,11 +8905,6 @@
 +            NSColor.clear.setFill()
 +        }
 +        path.fill()
-+        if contrast && (selected || tile) {
-+            (selected ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).setStroke()
-+            path.lineWidth = 1
-+            path.stroke()
-+        }
 +    }
 +}
 +
@@ -8975,11 +8980,23 @@
 +}
 +
 +@MainActor
++private final class SidebarScrollView: NSScrollView {
++    let swipe = WorkspaceSwipeRecognizer()
++    override func scrollWheel(with event: NSEvent) {
++        if !swipe.handle(event) { super.scrollWheel(with: event) }
++    }
++}
++
++@MainActor
 +private final class WorkspaceRoot: AdaptiveSidebarView {
++    let swipe = WorkspaceSwipeRecognizer()
++    override func scrollWheel(with event: NSEvent) {
++        if !swipe.handle(event) { super.scrollWheel(with: event) }
++    }
 +    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
 +    override var isOpaque: Bool { true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: AppearanceWatcher.increaseContrast)
++        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
 +        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
 +    }
 +    var keyEquivalentsEnabled = true
@@ -9610,8 +9627,7 @@
 +
 +    public override func draw(_ dirtyRect: NSRect) {
 +        let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
-+        let highContrast = AppearanceWatcher.increaseContrast
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: highContrast)
++        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
 +        let ring = NSBezierPath(rect: bounds)
 +        ring.append(card)
 +        ring.windingRule = .evenOdd
@@ -9627,8 +9643,8 @@
 +        NSColor.black.setFill()
 +        card.fill()
 +        NSShadow().set()
-+        (highContrast ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.labelColor.withAlphaComponent(0.14)).setStroke()
-+        card.lineWidth = highContrast ? 2 : 1
++        NSColor.labelColor.withAlphaComponent(0.14).setStroke()
++        card.lineWidth = 1
 +        card.stroke()
 +        NSGraphicsContext.restoreGraphicsState()
 +    }
@@ -10106,7 +10122,7 @@
 +        layer?.borderColor = NSColor(name: nil) {
 +            $0.isDark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.12)
 +        }.cgColor
-+        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 1
++        layer?.borderWidth = 1
 +    }
 +    override func viewDidMoveToWindow() {
 +        super.viewDidMoveToWindow()
@@ -12423,7 +12439,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,720 @@
+@@ -0,0 +1,718 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -12969,8 +12985,6 @@
 +    private func updateColors() {
 +        effectiveAppearance.performAsCurrentDrawingAppearance {
 +            layer?.backgroundColor = SidebarStyle.cardFill.cgColor
-+            layer?.borderColor = SidebarStyle.cardStroke?.cgColor
-+            layer?.borderWidth = SidebarStyle.cardStroke == nil ? 0 : 1
 +        }
 +    }
 +}
@@ -13146,7 +13160,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,118 @@
 +import AppKit
 +import BatoCore
 +
@@ -13207,20 +13221,14 @@
 +    }
 +
 +    /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
-+    /// Dia; the system background only keeps the result from going neon. Increase Contrast keeps a
-+    /// lighter wash so text stays legible, but still clearly coloured. Resolved under `appearance`, so
++    /// Dia; the system background only keeps the result from going neon. Resolved under `appearance`, so
 +    /// the result is correct whichever appearance the caller happens to be drawing in.
-+    static func tint(_ accent: NSColor, appearance: NSAppearance, highContrast: Bool) -> (top: NSColor, bottom: NSColor) {
++    static func tint(_ accent: NSColor, appearance: NSAppearance) -> (top: NSColor, bottom: NSColor) {
 +        var result: (top: NSColor, bottom: NSColor)?
 +        appearance.performAsCurrentDrawingAppearance {
 +            let dark = appearance.isDark
 +            let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
 +            let hue = vivid(accent)
-+            if highContrast {
-+                result = (base.blended(withFraction: dark ? 0.3 : 0.2, of: hue) ?? base,
-+                          base.blended(withFraction: dark ? 0.2 : 0.12, of: hue) ?? base)
-+                return
-+            }
 +            let body = dark ? darkened(hue) : hue
 +            result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
 +                      base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
@@ -13230,9 +13238,8 @@
 +
 +    /// Tile edge: white only shows on dark; light mode needs a dark hairline.
 +    static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
-+    /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.
++    /// Card fill in Settings.
 +    static let cardFill = NSColor.labelColor.withAlphaComponent(0.06)
-+    static var cardStroke: NSColor? { AppearanceWatcher.increaseContrast ? NSColor.separatorColor : nil }
 +
 +    /// Initial-letter tile for pages without a favicon. IP and localhost hosts say nothing about the
 +    /// page, so the title supplies the letter; the hue comes from the full URL so tiles on one host differ.
@@ -14511,7 +14518,7 @@
 +        let ring = bounds.insetBy(dx: 3.5, dy: 3.5)
 +        let track = NSBezierPath(ovalIn: ring)
 +        track.lineWidth = 1.5
-+        NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 0.4 : (isActive ? 0.18 : 0.1)).setStroke()
++        NSColor.labelColor.withAlphaComponent(isActive ? 0.18 : 0.1).setStroke()
 +        track.stroke()
 +        if isActive {
 +            NSColor.controlAccentColor.setStroke()
@@ -15544,7 +15551,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,27 @@
 +import AppKit
 +
 +extension NSAppearance {
@@ -15552,8 +15559,8 @@
 +}
 +
 +/// One place that turns "the look of the app changed" into a notification: the system or app
-+/// appearance, and the Increase Contrast and Reduce Transparency switches. Surfaces that cache a
-+/// resolved colour or a layer colour listen here instead of being read once at launch.
++/// appearance. Surfaces that cache a resolved colour or a layer colour listen here instead of
++/// being read once at launch.
 +@MainActor
 +final class AppearanceWatcher {
 +    static let shared = AppearanceWatcher()
@@ -15565,18 +15572,12 @@
 +        appearanceObservation = NSApplication.shared.observe(\.effectiveAppearance) { _, _ in
 +            Task { @MainActor in AppearanceWatcher.post() }
 +        }
-+        NSWorkspace.shared.notificationCenter.addObserver(
-+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { _ in
-+            MainActor.assumeIsolated { AppearanceWatcher.post() }
-+        }
 +    }
 +
 +    /// Call once at startup so the first change is not missed.
 +    static func start() { _ = shared }
 +
 +    private static func post() { NotificationCenter.default.post(name: didChange, object: nil) }
-+
-+    nonisolated static var increaseContrast: Bool { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift
@@ -15755,6 +15756,89 @@
 +    private func refreshFill() {
 +        effectiveAppearance.performAsCurrentDrawingAppearance {
 +            layer?.backgroundColor = hovered ? SidebarStyle.rowFill(selected: false, hovered: true, tile: false)?.cgColor : nil
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift
+@@ -0,0 +1,80 @@
++import AppKit
++
++/// Decides whether a two-finger scroll gesture over the sidebar is a horizontal workspace swipe.
++/// Vertical scrolling of the tab list and wheel mice (no gesture phases) are never consumed.
++struct WorkspaceSwipe {
++    enum Direction: Equatable { case previous, next }
++    enum Outcome: Equatable {
++        case passThrough
++        case consume
++        case switchWorkspace(Direction)
++    }
++
++    static let lockDistance: CGFloat = 4
++    static let horizontalDominance: CGFloat = 1.5
++    static let commitDistance: CGFloat = 60
++
++    private enum Axis { case horizontal, vertical }
++    private var axis: Axis?
++    private var travelled = CGSize.zero
++    private var swallowingMomentum = false
++
++    /// `dx` is finger travel: positive when the fingers move right, whatever the natural-scrolling setting.
++    mutating func feed(dx: CGFloat, dy: CGFloat, phase: NSEvent.Phase, momentum: NSEvent.Phase) -> Outcome {
++        if !momentum.isEmpty {
++            defer { if momentum.contains(.ended) || momentum.contains(.cancelled) { swallowingMomentum = false } }
++            return swallowingMomentum ? .consume : .passThrough
++        }
++        if phase.isEmpty { return .passThrough }
++        if phase.contains(.began) || phase.contains(.mayBegin) { reset() }
++        travelled.width += dx
++        travelled.height += dy
++        if axis == nil, abs(travelled.width) + abs(travelled.height) >= Self.lockDistance {
++            axis = abs(travelled.width) > abs(travelled.height) * Self.horizontalDominance ? .horizontal : .vertical
++        }
++        guard axis == .horizontal else {
++            if phase.contains(.ended) || phase.contains(.cancelled) { reset() }
++            return .passThrough
++        }
++        guard phase.contains(.ended) || phase.contains(.cancelled) else { return .consume }
++        let commit = phase.contains(.ended) && abs(travelled.width) >= Self.commitDistance
++        let direction: Direction = travelled.width > 0 ? .previous : .next
++        reset()
++        swallowingMomentum = true
++        return commit ? .switchWorkspace(direction) : .consume
++    }
++
++    private mutating func reset() {
++        axis = nil
++        travelled = .zero
++        swallowingMomentum = false
++    }
++}
++
++extension WorkspaceSwipe {
++    /// The index a swipe lands on in a row of `count` pager dots, or nil at either end.
++    static func target(from index: Int, direction: Direction, count: Int) -> Int? {
++        let next = direction == .next ? index + 1 : index - 1
++        return (0..<count).contains(next) ? next : nil
++    }
++}
++
++@MainActor
++final class WorkspaceSwipeRecognizer {
++    private var swipe = WorkspaceSwipe()
++    var onSwipe: ((WorkspaceSwipe.Direction) -> Void)?
++
++    /// True when the event was a horizontal workspace swipe and must not reach the scroll view.
++    func handle(_ event: NSEvent) -> Bool {
++        let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
++        let outcome = swipe.feed(dx: event.scrollingDeltaX * sign, dy: event.scrollingDeltaY * sign,
++                                 phase: event.phase, momentum: event.momentumPhase)
++        switch outcome {
++        case .passThrough: return false
++        case .consume: return true
++        case .switchWorkspace(let direction):
++            onSwipe?(direction)
++            return true
 +        }
 +    }
 +}

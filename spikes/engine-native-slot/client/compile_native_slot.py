@@ -32,7 +32,8 @@ def main():
                                               'SettingsWindowController.swift', 'SidebarStyle.swift', 'RecoveryController.swift',
                                               'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
                                               'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
-                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift'])]:
+                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
+                                              'WorkspaceSwipe.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',

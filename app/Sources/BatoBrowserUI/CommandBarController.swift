@@ -288,7 +288,7 @@ private final class CommandBarSurface: NSVisualEffectView {
         layer?.borderColor = NSColor(name: nil) {
             $0.isDark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.12)
         }.cgColor
-        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 1
+        layer?.borderWidth = 1
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
