@@ -69,6 +69,7 @@ public final class NativeWorkspaceController: NSObject {
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
     public func makeCardFrame() -> ContentCardFrameView {
         let frame = ContentCardFrameView(accent: accent)
+        frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
         cardFrames.add(frame)
         return frame
     }
@@ -1819,6 +1820,9 @@ enum SidebarMetrics {
     static let trafficLightClearance: CGFloat = 62
     /// Gap between the green light and the workspace label, net of the row's own 2pt item spacing.
     static let trafficLightGap: CGFloat = 6
+    /// The show-sidebar button's side. With the traffic light gap and 4pt of trailing air it must equal
+    /// kNativeSidebarToggleSlot (38) in the engine overlay, which is where Chromium's toolbar starts after the lights.
+    static let revealButtonSide: CGFloat = 28
 }
 
 @MainActor
@@ -2454,8 +2458,13 @@ public final class ContentCardFrameView: NSView {
     /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
     public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
     /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
-    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true } }
-    public var isCardShown = true { didSet { isHidden = !isCardShown } }
+    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
+    public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
+    var onShowSidebar: (() -> Void)?
+    private let showSidebarButton = NSButton(frame: .zero)
+
+    /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
+    static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
 
     init(accent: NSColor) {
         self.accent = accent
@@ -2465,6 +2474,7 @@ public final class ContentCardFrameView: NSView {
         // view (new tab, DevTools, Peek) above this one cannot cover the gutter.
         wantsLayer = true
         layer?.zPosition = 1000
+        configureShowSidebarButton()
         AppearanceWatcher.start()
         NotificationCenter.default.addObserver(self, selector: #selector(redraw),
                                                name: AppearanceWatcher.didChange, object: nil)
@@ -2479,6 +2489,44 @@ public final class ContentCardFrameView: NSView {
     public override var isFlipped: Bool { true }
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
     public override func isAccessibilityElement() -> Bool { false }
+
+    private func configureShowSidebarButton() {
+        showSidebarButton.image = sidebarSymbol("sidebar.left", size: 13)
+        showSidebarButton.imagePosition = .imageOnly
+        showSidebarButton.isBordered = false
+        showSidebarButton.bezelStyle = .recessed
+        showSidebarButton.contentTintColor = .secondaryLabelColor
+        showSidebarButton.setAccessibilityLabel("Show sidebar")
+        showSidebarButton.setAccessibilityIdentifier("bato-show-sidebar")
+        showSidebarButton.toolTip = "Show sidebar (⌘S)"
+        showSidebarButton.target = self
+        showSidebarButton.action = #selector(showSidebar)
+        updateShowSidebarButton()
+    }
+
+    @objc private func showSidebar() { onShowSidebar?() }
+
+    private func updateShowSidebarButton() {
+        showSidebarButton.isHidden = !isCardShown || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
+        needsLayout = true
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { showSidebarButton.removeFromSuperview() }
+        needsLayout = true
+    }
+
+    /// The button lives beside the traffic lights, in their titlebar container: Chromium's content view takes every
+    /// click over its own toolbar, so a button inside the window's content area would never be hit.
+    public override func layout() {
+        super.layout()
+        let side = SidebarMetrics.revealButtonSide
+        guard let window, let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
+        if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
+        showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
+                                         width: side, height: side)
+    }
 
     private var cardRect: NSRect {
         let margin = Self.margin
