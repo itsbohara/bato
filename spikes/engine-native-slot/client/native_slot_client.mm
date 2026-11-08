@@ -1336,6 +1336,61 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   return false;
 }
 
+constexpr int kMenuIdOpenLinkInPeek = MENU_ID_USER_FIRST + 1;
+
+// The workspace slot that holds this browser as a page, or false for any other browser.
+static bool FindWorkspacePage(CefRefPtr<CefBrowser> browser, uint64_t* token) {
+  if (!g_workspace_enabled || !browser) return false;
+  for (const auto& [candidate, slot] : WorkspaceSlots()) {
+    if (slot.pages.contains(browser->GetIdentifier())) {
+      *token = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+void BatoWorkspaceContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
+                              CefRefPtr<CefMenuModel> model) {
+  uint64_t token = 0;
+  if (!g_swift_peek_link_eligible || !(params->GetTypeFlags() & CM_TYPEFLAG_LINK) ||
+      !FindWorkspacePage(browser, &token)) return;
+  const std::string url = params->GetLinkUrl().ToString();
+  if (!ValidDestination(url.c_str()) || !g_swift_peek_link_eligible(token, browser->GetIdentifier(), url.c_str())) return;
+  const int new_tab_index = model->GetIndexOf(cef_id_for_command_id_name("IDC_CONTENT_CONTEXT_OPENLINKNEWTAB"));
+  if (new_tab_index < 0) return;
+  model->InsertItemAt(new_tab_index + 1, kMenuIdOpenLinkInPeek, "Open Link in Peek");
+}
+
+bool BatoWorkspaceContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
+                                     int command_id) {
+  uint64_t token = 0;
+  if (command_id != kMenuIdOpenLinkInPeek) return false;
+  if (!FindWorkspacePage(browser, &token)) return true;
+  // Same checks and deferral as a Shift-clicked link; a refusal leaves the menu action a no-op.
+  PeekLinkRequested(nullptr, token, browser->GetIdentifier(), params->GetLinkUrl().ToString().c_str());
+  return true;
+}
+
+// Chromium would open these in a stock window outside the sidebar. Only links without an opener
+// reach here (window.open with an opener goes through AddWebContents), so nothing is lost by
+// opening a Bato tab instead.
+bool BatoWorkspaceOpenLinkInTab(CefRefPtr<CefBrowser> browser, const std::string& url,
+                                cef_window_open_disposition_t disposition) {
+  using SwiftOpenLinkInTab = void (*)(uint64_t, int, const char*);
+  static const auto open_link = reinterpret_cast<SwiftOpenLinkInTab>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceOpenLinkInTab"));
+  uint64_t token = 0;
+  if ((disposition != CEF_WOD_NEW_FOREGROUND_TAB && disposition != CEF_WOD_NEW_BACKGROUND_TAB) ||
+      !open_link || !CefCurrentlyOn(TID_UI) || !FindWorkspacePage(browser, &token) ||
+      !ValidDestination(url.c_str())) return false;
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, int parent, std::string url) {
+        if (WorkspaceSlots().contains(token)) open_link(token, parent, url.c_str());
+      }, token, browser->GetIdentifier(), url));
+  return true;
+}
+
 bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
   if (![NSThread isMainThread] || !command_line) return false;
   NSString* path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:

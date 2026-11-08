@@ -298,7 +298,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         super.layout()
         content?.isHidden = mode == 0
         grip.isHidden = mode == 0 || content == nil
-        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width - 6), height: bounds.height)
+        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
         grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
     }
     override func updateTrackingAreas() {
@@ -340,11 +340,6 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
-        NSBezierPath(roundedRect: NSRect(x: 2, y: max(4, (bounds.height - 30) / 2), width: 2, height: 30),
-                     xRadius: 1, yRadius: 1).fill()
-    }
     override func mouseDown(with event: NSEvent) {
         guard let root = superview else { return }
         window?.makeFirstResponder(self)
@@ -391,6 +386,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     var controller: NativeWorkspaceController? { workspaceHost.controller }
     var engine: WorkspaceEngine? { workspaceHost.engine }
     private var blockingControls: BlockingControls?
+    private var cardFrame: ContentCardFrameView?
     private var width: Int32 = 260
     private var mode: Int32 = 1
     private var pointerMonitor: Any?
@@ -463,8 +459,25 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             root.addSubview(message)
         }
     }
+    /// Keeps the tinted card gutter above Chrome's views and in step with the sidebar reservation.
+    /// Fullscreen has no card: the page fills the screen.
+    private func updateCard() {
+        guard let content = root.window?.contentView else { return }
+        guard let card = cardFrame ?? workspaceHost.controller?.makeCardFrame() else { return }
+        cardFrame = card
+        if card.superview !== content {
+            card.frame = content.bounds
+            content.addSubview(card, positioned: .above, relativeTo: nil)
+        } else if content.subviews.last !== card {
+            content.addSubview(card, positioned: .above, relativeTo: nil)
+        }
+        card.isCardShown = !isFullscreen
+        card.sidebarCoverWidth = mode == 0 ? 0 : CGFloat(width)
+        card.sidebarWidth = mode == 1 ? CGFloat(min(width, Int32(max(0, content.bounds.width - 320)))) : 0
+    }
     private func attached() {
         installPointerMonitor()
+        updateCard()
         if fullscreenObservers.isEmpty, let window = root.window {
             for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
                 fullscreenObservers.append(NotificationCenter.default.addObserver(
@@ -474,6 +487,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
                         self.fullscreenRevealed = false
                         self.root.mode = entering ? 0 : self.mode
                         self.root.layoutSubtreeIfNeeded()
+                        self.updateCard()
                     }
                 })
             }
@@ -538,6 +552,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         mode = next
         root.mode = next
         root.layoutSubtreeIfNeeded()
+        updateCard()
         return true
     }
     private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
@@ -1108,6 +1123,15 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
           let page = engine.pages[parent], let address = URL(string: text) else { return }
     controller.openPeek(from: page, url: address)
+}
+
+/// A link that asked for a new tab without an opener (target=_blank, Open Link in New Tab) becomes a sidebar tab.
+@_cdecl("BatoSwiftWorkspaceOpenLinkInTab")
+@MainActor public func workspaceOpenLinkInTab(_ token: UInt64, _ parent: Int32, _ url: UnsafePointer<CChar>) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
+          engine.pages[parent] != nil, let address = URL(string: String(cString: url)) else { return }
+    controller.openExternalURL(address)
 }
 
 @_cdecl("BatoSwiftWorkspaceConfigureNavigation")

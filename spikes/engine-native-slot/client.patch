@@ -243,7 +243,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,72 @@
+@@ -2313,6 +2317,73 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -260,6 +260,7 @@
 +      "tests/cefsimple/bato/BatoPersistence/OrganizationStore.swift",
 +      "tests/cefsimple/bato/BatoPersistence/BackupStore.swift",
 +      "tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift",
++      "tests/cefsimple/bato/BatoPersistence/ClosedTabsStore.swift",
 +      "tests/cefsimple/bato/BatoPersistence/SessionRecovery.swift",
 +      "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
@@ -316,7 +317,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2406,19 @@
+@@ -2336,12 +2407,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -339,7 +340,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1517 @@
+@@ -0,0 +1,1572 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -1678,6 +1679,61 @@
 +  return false;
 +}
 +
++constexpr int kMenuIdOpenLinkInPeek = MENU_ID_USER_FIRST + 1;
++
++// The workspace slot that holds this browser as a page, or false for any other browser.
++static bool FindWorkspacePage(CefRefPtr<CefBrowser> browser, uint64_t* token) {
++  if (!g_workspace_enabled || !browser) return false;
++  for (const auto& [candidate, slot] : WorkspaceSlots()) {
++    if (slot.pages.contains(browser->GetIdentifier())) {
++      *token = candidate;
++      return true;
++    }
++  }
++  return false;
++}
++
++void BatoWorkspaceContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
++                              CefRefPtr<CefMenuModel> model) {
++  uint64_t token = 0;
++  if (!g_swift_peek_link_eligible || !(params->GetTypeFlags() & CM_TYPEFLAG_LINK) ||
++      !FindWorkspacePage(browser, &token)) return;
++  const std::string url = params->GetLinkUrl().ToString();
++  if (!ValidDestination(url.c_str()) || !g_swift_peek_link_eligible(token, browser->GetIdentifier(), url.c_str())) return;
++  const int new_tab_index = model->GetIndexOf(cef_id_for_command_id_name("IDC_CONTENT_CONTEXT_OPENLINKNEWTAB"));
++  if (new_tab_index < 0) return;
++  model->InsertItemAt(new_tab_index + 1, kMenuIdOpenLinkInPeek, "Open Link in Peek");
++}
++
++bool BatoWorkspaceContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
++                                     int command_id) {
++  uint64_t token = 0;
++  if (command_id != kMenuIdOpenLinkInPeek) return false;
++  if (!FindWorkspacePage(browser, &token)) return true;
++  // Same checks and deferral as a Shift-clicked link; a refusal leaves the menu action a no-op.
++  PeekLinkRequested(nullptr, token, browser->GetIdentifier(), params->GetLinkUrl().ToString().c_str());
++  return true;
++}
++
++// Chromium would open these in a stock window outside the sidebar. Only links without an opener
++// reach here (window.open with an opener goes through AddWebContents), so nothing is lost by
++// opening a Bato tab instead.
++bool BatoWorkspaceOpenLinkInTab(CefRefPtr<CefBrowser> browser, const std::string& url,
++                                cef_window_open_disposition_t disposition) {
++  using SwiftOpenLinkInTab = void (*)(uint64_t, int, const char*);
++  static const auto open_link = reinterpret_cast<SwiftOpenLinkInTab>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceOpenLinkInTab"));
++  uint64_t token = 0;
++  if ((disposition != CEF_WOD_NEW_FOREGROUND_TAB && disposition != CEF_WOD_NEW_BACKGROUND_TAB) ||
++      !open_link || !CefCurrentlyOn(TID_UI) || !FindWorkspacePage(browser, &token) ||
++      !ValidDestination(url.c_str())) return false;
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int parent, std::string url) {
++        if (WorkspaceSlots().contains(token)) open_link(token, parent, url.c_str());
++      }, token, browser->GetIdentifier(), url));
++  return true;
++}
++
 +bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
 +  if (![NSThread isMainThread] || !command_line) return false;
 +  NSString* path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
@@ -1859,18 +1915,26 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,44 @@
 +#ifndef BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#define BATO_SAMPLE_NATIVE_SLOT_CLIENT_H_
 +#include <string>
 +#include <vector>
 +#include "include/cef_browser.h"
 +#include "include/cef_command_line.h"
++#include "include/cef_context_menu_handler.h"
 +// Called once after loading the matching framework, before CefInitialize.
 +bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line);
 +// All hooks run on the CEF UI thread. Strings are copied before deferred delivery.
 +bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id);
 +bool BatoWorkspaceIsAnchor(CefRefPtr<CefBrowser> browser);
++// Link context menus on workspace pages get "Open Link in Peek" when Swift would accept the link.
++void BatoWorkspaceContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
++                              CefRefPtr<CefMenuModel> model);
++bool BatoWorkspaceOpenLinkInTab(CefRefPtr<CefBrowser> browser, const std::string& url,
++                                cef_window_open_disposition_t disposition);
++bool BatoWorkspaceContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
++                                     int command_id);
 +void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser);
 +void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
 +                                        const CefString& url);
@@ -1923,7 +1987,7 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
-+                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift']),
++                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
@@ -2111,7 +2175,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1169 @@
+@@ -0,0 +1,1193 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2412,7 +2476,7 @@
 +        super.layout()
 +        content?.isHidden = mode == 0
 +        grip.isHidden = mode == 0 || content == nil
-+        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width - 6), height: bounds.height)
++        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
 +        grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
 +    }
 +    override func updateTrackingAreas() {
@@ -2454,11 +2518,6 @@
 +    }
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
 +    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
-+    override func draw(_ dirtyRect: NSRect) {
-+        NSColor.separatorColor.setFill()
-+        NSBezierPath(roundedRect: NSRect(x: 2, y: max(4, (bounds.height - 30) / 2), width: 2, height: 30),
-+                     xRadius: 1, yRadius: 1).fill()
-+    }
 +    override func mouseDown(with event: NSEvent) {
 +        guard let root = superview else { return }
 +        window?.makeFirstResponder(self)
@@ -2505,6 +2564,7 @@
 +    var controller: NativeWorkspaceController? { workspaceHost.controller }
 +    var engine: WorkspaceEngine? { workspaceHost.engine }
 +    private var blockingControls: BlockingControls?
++    private var cardFrame: ContentCardFrameView?
 +    private var width: Int32 = 260
 +    private var mode: Int32 = 1
 +    private var pointerMonitor: Any?
@@ -2577,8 +2637,25 @@
 +            root.addSubview(message)
 +        }
 +    }
++    /// Keeps the tinted card gutter above Chrome's views and in step with the sidebar reservation.
++    /// Fullscreen has no card: the page fills the screen.
++    private func updateCard() {
++        guard let content = root.window?.contentView else { return }
++        guard let card = cardFrame ?? workspaceHost.controller?.makeCardFrame() else { return }
++        cardFrame = card
++        if card.superview !== content {
++            card.frame = content.bounds
++            content.addSubview(card, positioned: .above, relativeTo: nil)
++        } else if content.subviews.last !== card {
++            content.addSubview(card, positioned: .above, relativeTo: nil)
++        }
++        card.isCardShown = !isFullscreen
++        card.sidebarCoverWidth = mode == 0 ? 0 : CGFloat(width)
++        card.sidebarWidth = mode == 1 ? CGFloat(min(width, Int32(max(0, content.bounds.width - 320)))) : 0
++    }
 +    private func attached() {
 +        installPointerMonitor()
++        updateCard()
 +        if fullscreenObservers.isEmpty, let window = root.window {
 +            for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
 +                fullscreenObservers.append(NotificationCenter.default.addObserver(
@@ -2588,6 +2665,7 @@
 +                        self.fullscreenRevealed = false
 +                        self.root.mode = entering ? 0 : self.mode
 +                        self.root.layoutSubtreeIfNeeded()
++                        self.updateCard()
 +                    }
 +                })
 +            }
@@ -2652,6 +2730,7 @@
 +        mode = next
 +        root.mode = next
 +        root.layoutSubtreeIfNeeded()
++        updateCard()
 +        return true
 +    }
 +    private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
@@ -3222,6 +3301,15 @@
 +    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
 +          let page = engine.pages[parent], let address = URL(string: text) else { return }
 +    controller.openPeek(from: page, url: address)
++}
++
++/// A link that asked for a new tab without an opener (target=_blank, Open Link in New Tab) becomes a sidebar tab.
++@_cdecl("BatoSwiftWorkspaceOpenLinkInTab")
++@MainActor public func workspaceOpenLinkInTab(_ token: UInt64, _ parent: Int32, _ url: UnsafePointer<CChar>) {
++    precondition(Thread.isMainThread)
++    guard let slot = workspaceSlots[token], let engine = slot.engine, let controller = slot.controller,
++          engine.pages[parent] != nil, let address = URL(string: String(cString: url)) else { return }
++    controller.openExternalURL(address)
 +}
 +
 +@_cdecl("BatoSwiftWorkspaceConfigureNavigation")
@@ -3865,7 +3953,42 @@
    if (!NativeQuitExperimentEnabled() ||
        command_id != cef_id_for_command_id_name("IDC_EXIT")) {
      return false;
-@@ -90,6 +634,7 @@
+@@ -72,6 +616,34 @@
+   fprintf(stderr, "{\"event\":\"sample-client-quit-command\",\"veto\":%s}\n",
+           veto ? "true" : "false");
+   return veto;
++}
++
++void SimpleHandler::OnBeforeContextMenu(CefRefPtr<CefBrowser> browser,
++                                        CefRefPtr<CefFrame> frame,
++                                        CefRefPtr<CefContextMenuParams> params,
++                                        CefRefPtr<CefMenuModel> model) {
++  CEF_REQUIRE_UI_THREAD();
++  BatoWorkspaceContextMenu(browser, params, model);
++}
++
++bool SimpleHandler::OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
++                                         CefRefPtr<CefFrame> frame,
++                                         CefRefPtr<CefContextMenuParams> params,
++                                         int command_id,
++                                         EventFlags event_flags) {
++  CEF_REQUIRE_UI_THREAD();
++  return BatoWorkspaceContextMenuCommand(browser, params, command_id);
++}
++
++bool SimpleHandler::OnOpenURLFromTab(
++    CefRefPtr<CefBrowser> browser,
++    CefRefPtr<CefFrame> frame,
++    const CefString& target_url,
++    CefRequestHandler::WindowOpenDisposition target_disposition,
++    bool user_gesture) {
++  CEF_REQUIRE_UI_THREAD();
++  return BatoWorkspaceOpenLinkInTab(browser, target_url.ToString(),
++                                    target_disposition);
+ }
+
+ void SimpleHandler::RequestApplicationQuit() {
+@@ -90,6 +662,7 @@
      bool& active;
      ~ScopedRequestReset() { active = false; }
    } reset{quit_request_in_progress_};
@@ -3873,7 +3996,7 @@
    const int command = cef_id_for_command_id_name("IDC_EXIT");
    for (const auto& browser : browser_list_) {
      auto host = browser->GetHost();
-@@ -103,9 +648,17 @@
+@@ -103,9 +676,17 @@
    fprintf(stderr, "{\"event\":\"sample-native-quit-unavailable\"}\n");
  }
 
@@ -3891,7 +4014,7 @@
 
    if (auto browser_view = CefBrowserView::GetForBrowser(browser)) {
      // Set the title of the window using the Views framework.
-@@ -117,6 +670,12 @@
+@@ -117,6 +698,12 @@
      // Set the title of the window using platform APIs.
      PlatformTitleChange(browser, title);
    }
@@ -3904,7 +4027,7 @@
  }
 
  void SimpleHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-@@ -133,6 +692,7 @@
+@@ -133,6 +720,7 @@
              "{\"event\":\"sample-browser-count\",\"phase\":\"created\",\"count\":%zu}\n",
              browser_list_.size());
    }
@@ -3912,7 +4035,7 @@
  }
 
  bool SimpleHandler::DoClose(CefRefPtr<CefBrowser> browser) {
-@@ -153,6 +713,7 @@
+@@ -153,6 +741,7 @@
 
  void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -3920,7 +4043,7 @@
 
    // Remove from the list of existing browsers.
    BrowserList::iterator bit = browser_list_.begin();
-@@ -173,8 +734,207 @@
+@@ -173,8 +762,207 @@
      if (NativeQuitExperimentEnabled()) {
        fprintf(stderr, "{\"event\":\"sample-quit-message-loop-requested\"}\n");
      }
@@ -4130,8 +4253,11 @@
  void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
 --- a/cef/tests/cefsimple/simple_handler.h
 +++ b/cef/tests/cefsimple/simple_handler.h
-@@ -13,7 +13,8 @@
+@@ -11,9 +11,11 @@
+
+ class SimpleHandler : public CefClient,
                        public CefCommandHandler,
++                      public CefContextMenuHandler,
                        public CefDisplayHandler,
                        public CefLifeSpanHandler,
 -                      public CefLoadHandler {
@@ -4140,7 +4266,11 @@
   public:
    explicit SimpleHandler(bool is_alloy_style);
    ~SimpleHandler() override;
-@@ -26,6 +27,7 @@
+@@ -23,25 +25,75 @@
+
+   // CefClient methods:
+   CefRefPtr<CefCommandHandler> GetCommandHandler() override;
++  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
    CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
    CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
@@ -4148,9 +4278,20 @@
 
    // CefCommandHandler methods (opt-in diagnostic only).
    bool OnChromeCommand(CefRefPtr<CefBrowser> browser,
-@@ -33,15 +35,46 @@
+                        int command_id,
                         cef_window_open_disposition_t disposition) override;
 
++  // CefContextMenuHandler methods:
++  void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser,
++                           CefRefPtr<CefFrame> frame,
++                           CefRefPtr<CefContextMenuParams> params,
++                           CefRefPtr<CefMenuModel> model) override;
++  bool OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
++                            CefRefPtr<CefFrame> frame,
++                            CefRefPtr<CefContextMenuParams> params,
++                            int command_id,
++                            EventFlags event_flags) override;
++
    // CefDisplayHandler methods:
 +  void OnAddressChange(CefRefPtr<CefBrowser> browser,
 +                       CefRefPtr<CefFrame> frame,
@@ -4179,6 +4320,12 @@
 +                      bool user_gesture,
 +                      bool is_redirect) override;
 +
++  bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
++                        CefRefPtr<CefFrame> frame,
++                        const CefString& target_url,
++                        CefRequestHandler::WindowOpenDisposition target_disposition,
++                        bool user_gesture) override;
++
 +  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(
 +      CefRefPtr<CefBrowser> browser,
 +      CefRefPtr<CefFrame> frame,
@@ -4197,7 +4344,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1329 @@
+@@ -0,0 +1,1336 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4238,7 +4385,7 @@
 +
 +/// A transient organization search result; engine-loaded state stays in the runtime.
 +/// A temporary tab that was closed, with where it sat so reopening can put it back.
-+public struct ClosedTab: Equatable, Sendable {
++public struct ClosedTab: Equatable, Sendable, Codable {
 +    public var profileID: UUID
 +    public var workspaceID: UUID
 +    public var title: String
@@ -4255,11 +4402,16 @@
 +}
 +
 +/// The last closed tab comes out first. Past the capacity the oldest is dropped.
-+public struct ClosedTabStack: Equatable, Sendable {
++public struct ClosedTabStack: Equatable, Sendable, Codable {
 +    public static let capacity = 25
 +    public private(set) var tabs: [ClosedTab] = []
 +
 +    public init() {}
++
++    /// Oldest first, as stored; keeps only the newest `capacity` tabs.
++    public init(tabs: [ClosedTab]) {
++        self.tabs = Array(tabs.suffix(Self.capacity))
++    }
 +
 +    public var last: ClosedTab? { tabs.last }
 +
@@ -5520,6 +5672,8 @@
 +        }
 +    }
 +
++    public static func isValidPageURL(_ url: URL) -> Bool { (try? validateURL(url)) != nil }
++
 +    private static func validateURL(_ url: URL) throws {
 +        if BrowserEssential.accepts(url) { return }
 +        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
@@ -5822,7 +5976,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1020 @@
+@@ -0,0 +1,1034 @@
 +import Foundation
 +import BatoCore
 +
@@ -5934,7 +6088,11 @@
 +    public private(set) var livePages: [UUID: LivePage] = [:]
 +    public private(set) var pendingClose: Set<LivePage> = []
 +    public private(set) var lastError: PageRuntimeError?
-+    private var closedTabs: [UUID: ClosedTabStack] = [:]
++    private var closedTabs: [UUID: ClosedTabStack] = [:] {
++        didSet { closedTabsDidChange?(closedTabs) }
++    }
++    /// Called after every change to the closed-tab history, for persisting it.
++    public var closedTabsDidChange: (([UUID: ClosedTabStack]) -> Void)?
 +    /// Live pages being closed to archive their tab, with the time the archive was requested.
 +    private var pendingArchive: [UUID: Date] = [:]
 +    /// Time source for archive activity and records; tests replace it.
@@ -6350,6 +6508,16 @@
 +        guard pendingClose.insert(page).inserted else { return true }
 +        engine.requestClose(page)
 +        return true
++    }
++
++    /// Loads persisted closed-tab history, keeping only tabs of existing Profiles with a reopenable URL.
++    public func restoreClosedTabs(_ stacks: [UUID: ClosedTabStack]) {
++        let profileIDs = Set(state.workspaces.map(\.profileID))
++        closedTabs = stacks.reduce(into: [:]) { result, entry in
++            guard profileIDs.contains(entry.key) else { return }
++            let stack = ClosedTabStack(tabs: entry.value.tabs.filter { BrowserState.isValidPageURL($0.url) })
++            if !stack.isEmpty { result[entry.key] = stack }
++        }
 +    }
 +
 +    /// Brings back the Profile's most recently closed temporary tab where it was, in the current Profile's
@@ -6965,7 +7133,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2377 @@
+@@ -0,0 +1,2464 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7032,6 +7200,13 @@
 +    private weak var pendingCommandBarWindow: NSWindow?
 +    private var commandBarNavigationTarget: LivePage?
 +    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
++    private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
++    /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
++    public func makeCardFrame() -> ContentCardFrameView {
++        let frame = ContentCardFrameView(accent: accent)
++        cardFrames.add(frame)
++        return frame
++    }
 +
 +    /// Load failures throw without replacing the existing document. The factory
 +    /// receives the organization's launch Profile, which stays bound to the engine's original context
@@ -7059,6 +7234,9 @@
 +        self.recovery = recovery
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
 +        runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
++        let closedTabsStore = ClosedTabsStore(directory: directory)
++        runtime.restoreClosedTabs(closedTabsStore.load())
++        runtime.closedTabsDidChange = { try? closedTabsStore.save($0) }
 +        let sidebar = WorkspaceRoot(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
 +        sidebar.keyEquivalentsEnabled = handlesKeyEquivalents
 +        root = sidebar
@@ -7241,7 +7419,7 @@
 +        commandBarNavigationTarget = target
 +        let bar = CommandBarController(query: query, error: error,
 +                                       provider: commandBarSearchProvider,
-+                                       providerChanged: { [weak self] in self?.setSearchProvider($0) }) { [weak self] query in
++                                       pageIcon: { [weak self] in self?.pageIcons[$0] }) { [weak self] query in
 +            guard let self else { return [] }
 +            return CommandBarResults.make(query: query, state: self.runtime.state,
 +                                          provider: self.commandBarSearchProvider,
@@ -7457,7 +7635,10 @@
 +        heading.alignment = .centerY
 +        heading.distribution = .fill
 +        heading.spacing = 2
-+        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight).isActive = true
++        // The toolbar row sits one card margin below the window top, and AppKit centres the traffic lights
++        // about 3pt lower than the row's midpoint; measured against the toolbar in a real window.
++        heading.edgeInsets = NSEdgeInsets(top: SidebarMetrics.headingDrop, left: 0, bottom: 0, right: 0)
++        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight + SidebarMetrics.headingDrop).isActive = true
 +
 +        newTabButton.title = "New Tab"
 +        newTabButton.image = sidebarSymbol("plus", size: 14)
@@ -7635,6 +7816,7 @@
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
 +        (root as? WorkspaceRoot)?.accent = accent
++        for frame in cardFrames.allObjects { frame.accent = accent }
 +        let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
 +        switcherButton.title = workspace.name
 +        switcherButton.image = colorDot(workspaceColor(workspace.color))
@@ -8728,6 +8910,9 @@
 +    static let sideInset: CGFloat = 10
 +    /// Must equal kNativeSidebarTopRowHeight in the engine overlay: the sidebar spans the window top and its first row shares the traffic lights' row.
 +    static let topRowHeight: CGFloat = 46
++    /// How far the heading row sits below the window top: the 8pt card margin (ContentCardFrameView.margin) plus 3pt,
++    /// so it shares the toolbar and traffic lights centre line.
++    static let headingDrop: CGFloat = 11
 +    /// Space the three traffic lights occupy at the row's leading edge, net of the side inset.
 +    static let trafficLightClearance: CGFloat = 62
 +    /// Gap between the green light and the workspace label, net of the row's own 2pt item spacing.
@@ -9343,6 +9528,76 @@
 +        window.orderOut(nil)
 +    }
 +}
++
++/// Paints the sidebar's tint in the gutter around the page card, with a rounded cut-out where the
++/// content shows through. The engine reserves the same gutter in Chrome's layout; it is purely
++/// visual and never takes input, so pointer events reach the page and toolbar underneath.
++@MainActor
++public final class ContentCardFrameView: NSView {
++    public static let margin: CGFloat = 8
++    static let cornerRadius: CGFloat = 12
++    var accent: NSColor { didSet { needsDisplay = true } }
++    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
++    public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
++    /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
++    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true } }
++    public var isCardShown = true { didSet { isHidden = !isCardShown } }
++
++    init(accent: NSColor) {
++        self.accent = accent
++        super.init(frame: .zero)
++        autoresizingMask = [.width, .height]
++        // Sibling layers composite by zPosition, not subview order, so Chromium re-adding a native
++        // view (new tab, DevTools, Peek) above this one cannot cover the gutter.
++        wantsLayer = true
++        layer?.zPosition = 1000
++        AppearanceWatcher.start()
++        NotificationCenter.default.addObserver(self, selector: #selector(redraw),
++                                               name: AppearanceWatcher.didChange, object: nil)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    @objc private func redraw() { needsDisplay = true }
++    public override func viewDidChangeEffectiveAppearance() {
++        super.viewDidChangeEffectiveAppearance()
++        needsDisplay = true
++    }
++
++    public override var isFlipped: Bool { true }
++    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
++    public override func isAccessibilityElement() -> Bool { false }
++
++    private var cardRect: NSRect {
++        let margin = Self.margin
++        let leading = sidebarWidth + margin
++        return NSRect(x: leading, y: margin, width: max(0, bounds.width - leading - margin),
++                      height: max(0, bounds.height - 2 * margin))
++    }
++
++    public override func draw(_ dirtyRect: NSRect) {
++        let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
++        let highContrast = AppearanceWatcher.increaseContrast
++        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance, highContrast: highContrast)
++        let ring = NSBezierPath(rect: bounds)
++        ring.append(card)
++        ring.windingRule = .evenOdd
++        NSGraphicsContext.saveGraphicsState()
++        ring.addClip()
++        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
++        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
++        let shadow = NSShadow()
++        shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
++        shadow.shadowBlurRadius = 8
++        shadow.shadowOffset = NSSize(width: 0, height: -1)
++        shadow.set()
++        NSColor.black.setFill()
++        card.fill()
++        NSShadow().set()
++        (highContrast ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.labelColor.withAlphaComponent(0.14)).setStroke()
++        card.lineWidth = highContrast ? 2 : 1
++        card.stroke()
++        NSGraphicsContext.restoreGraphicsState()
++    }
++}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
 @@ -0,0 +1,177 @@
@@ -9525,7 +9780,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,408 @@
 +import AppKit
 +import BatoCore
 +
@@ -9535,27 +9790,27 @@
 +final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
 +    private let field = NSTextField(string: "")
 +    private let glyph = NSImageView()
-+    private let providerPicker = NSPopUpButton(frame: .zero, pullsDown: false)
 +    private var provider: CommandBarSearchProvider
-+    private let providerChanged: (CommandBarSearchProvider) -> Void
 +    private let table = CommandBarTable()
-+    private let hint = NSTextField(labelWithString: "")
-+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
-+    private let openButton = GoPillButton()
++    private let scroll = NSScrollView()
++    private let status = NSTextField(wrappingLabelWithString: "")
++    private let stack = NSStackView()
++    private var listHeight: NSLayoutConstraint!
 +    private var refreshedQuery = ""
 +    private let resultsForQuery: (String) -> [CommandBarResult]
++    private let pageIcon: (UUID) -> NSImage?
 +    private var results: [CommandBarResult] = []
 +    private(set) var chosenAction: CommandBarAction?
 +    var query: String { field.stringValue }
 +
 +    init(query: String = "", error: String? = nil,
 +         provider: CommandBarSearchProvider = .duckDuckGo,
-+         providerChanged: @escaping (CommandBarSearchProvider) -> Void,
++         pageIcon: @escaping (UUID) -> NSImage? = { _ in nil },
 +         results: @escaping (String) -> [CommandBarResult]) {
 +        self.provider = provider
-+        self.providerChanged = providerChanged
++        self.pageIcon = pageIcon
 +        resultsForQuery = results
-+        let panel = CommandBarPanel(contentRect: NSRect(origin: .zero, size: SidebarStyle.commandBarSize),
++        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: SidebarStyle.commandBarWidth, height: 300),
 +                                    styleMask: [.borderless], backing: .buffered, defer: false)
 +        panel.isReleasedWhenClosed = false
 +        panel.title = "New Tab"
@@ -9566,15 +9821,11 @@
 +        panel.hasShadow = true
 +        super.init(window: panel)
 +        let surface = CommandBarSurface()
-+        surface.wantsLayer = true
-+        surface.layer?.cornerRadius = SidebarStyle.commandBarRadius
-+        surface.layer?.borderWidth = 0.5
-+        surface.layer?.masksToBounds = true
 +        panel.contentView = surface
 +        field.stringValue = query
-+        field.placeholderString = "Search or enter a URL"
-+        field.font = .systemFont(ofSize: 22, weight: .regular)
-+        field.controlSize = .large
++        field.font = .systemFont(ofSize: 19, weight: .medium)
++        field.placeholderAttributedString = NSAttributedString(string: "Search or Enter URL...", attributes: [
++            .font: NSFont.systemFont(ofSize: 19, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
 +        field.isBezeled = false
 +        field.drawsBackground = false
 +        field.focusRingType = .none
@@ -9583,27 +9834,22 @@
 +        field.delegate = self
 +        field.cell?.sendsActionOnEndEditing = false
 +        glyph.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
-+        glyph.symbolConfiguration = .init(pointSize: 17, weight: .regular)
++        glyph.symbolConfiguration = .init(pointSize: 18, weight: .medium)
 +        glyph.contentTintColor = .secondaryLabelColor
 +        glyph.setContentHuggingPriority(.required, for: .horizontal)
-+        providerPicker.addItems(withTitles: CommandBarSearchProvider.allCases.map(\.title))
-+        if let index = CommandBarSearchProvider.allCases.firstIndex(of: provider) { providerPicker.selectItem(at: index) }
-+        providerPicker.target = self
-+        providerPicker.action = #selector(changeProvider)
-+        providerPicker.setAccessibilityLabel("Web search provider")
-+        providerPicker.setAccessibilityIdentifier("bato-command-bar-provider")
-+        providerPicker.toolTip = "Search provider (also in Settings > General)"
-+        providerPicker.isBordered = false
-+        providerPicker.controlSize = .small
-+        providerPicker.font = .systemFont(ofSize: 12)
-+        let inputRow = NSStackView(views: [glyph, field])
-+        inputRow.spacing = 10
-+        inputRow.alignment = .centerY
-+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        let header = NSView()
++        header.translatesAutoresizingMaskIntoConstraints = false
++        for view in [glyph, field] as [NSView] {
++            view.translatesAutoresizingMaskIntoConstraints = false
++            header.addSubview(view)
++        }
++        let separator = NSBox()
++        separator.boxType = .separator
 +        table.dataSource = self
 +        table.delegate = self
 +        table.headerView = nil
 +        table.rowHeight = SidebarStyle.commandBarRowHeight
++        table.intercellSpacing = .zero
 +        table.backgroundColor = .clear
 +        table.selectionHighlightStyle = .regular
 +        table.allowsEmptySelection = false
@@ -9618,54 +9864,54 @@
 +        table.doubleAction = #selector(openSelected)
 +        table.openSelection = { [weak self] in self?.openSelected() }
 +        table.cancel = { [weak self] in self?.dismiss(.cancel) }
-+        let scroll = NSScrollView()
 +        scroll.documentView = table
 +        scroll.drawsBackground = false
-+        scroll.hasVerticalScroller = true
-+        scroll.autohidesScrollers = true
-+        scroll.scrollerStyle = .overlay
-+        hint.font = .systemFont(ofSize: 11)
-+        hint.textColor = .secondaryLabelColor
-+        hint.lineBreakMode = .byTruncatingTail
-+        hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        hint.setAccessibilityIdentifier("bato-command-bar-hint")
-+        errorLabel.font = .systemFont(ofSize: 11)
-+        errorLabel.textColor = .systemRed
-+        errorLabel.stringValue = error ?? ""
-+        errorLabel.setAccessibilityIdentifier("bato-command-bar-error")
-+        openButton.target = self
-+        openButton.action = #selector(openSelected)
-+        openButton.keyEquivalent = "\r"
-+        openButton.setAccessibilityLabel("Go")
-+        openButton.setAccessibilityIdentifier("bato-command-bar-open")
-+        panel.defaultButtonCell = openButton.cell as? NSButtonCell
-+        let spacer = NSView()
-+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-+        let footer = NSStackView(views: [providerPicker, hint, spacer, openButton])
-+        footer.spacing = 12
-+        footer.alignment = .centerY
-+        let divider = NSBox()
-+        divider.boxType = .separator
-+        let stack = NSStackView(views: [inputRow, divider, scroll, errorLabel, footer])
++        scroll.hasVerticalScroller = false
++        scroll.translatesAutoresizingMaskIntoConstraints = false
++        let listHost = NSView()
++        listHost.translatesAutoresizingMaskIntoConstraints = false
++        listHost.addSubview(scroll)
++        status.font = .systemFont(ofSize: 12)
++        status.textColor = .secondaryLabelColor
++        status.setAccessibilityIdentifier("bato-command-bar-hint")
++        if let error, !error.isEmpty { status.stringValue = error; status.textColor = .systemRed }
++        let statusHost = NSView()
++        statusHost.translatesAutoresizingMaskIntoConstraints = false
++        status.translatesAutoresizingMaskIntoConstraints = false
++        statusHost.addSubview(status)
++        stack.setViews([header, separator, listHost, statusHost], in: .top)
 +        stack.orientation = .vertical
 +        stack.alignment = .leading
-+        stack.spacing = 14
++        stack.spacing = 0
 +        stack.translatesAutoresizingMaskIntoConstraints = false
 +        surface.addSubview(stack)
++        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
++        let inset = SidebarStyle.commandBarInset
 +        NSLayoutConstraint.activate([
-+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 22),
-+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -22),
-+            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 24),
-+            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -18),
-+            inputRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            field.heightAnchor.constraint(equalToConstant: 40),
-+            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
-+            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-+            footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
++            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
++            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
++            stack.topAnchor.constraint(equalTo: surface.topAnchor),
++            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            header.heightAnchor.constraint(equalToConstant: SidebarStyle.commandBarHeaderHeight),
++            glyph.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 20),
++            glyph.centerYAnchor.constraint(equalTo: header.centerYAnchor),
++            glyph.widthAnchor.constraint(equalToConstant: 22),
++            field.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 12),
++            field.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -20),
++            field.centerYAnchor.constraint(equalTo: header.centerYAnchor),
++            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            listHost.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            scroll.leadingAnchor.constraint(equalTo: listHost.leadingAnchor, constant: inset),
++            scroll.trailingAnchor.constraint(equalTo: listHost.trailingAnchor, constant: -inset),
++            scroll.topAnchor.constraint(equalTo: listHost.topAnchor, constant: inset),
++            scroll.bottomAnchor.constraint(equalTo: listHost.bottomAnchor, constant: -inset),
++            listHeight,
++            statusHost.widthAnchor.constraint(equalTo: stack.widthAnchor),
++            status.leadingAnchor.constraint(equalTo: statusHost.leadingAnchor, constant: 20),
++            status.trailingAnchor.constraint(equalTo: statusHost.trailingAnchor, constant: -20),
++            status.topAnchor.constraint(equalTo: statusHost.topAnchor),
++            status.bottomAnchor.constraint(equalTo: statusHost.bottomAnchor, constant: -10)
 +        ])
-+        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
 +        refresh()
 +    }
 +
@@ -9686,16 +9932,29 @@
 +            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
 +        }
 +        refreshedQuery = query
-+        openButton.isEnabled = results.indices.contains(table.selectedRow)
 +        if case .invalid(let message) = CommandBarInput.resolve(field.stringValue, provider: provider) {
-+            hint.stringValue = message
-+        } else {
-+            hint.stringValue = "↑↓ choose · Esc cancel"
++            status.stringValue = message
++            status.textColor = .secondaryLabelColor
++        } else if status.textColor == .secondaryLabelColor {
++            status.stringValue = ""
 +        }
++        fitToResults()
++    }
++
++    /// The panel hugs its rows, as Arc's does. Resizing a sheet re-centres it, so the top edge is pinned back.
++    private func fitToResults() {
++        listHeight.constant = CGFloat(min(results.count, SidebarStyle.commandBarMaxRows)) * SidebarStyle.commandBarRowHeight
++        status.superview?.isHidden = status.stringValue.isEmpty
++        guard let window else { return }
++        window.contentView?.layoutSubtreeIfNeeded()
++        let height = ceil(stack.fittingSize.height)
++        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
++        window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
++        window.setFrameTopLeftPoint(topLeft)
 +    }
 +
 +    func controlTextDidChange(_ notification: Notification) {
-+        errorLabel.stringValue = ""
++        if status.textColor == .systemRed { status.stringValue = ""; status.textColor = .secondaryLabelColor }
 +        refresh()
 +    }
 +
@@ -9718,60 +9977,35 @@
 +    }
 +
 +    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
-+    func tableViewSelectionDidChange(_ notification: Notification) {
-+        openButton.isEnabled = results.indices.contains(table.selectedRow)
-+    }
-+
-+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedRowView() }
++    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PaletteRowView() }
 +
 +    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
 +        guard results.indices.contains(row) else { return nil }
 +        let result = results[row]
 +        let symbol: String
++        var detail = ""
++        var trailing = "Open"
++        var selectedTrailing = "Open"
++        var image: NSImage?
 +        switch result.action {
-+        case .open: symbol = "arrow.up.right"
-+        case .navigateCurrent: symbol = "arrow.right"
-+        case .peek: symbol = "rectangle.center.inset.filled"
-+        case .activate: symbol = "rectangle.on.rectangle"
-+        case .command: symbol = "command"
++        case .open(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString
++        case .navigateCurrent(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString; trailing = "Go"; selectedTrailing = "Go"
++        case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
++        case .activate(let page):
++            symbol = "rectangle.on.rectangle"
++            detail = page.entry.lastURL.absoluteString
++            trailing = page.workspaceName.uppercased()
++            selectedTrailing = "Switch to Tab"
++            image = pageIcon(page.entryID) ?? SidebarStyle.letterIcon(for: page.entry.title, url: page.entry.lastURL, size: 16)
++        case .command: symbol = "command"; trailing = "Command"; selectedTrailing = "Run"
 +        }
-+        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
-+        image.symbolConfiguration = .init(pointSize: 15, weight: .regular)
-+        image.contentTintColor = .secondaryLabelColor
-+        let title = NSTextField(labelWithString: result.title)
-+        title.font = .systemFont(ofSize: 15)
-+        title.lineBreakMode = .byTruncatingTail
-+        let detail = NSTextField(labelWithString: result.subtitle)
-+        detail.font = .systemFont(ofSize: 13)
-+        detail.textColor = .secondaryLabelColor
-+        detail.lineBreakMode = .byTruncatingMiddle
-+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-+        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
-+        let rowView = NSStackView(views: [image, title, detail])
-+        rowView.spacing = 10
-+        rowView.alignment = .firstBaseline
-+        rowView.translatesAutoresizingMaskIntoConstraints = false
-+        let cell = NSTableCellView()
-+        cell.textField = title
-+        cell.addSubview(rowView)
-+        NSLayoutConstraint.activate([
-+            rowView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
-+            rowView.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
-+            rowView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-+            image.widthAnchor.constraint(equalToConstant: 20)
-+        ])
++        let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
++            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
++        let cell = PaletteCell(result: result, icon: image ?? symbolImage ?? NSImage(), iconIsSymbol: image == nil,
++                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing)
 +        return cell
 +    }
 +
-+    @objc private func changeProvider() {
-+        let choices = CommandBarSearchProvider.allCases
-+        guard choices.indices.contains(providerPicker.indexOfSelectedItem) else { return }
-+        provider = choices[providerPicker.indexOfSelectedItem]
-+        providerChanged(provider)
-+        refresh()
-+    }
-+
-+    @objc private func cancelBar() { dismiss(.cancel) }
 +    @objc private func openSelected() {
 +        guard results.indices.contains(table.selectedRow) else { return }
 +        chosenAction = results[table.selectedRow].action
@@ -9781,41 +10015,6 @@
 +        guard let window, let parent = window.sheetParent else { return }
 +        parent.endSheet(window, returnCode: response)
 +        window.orderOut(nil)
-+    }
-+}
-+
-+/// The "Go" pill: a light capsule with dark text, as in Dia, instead of a stock push button.
-+@MainActor
-+private final class GoPillButton: NSButton {
-+    init() {
-+        super.init(frame: .zero)
-+        title = "Go  ⏎"
-+        isBordered = false
-+        font = .systemFont(ofSize: 15, weight: .semibold)
-+        wantsLayer = true
-+        layer?.cornerRadius = 15
-+        focusRingType = .none
-+        heightAnchor.constraint(equalToConstant: 30).isActive = true
-+        widthAnchor.constraint(equalToConstant: 78).isActive = true
-+        refreshColors()
-+    }
-+    required init?(coder: NSCoder) { fatalError("Not supported") }
-+    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
-+    override func viewDidChangeEffectiveAppearance() { refreshColors() }
-+    override func viewDidMoveToWindow() {
-+        super.viewDidMoveToWindow()
-+        NotificationCenter.default.removeObserver(self)
-+        if window != nil {
-+            NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged), name: AppearanceWatcher.didChange, object: nil)
-+        }
-+    }
-+    @objc private func contrastChanged() { refreshColors() }
-+    private func refreshColors() {
-+        effectiveAppearance.performAsCurrentDrawingAppearance {
-+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(AppearanceWatcher.increaseContrast ? 1 : 0.88).cgColor
-+            attributedTitle = NSAttributedString(string: title, attributes: [
-+                .font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.windowBackgroundColor])
-+        }
 +    }
 +}
 +
@@ -9848,13 +10047,31 @@
 +    }
 +}
 +
++/// Translucent panel: vibrancy under a dark or light tint so the page stays faintly visible around and behind it.
 +@MainActor
-+private final class CommandBarSurface: NSView {
-+    override var wantsUpdateLayer: Bool { true }
++private final class CommandBarSurface: NSVisualEffectView {
++    private let tint = CommandBarTint()
++
++    override init(frame: NSRect) {
++        super.init(frame: frame)
++        material = .hudWindow
++        blendingMode = .behindWindow
++        state = .active
++        wantsLayer = true
++        layer?.cornerRadius = SidebarStyle.commandBarRadius
++        layer?.masksToBounds = true
++        tint.frame = bounds
++        tint.autoresizingMask = [.width, .height]
++        addSubview(tint)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
 +    override func updateLayer() {
-+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-+        layer?.borderColor = NSColor.separatorColor.cgColor
-+        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 0.5
++        super.updateLayer()
++        layer?.borderColor = NSColor(name: nil) {
++            $0.isDark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.12)
++        }.cgColor
++        layer?.borderWidth = AppearanceWatcher.increaseContrast ? 1.5 : 1
 +    }
 +    override func viewDidMoveToWindow() {
 +        super.viewDidMoveToWindow()
@@ -9867,6 +10084,109 @@
 +    override func viewDidChangeEffectiveAppearance() {
 +        super.viewDidChangeEffectiveAppearance()
 +        needsDisplay = true
++        tint.needsDisplay = true
++    }
++}
++
++@MainActor
++private final class CommandBarTint: NSView {
++    override var wantsUpdateLayer: Bool { true }
++    override func updateLayer() {
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            layer?.backgroundColor = (effectiveAppearance.isDark
++                ? NSColor(srgbRed: 0.098, green: 0.098, blue: 0.106, alpha: 0.9)
++                : NSColor.white.withAlphaComponent(0.72)).cgColor
++        }
++    }
++}
++
++/// Selected row: a saturated indigo pill, as in Arc, in both appearances.
++@MainActor
++private final class PaletteRowView: NSTableRowView {
++    static let accent = NSColor(srgbRed: 0.357, green: 0.357, blue: 0.839, alpha: 1)
++    override var isEmphasized: Bool { get { true } set {} }
++    override var isSelected: Bool {
++        didSet { (subviews.first as? PaletteCell)?.apply(selected: isSelected) }
++    }
++    override func drawSelection(in dirtyRect: NSRect) {
++        Self.accent.setFill()
++        NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1), xRadius: 8, yRadius: 8).fill()
++    }
++    override func addSubview(_ view: NSView) {
++        super.addSubview(view)
++        (view as? PaletteCell)?.apply(selected: isSelected)
++    }
++}
++
++@MainActor
++private final class PaletteCell: NSTableCellView {
++    private let icon = NSImageView()
++    private let detail = NSTextField(labelWithString: "")
++    private let trailing = NSTextField(labelWithString: "")
++    private let arrowBox = NSView()
++    private let arrow = NSImageView()
++    private let unselectedTrailing: String
++    private let selectedTrailing: String
++    private let iconIsSymbol: Bool
++
++    init(result: CommandBarResult, icon image: NSImage, iconIsSymbol: Bool, detail text: String,
++         unselectedTrailing: String, selectedTrailing: String) {
++        self.unselectedTrailing = unselectedTrailing
++        self.selectedTrailing = selectedTrailing
++        self.iconIsSymbol = iconIsSymbol
++        super.init(frame: .zero)
++        icon.image = image
++        icon.imageScaling = .scaleProportionallyDown
++        let title = NSTextField(labelWithString: result.title)
++        title.font = .systemFont(ofSize: 14, weight: .semibold)
++        title.lineBreakMode = .byTruncatingTail
++        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
++        textField = title
++        detail.stringValue = text
++        detail.font = .systemFont(ofSize: 13)
++        detail.lineBreakMode = .byTruncatingMiddle
++        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        trailing.font = .systemFont(ofSize: 12, weight: .semibold)
++        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
++        arrow.translatesAutoresizingMaskIntoConstraints = false
++        arrowBox.wantsLayer = true
++        arrowBox.layer?.cornerRadius = 5
++        arrowBox.translatesAutoresizingMaskIntoConstraints = false
++        arrowBox.addSubview(arrow)
++        let spacer = NSView()
++        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let row = NSStackView(views: [icon, title, detail, spacer, trailing, arrowBox])
++        row.spacing = 10
++        row.setCustomSpacing(12, after: spacer)
++        row.alignment = .centerY
++        row.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(row)
++        NSLayoutConstraint.activate([
++            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
++            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
++            row.centerYAnchor.constraint(equalTo: centerYAnchor),
++            icon.widthAnchor.constraint(equalToConstant: 16),
++            icon.heightAnchor.constraint(equalToConstant: 16),
++            arrowBox.widthAnchor.constraint(equalToConstant: 22),
++            arrowBox.heightAnchor.constraint(equalToConstant: 22),
++            arrow.centerXAnchor.constraint(equalTo: arrowBox.centerXAnchor),
++            arrow.centerYAnchor.constraint(equalTo: arrowBox.centerYAnchor)
++        ])
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func apply(selected: Bool) {
++        textField?.textColor = selected ? .white : .labelColor
++        detail.textColor = selected ? NSColor.white.withAlphaComponent(0.7) : .secondaryLabelColor
++        trailing.stringValue = selected ? selectedTrailing : unselectedTrailing
++        trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.85) : .secondaryLabelColor
++        if iconIsSymbol { icon.contentTintColor = selected ? .white : .secondaryLabelColor }
++        let arrowColor = selected ? PaletteRowView.accent : NSColor.secondaryLabelColor
++        arrow.image = NSImage(systemSymbolName: "arrow.right", accessibilityDescription: nil)?
++            .withSymbolConfiguration(.init(pointSize: 10, weight: .bold).applying(.init(paletteColors: [arrowColor])))
++        effectiveAppearance.performAsCurrentDrawingAppearance {
++            arrowBox.layer?.backgroundColor = (selected ? NSColor.white : NSColor.labelColor.withAlphaComponent(0.08)).cgColor
++        }
 +    }
 +}
 --- /dev/null
@@ -12068,7 +12388,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,720 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -12537,7 +12857,7 @@
 +        super.init(frame: .zero)
 +        wantsLayer = true
 +        layer?.cornerRadius = 10
-+        label.font = .systemFont(ofSize: 17, weight: .medium)
++        label.font = .systemFont(ofSize: 17)
 +        icon.symbolConfiguration = .init(pointSize: 17, weight: .regular)
 +        let stack = NSStackView(views: [icon, label])
 +        stack.spacing = 12
@@ -12570,6 +12890,7 @@
 +        }
 +        let color: NSColor = isSelected ? .alternateSelectedControlTextColor : .labelColor
 +        label.textColor = color
++        label.font = .systemFont(ofSize: 17, weight: isSelected ? .semibold : .regular)
 +        icon.contentTintColor = color
 +        setAccessibilityValue(isSelected ? "selected" : nil)
 +    }
@@ -12790,7 +13111,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,120 @@
 +import AppKit
 +import BatoCore
 +
@@ -12802,14 +13123,22 @@
 +    static let tilesPerRow = 3
 +    static var rowFont: NSFont { NSFont.systemFont(ofSize: 14) }
 +    static var actionFont: NSFont { NSFont.systemFont(ofSize: 13) }
-+    static let commandBarRadius: CGFloat = 22
-+    static let commandBarRowHeight: CGFloat = 48
-+    static let commandBarSize = NSSize(width: 680, height: 470)
++    static let commandBarRadius: CGFloat = 12
++    static let commandBarRowHeight: CGFloat = 50
++    static let commandBarHeaderHeight: CGFloat = 56
++    static let commandBarInset: CGFloat = 8
++    static let commandBarMaxRows = 7
++    static let commandBarWidth: CGFloat = 760
 +    static let downloadsPopoverWidth: CGFloat = 320
 +    static let downloadsPopoverMaxListHeight: CGFloat = 360
 +
++    /// Dia's selected row sinks into the tint (dark pill); on light it is a white lift, as in Arc.
++    private static let selectedRowFill = NSColor(name: nil) {
++        $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.white.withAlphaComponent(0.55)
++    }
++
 +    static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
-+        if selected { return NSColor.labelColor.withAlphaComponent(0.16) }
++        if selected { return selectedRowFill }
 +        if hovered { return NSColor.labelColor.withAlphaComponent(0.07) }
 +        if tile { return NSColor.labelColor.withAlphaComponent(0.12) }
 +        return nil
@@ -13250,6 +13579,59 @@
 +        try? FileManager.default.removeItem(at: quarantine)
 +        try? FileManager.default.moveItem(at: fileURL, to: quarantine)
 +        return AppPreferences()
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoPersistence/ClosedTabsStore.swift
+@@ -0,0 +1,50 @@
++import BatoCore
++import Foundation
++
++/// Per-Profile closed-tab history in `closed-tabs.json`, so Reopen Closed Tab survives a relaunch.
++/// Each Profile keeps at most `ClosedTabStack.capacity` tabs; saves replace the whole file.
++public struct ClosedTabsStore {
++    public static let fileName = "closed-tabs.json"
++
++    private struct Document: Codable {
++        var version = 1
++        var stacks: [String: [ClosedTab]] = [:]
++    }
++
++    private let directory: URL
++
++    public init(directory: URL) {
++        self.directory = directory
++    }
++
++    public var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
++
++    /// A missing or unreadable file yields no history; an unreadable one is set aside as `closed-tabs.json.corrupt`.
++    public func load() -> [UUID: ClosedTabStack] {
++        guard let bytes = try? Data(contentsOf: fileURL) else { return [:] }
++        guard let document = try? JSONDecoder().decode(Document.self, from: bytes), document.version == 1 else {
++            let quarantine = fileURL.appendingPathExtension("corrupt")
++            try? FileManager.default.removeItem(at: quarantine)
++            try? FileManager.default.moveItem(at: fileURL, to: quarantine)
++            return [:]
++        }
++        var stacks: [UUID: ClosedTabStack] = [:]
++        for (key, tabs) in document.stacks {
++            guard let profileID = UUID(uuidString: key) else { continue }
++            let stack = ClosedTabStack(tabs: tabs.filter { $0.profileID == profileID })
++            if !stack.isEmpty { stacks[profileID] = stack }
++        }
++        return stacks
++    }
++
++    public func save(_ stacks: [UUID: ClosedTabStack]) throws {
++        var document = Document()
++        for (profileID, stack) in stacks where !stack.isEmpty {
++            document.stacks[profileID.uuidString] = stack.tabs
++        }
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        try encoder.encode(document).write(to: fileURL, options: .atomic)
 +    }
 +}
 --- /dev/null
@@ -15281,7 +15663,7 @@
 +        row.translatesAutoresizingMaskIntoConstraints = false
 +        addSubview(row)
 +        NSLayoutConstraint.activate([
-+            heightAnchor.constraint(equalToConstant: isHeader ? 24 : 30),
++            heightAnchor.constraint(equalToConstant: isHeader ? 24 : 27),
 +            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
 +            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
 +            row.centerYAnchor.constraint(equalTo: centerYAnchor),

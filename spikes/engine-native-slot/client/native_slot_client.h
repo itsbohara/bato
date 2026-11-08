@@ -4,11 +4,19 @@
 #include <vector>
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
+#include "include/cef_context_menu_handler.h"
 // Called once after loading the matching framework, before CefInitialize.
 bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line);
 // All hooks run on the CEF UI thread. Strings are copied before deferred delivery.
 bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id);
 bool BatoWorkspaceIsAnchor(CefRefPtr<CefBrowser> browser);
+// Link context menus on workspace pages get "Open Link in Peek" when Swift would accept the link.
+void BatoWorkspaceContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
+                              CefRefPtr<CefMenuModel> model);
+bool BatoWorkspaceOpenLinkInTab(CefRefPtr<CefBrowser> browser, const std::string& url,
+                                cef_window_open_disposition_t disposition);
+bool BatoWorkspaceContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefContextMenuParams> params,
+                                     int command_id);
 void BatoWorkspaceBrowserCreated(CefRefPtr<CefBrowser> browser);
 void BatoWorkspaceBrowserAddressChanged(CefRefPtr<CefBrowser> browser,
                                         const CefString& url);

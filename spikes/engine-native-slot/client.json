@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "18f434c635d44740ab4cd1b8dbcd05e6412dca36f9bad257ff7a189ff0d7604d",
+  "patch_sha256": "25ccba519a2d3940c22b1abc96b65ed69fcf8f5ab430942ddd3076ae9c73b361",
   "files": [
     {
       "root": "cef",
@@ -14,25 +14,25 @@
       "root": "cef",
       "path": "BUILD.gn",
       "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
-      "patched_sha256": "0e6d39a76144103daf57222f57363b56afc0ef9de1e7d9aa1a0882d1c60f717e"
+      "patched_sha256": "7f43f08dee6c63764e73ebe502c22d1d0d970a829a0da06820638ba6c296f9a0"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "4e91b51ac1225e7875df6a7a96098c96d923dabfc01eb5aeaeec7cf36f51c6ca"
+      "patched_sha256": "67b5fbe62bdbf4fdce4e50ec401701d73df4dd5cf89a4619c4a044a413a31fd0"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.h",
       "original_sha256": null,
-      "patched_sha256": "597b77454d4e86a6c321e68a1b826271859d0ef66658a97f7269cffd237ca226"
+      "patched_sha256": "0b724fc82d21a74dfdd179b7fd0eaef842edbc27f37fdc208e4d2ced35f0f47d"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "0bb9d5c715618328dc6ccdc92b45b005a35d29f7309e7ffa548d8b6998ef5cec"
+      "patched_sha256": "ae593d1d1d5ad6a704cdc643c2cc9e19a0308b175036e47aad03c128a69d55f9"
     },
     {
       "root": "cef",
@@ -44,25 +44,25 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "fb5d71db94ee9fb486e505a0c48a1a79a61aaf116545b85992cdb714c62362a1"
+      "patched_sha256": "3dcf0ece0c3554827e90794531c79fa0c8ac99a12c4ebaaebcd707653d7bc677"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/simple_handler.cc",
       "original_sha256": "85159e40770d0f4f3307647f961a2cf1e827a60054a8ef90324e6717842a1f2f",
-      "patched_sha256": "a0a546b1f18beac12a6296a7c9812dbe9816d13049bc1e37fcb14c4f48b55a51"
+      "patched_sha256": "2286e08439ded621139b9875e5a0b079aa657001e58d4a209c7bfcc6ac02d83f"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/simple_handler.h",
       "original_sha256": "904ddc8965cb3dbef7763c437cf128acc14812466785530a5c9acb363d7f60b1",
-      "patched_sha256": "10f17c229495dbde24ba8f749fabe9535f32ca87e700fee4a379f3e1dedc23a7"
+      "patched_sha256": "4a9d3a934f147ff3a33330c914a48df0df3f45e7c7e0fea1436127abc6e4fbab"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "7d5eca41a2e6b7e38309a35fecb0c133ee309d115e4f66f4ad865a43c3e7078c"
+      "patched_sha256": "1c01cdeb558dac5a2f391ae61b6bd294be33467dc75bdbc50d457722fd939ec8"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "b4e7c441df64a14551c438e4708caf661227702c5fe19fe89de06d58d78fee63"
+      "patched_sha256": "d5bf28fc2e9e8fc6888313671861bd8b53cebbfea27b1a27f065179a68075aeb"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "dac3ffd0eb37dddf8fe616dda2741fe10ab6a82ac9a26bbfff0d887856315653"
+      "patched_sha256": "b40e0cde3906f9c4aea6e100c978901eb239146e6d572cf6c45db64641c3a992"
     },
     {
       "root": "cef",
@@ -98,7 +98,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift",
       "original_sha256": null,
-      "patched_sha256": "754593f0bd642c51a2f656b107fdf0d538886ca0a65be2bf4a8b6e7999f26895"
+      "patched_sha256": "1956b3a409f8a5ba9d0927eb9151e11fdf1436cac34dca007c9771d18ac08443"
     },
     {
       "root": "cef",
@@ -212,13 +212,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift",
       "original_sha256": null,
-      "patched_sha256": "39d6e10ee4fd3b600d8d4a4be0ed44717ccb64700911d8b47863832f7514f887"
+      "patched_sha256": "70010dccc108a105f1638e63a9e4aa41ad17caae70f5570fbe87c8fbd1e97904"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
       "original_sha256": null,
-      "patched_sha256": "6e3a692a1e612c41365eabe732ad9a7539e5b11ccb145df236c350b7cbd6d7bc"
+      "patched_sha256": "ebfaec68c98bedbf1ac8848d5cf8bc4233645a6ccfbf130035cf9fe65c6e5510"
     },
     {
       "root": "cef",
@@ -231,6 +231,12 @@
       "path": "tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift",
       "original_sha256": null,
       "patched_sha256": "85367984e25215a5a2aa5f7e589e69a62c143a817d92cf4d00d512382eb9d9dd"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoPersistence/ClosedTabsStore.swift",
+      "original_sha256": null,
+      "patched_sha256": "e7d0fe3c66238af2c9c4d41bd2a886cc551e7b5a26eb96559018c5babd74139e"
     },
     {
       "root": "cef",
@@ -326,7 +332,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
       "original_sha256": null,
-      "patched_sha256": "da9612cb510217f5656595a32b36a44f6456a63fb765001f3b25277b2b444974"
+      "patched_sha256": "643712f57430591b901ce9f76cd0d57d31663549f540142038fedfd756d8b800"
     }
   ],
   "source_mirrors": {
@@ -378,6 +384,7 @@
     "app/Sources/BatoBrowserUI/ArchiveSheet.swift": "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
     "app/Sources/BatoBrowserUI/UBlockOffer.swift": "tests/cefsimple/bato/BatoBrowserUI/UBlockOffer.swift",
     "app/Sources/BatoBrowserUI/AppearanceWatcher.swift": "tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift",
-    "app/Sources/BatoBrowserUI/SwitcherPopover.swift": "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift"
+    "app/Sources/BatoBrowserUI/SwitcherPopover.swift": "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
+    "app/Sources/BatoPersistence/ClosedTabsStore.swift": "tests/cefsimple/bato/BatoPersistence/ClosedTabsStore.swift"
   }
 }
