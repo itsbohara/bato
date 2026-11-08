@@ -69,3 +69,20 @@ Builds: three more `build --execute` passes (waiting for `pgrep -f depot_tools/a
 | Fullscreen, narrow, wide | from first round (card-fullscreen, card-narrow, card-wide) | not re-shot after the gap/radius change |
 
 Still open: sidebar toggle button in the toolbar, minimum window size ignores the margins, light-mode sidebar tint is a saturated pink for this workspace (palette work), DevTools/new-window/Peek overlay order untested.
+
+## Increase Contrast ignored by the chrome (2026-11-08)
+
+Decision: Bato looks the same with macOS Increase Contrast on or off. Native shell: the card stroke is always the 0.14/1pt hairline, row and tile contrast strokes, the high-contrast sidebar tint, Settings card stroke, command bar 1.5pt border and downloads ring boost are gone, `AppearanceWatcher.increaseContrast` and its accessibility-options observer are removed. Engine: `OsSettingsProviderMac::PreferredContrast()` (`ui/native_theme/os_settings_provider_mac.mm`, 9th engine file) returns kNoPreference, so Chromium keeps its normal toolbar colours and separator. Side effect: web content's `prefers-contrast` also reports no preference.
+
+Host verification with Increase Contrast ON (system setting untouched), test state `runtime/nohc-state-v1`, mock keychain, own window selected by pid, quit via app menu (exit 0 receipt `logs/nohc-v1-exit.json`), Dark restored. dist/Bato.app (pid 78069) untouched.
+
+| Check | Shot | Result |
+|---|---|---|
+| No bright card border (dark) | `tmp/sbs-shots/nohc-dark.png` | pass |
+| No white line under toolbar (dark) | same | pass |
+| Toolbar colour equals normal-contrast shot (`card3-normal-dark.png`), not near-black | same | pass |
+| Sidebar tint and row fill match normal contrast (dark) | same | pass |
+| No bright card border, toolbar light-tinted, only the faint stock separator (light) | `tmp/sbs-shots/nohc-light.png` vs `card3-normal-light.png` | pass |
+| Workspace swipe over sidebar | not exercised | unverified: agent-desktop scroll sends no gesture phases, and the seed state has one workspace |
+
+Checks: `native_slot.py check` patched/84 files, `spikes/engine-native-slot/test_patch.py` OK, `swift test` all passing (WorkspaceSwipeTests added). `spikes/engine-quit/test_patch.py` still fails with "Quit source hash differs: browser_util.h"; it fails identically without these changes (the native slot overlay modifies that file).
