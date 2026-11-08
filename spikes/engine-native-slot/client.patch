@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,77 @@
+@@ -2313,6 +2317,78 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -298,6 +298,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsPopover.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsSidebar.swift",
 +      "tests/cefsimple/bato/BatoCore/Archive.swift",
++      "tests/cefsimple/bato/BatoCore/SidebarPeekDismissal.swift",
 +      "tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
@@ -326,7 +327,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2411,19 @@
+@@ -2336,12 +2412,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2007,7 +2008,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,55 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -2031,7 +2032,8 @@
 +              '-I', str(modules)]
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
-+                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift']),
++                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
++                                        'SidebarPeekDismissal.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -2222,7 +2224,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1299 @@
+@@ -0,0 +1,1347 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2630,12 +2632,18 @@
 +    /// restores the docked or hidden sidebar the user had.
 +    private var fullscreenRevealed = false
 +    private var fullscreenObservers: [NSObjectProtocol] = []
++    private var resignObserver: NSObjectProtocol?
++    /// Runs while the sidebar floats: a reveal that did not come from the pointer (Cmd-T, menus, focus
++    /// restoration) never gets a `mouseExited`, so without this it stays over the page.
++    private var peekPoll: Timer?
++    /// The floating sidebar was revealed by `focusNative`, not by the pointer.
++    private var revealedByFocusRequest = false
 +    let token: UInt64
 +    /// The first slot owns organization; later slots are windows of other Profiles that borrow its sidebar.
 +    init(token: UInt64, directory: URL?) {
 +        self.token = token
 +        root.onEnter = { [weak self] in self?.reveal() }
-+        root.onExit = { [weak self] in self?.dismissPeek() }
++        root.onExit = { [weak self] in self?.dismissPeek(on: .pointerExited) }
 +        root.onResize = { [weak self] width in
 +            guard let self else { return }
 +            _ = self.setGeometry(width: Int32(min(400, max(220, width.rounded()))), mode: self.mode)
@@ -2718,10 +2726,17 @@
 +                        guard let self else { return }
 +                        self.fullscreenRevealed = false
 +                        self.root.mode = entering ? 0 : self.mode
++                        self.syncPeekPoll()
 +                        self.root.layoutSubtreeIfNeeded()
 +                        self.updateCard()
 +                    }
 +                })
++            }
++        }
++        if resignObserver == nil, let window = root.window {
++            resignObserver = NotificationCenter.default.addObserver(
++                forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
++                MainActor.assumeIsolated { self?.dismissPeek(on: .windowResigned) }
 +            }
 +        }
 +        if keyObserver == nil, let window = root.window {
@@ -2751,7 +2766,10 @@
 +        }
 +    }
 +    func focusNative() {
-+        if mode == 0, !setGeometry(mode: 2) { return }
++        if mode == 0 {
++            guard setGeometry(mode: 2) else { return }
++            revealedByFocusRequest = true
++        }
 +        _ = nativeFocus?(token)
 +    }
 +    /// Empty until the host has started blocking: the Page menu is built once, when the root attaches.
@@ -2775,27 +2793,32 @@
 +        guard NSApp.isActive, let window = root.window else { return false }
 +        return window.isKeyWindow && window.attachedSheet == nil && NSApp.modalWindow == nil
 +    }
-+    @discardableResult private func setGeometry(width requested: Int32? = nil, mode next: Int32) -> Bool {
-+        guard canInteract, !changingGeometry else { return false }
++    @discardableResult private func setGeometry(width requested: Int32? = nil, mode next: Int32,
++                                                requiresKey: Bool = true) -> Bool {
++        guard !requiresKey || canInteract, !changingGeometry else { return false }
 +        changingGeometry = true
 +        defer { changingGeometry = false }
 +        guard sidebarGeometry?(token, requested ?? width, next) == 1 else { return false }
 +        width = requested ?? width
++        revealedByFocusRequest = false
 +        mode = next
 +        root.mode = next
 +        root.layoutSubtreeIfNeeded()
 +        updateCard()
++        syncPeekPoll()
 +        return true
 +    }
 +    private var isFullscreen: Bool { root.window?.styleMask.contains(.fullScreen) == true }
-+    @discardableResult private func setFullscreenReveal(_ revealed: Bool) -> Bool {
-+        guard canInteract, !changingGeometry else { return false }
++    @discardableResult private func setFullscreenReveal(_ revealed: Bool, requiresKey: Bool = true) -> Bool {
++        guard !requiresKey || canInteract, !changingGeometry else { return false }
 +        changingGeometry = true
 +        defer { changingGeometry = false }
 +        guard sidebarGeometry?(token, width, revealed ? 2 : 0) == 1 else { return false }
 +        fullscreenRevealed = revealed
++        revealedByFocusRequest = false
 +        root.mode = revealed ? 2 : 0
 +        root.layoutSubtreeIfNeeded()
++        syncPeekPoll()
 +        return true
 +    }
 +    @discardableResult func toggle() -> Bool {
@@ -2812,26 +2835,49 @@
 +        guard mode == 0, canInteract, !menuTracking else { return }
 +        _ = setGeometry(mode: 2) // Hover never steals focus from the page.
 +    }
-+    private func dismissPeek(force: Bool = false) {
-+        if isFullscreen {
-+            guard fullscreenRevealed, canInteract, !menuTracking else { return }
-+            if !force, let focused = root.window?.firstResponder as? NSView,
-+               focused === root || focused.isDescendant(of: root) { return }
-+            if setFullscreenReveal(false), force { _ = pageFocus?(token) }
++    private var sidebarHasFocus: Bool {
++        guard let focused = root.window?.firstResponder as? NSView else { return false }
++        return focused === root || focused.isDescendant(of: root)
++    }
++    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : mode == 2 }
++    private var pointerInsideSidebar: Bool {
++        guard let window = root.window else { return false }
++        return root.bounds.contains(root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
++    }
++    private func dismissPeek(on event: SidebarPeekDismissal.Event) {
++        guard isFloating, let window = root.window else { return }
++        let incidental = revealedByFocusRequest && window.firstResponder === controller?.focusTarget
++        let context = SidebarPeekDismissal.Context(
++            pointerInside: pointerInsideSidebar, sidebarFocused: sidebarHasFocus, focusIsIncidental: incidental,
++            interactive: window.attachedSheet == nil && NSApp.modalWindow == nil && !menuTracking)
++        guard SidebarPeekDismissal.shouldDismiss(on: event, context) else { return }
++        let requiresKey = event != .windowResigned
++        let hidden = isFullscreen ? setFullscreenReveal(false, requiresKey: requiresKey)
++                                  : setGeometry(mode: 0, requiresKey: requiresKey)
++        // Focus would otherwise stay on the hidden sidebar.
++        if hidden, event == .pageClicked || incidental { _ = pageFocus?(token) }
++    }
++    private func syncPeekPoll() {
++        guard isFloating else {
++            peekPoll?.invalidate()
++            peekPoll = nil
 +            return
 +        }
-+        guard mode == 2, canInteract, !menuTracking else { return }
-+        if !force, let focused = root.window?.firstResponder as? NSView,
-+           focused === root || focused.isDescendant(of: root) { return }
-+        if setGeometry(mode: 0), force { _ = pageFocus?(token) }
++        guard peekPoll == nil else { return }
++        peekPoll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
++            MainActor.assumeIsolated { self?.dismissPeek(on: .pointerPoll) }
++        }
 +    }
 +    private func installPointerMonitor() {
 +        guard pointerMonitor == nil else { return }
-+        pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
++        pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
 +            MainActor.assumeIsolated {
-+                if let self, event.window === self.root.window,
-+                   !self.root.bounds.contains(self.root.convert(event.locationInWindow, from: nil)) {
-+                    self.dismissPeek(force: true)
++                guard let self, event.window === self.root.window else { return event }
++                if event.type == .keyDown {
++                    // Command chords (Cmd-S, Cmd-T) are handled by their own commands.
++                    if !event.modifierFlags.contains(.command), !self.sidebarHasFocus { self.dismissPeek(on: .pageKey) }
++                } else if !self.root.bounds.contains(self.root.convert(event.locationInWindow, from: nil)) {
++                    self.dismissPeek(on: .pageClicked)
 +                }
 +                return event // Preserve the original page event.
 +            }
@@ -2847,6 +2893,10 @@
 +        pointerMonitor = nil
 +        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
 +        keyObserver = nil
++        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
++        resignObserver = nil
++        peekPoll?.invalidate()
++        peekPoll = nil
 +        for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
 +        menuObservers.removeAll()
 +        fullscreenObservers.removeAll()
@@ -7411,7 +7461,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2844 @@
+@@ -0,0 +1,2861 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7680,7 +7730,11 @@
 +            setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
 +            openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } },
 +            searchProvider: { [weak self] in self?.commandBarSearchProvider ?? .default },
-+            setSearchProvider: { [weak self] in self?.setSearchProvider($0) }))
++            setSearchProvider: { [weak self] in self?.setSearchProvider($0) },
++            searchSuggestions: { [weak self] in self?.preferences.current().searchSuggestions ?? true },
++            setSearchSuggestions: { [weak self] enabled in
++                try? self?.preferences.update { $0.searchSuggestions = enabled }
++            }))
 +        settingsWindow = window
 +        window.show(pane)
 +    }
@@ -7704,11 +7758,13 @@
 +        commandBarNavigationTarget = target
 +        let bar = CommandBarController(query: query, error: error,
 +                                       provider: commandBarSearchProvider,
-+                                       pageIcon: { [weak self] in self?.pageIcons[$0] }) { [weak self] query in
++                                       pageIcon: { [weak self] in self?.pageIcons[$0] },
++                                       suggestionsEnabled: { [weak self] in self?.preferences.current().searchSuggestions ?? false }) { [weak self] query, suggestions in
 +            guard let self else { return [] }
 +            return CommandBarResults.make(query: query, state: self.runtime.state,
 +                                          provider: self.commandBarSearchProvider,
-+                                          navigatingCurrentPage: target != nil).filter { result in
++                                          navigatingCurrentPage: target != nil,
++                                          suggestions: suggestions).filter { result in
 +                switch result.action {
 +                case .command(.toggleSidebar): return self.requestSidebarToggle != nil
 +                case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
@@ -7719,17 +7775,23 @@
 +            }
 +        }
 +        commandBar = bar
-+        guard let sheet = bar.window else { commandBar = nil; commandBarNavigationTarget = nil; return }
-+        window.beginSheet(sheet) { [weak self, weak bar, weak window] response in
++        bar.present(over: window, card: { [weak self, weak window] in
++            guard let window else { return .zero }
++            return self?.cardFrames.allObjects.first { $0.window === window }?.cardRectOnScreen ?? window.frame
++        }) { [weak self, weak bar, weak window] response in
 +            guard let self else { return }
 +            if response == .OK, let bar, let action = bar.chosenAction {
 +                self.pendingCommandBarAction = (action, bar.query)
 +                self.pendingCommandBarWindow = window
 +            }
 +            self.commandBar = nil
-+            guard response == .OK else { self.commandBarNavigationTarget = nil; return }
-+            // Do not create/select/close a Chromium page inside sheet completion.
-+            // The host restores its native slot before this scheduled callback.
++            guard response == .OK else {
++                self.commandBarNavigationTarget = nil
++                self.requestNativeFocus?()
++                return
++            }
++            // Do not create/select/close a Chromium page inside the dismissal callback;
++            // the parent window must be key again before the page is created.
 +            DispatchQueue.main.async { [weak self, weak window] in
 +                guard let self else { return }
 +                guard let window, self.root.window === window else {
@@ -7742,7 +7804,6 @@
 +                else { self.resumeCommittedSelection() }
 +            }
 +        }
-+        bar.focusSearch()
 +    }
 +
 +    private func executeCommandBarAction(_ pending: (action: CommandBarAction, query: String)) {
@@ -10208,6 +10269,12 @@
 +                                         width: side, height: side)
 +    }
 +
++    /// The page card in screen coordinates (y up), for anchoring panels to it.
++    var cardRectOnScreen: NSRect? {
++        guard let window else { return nil }
++        return window.convertToScreen(convert(cardRect, to: nil))
++    }
++
 +    private var cardRect: NSRect {
 +        let margin = Self.margin
 +        let leading = sidebarWidth + margin
@@ -10258,7 +10325,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,282 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -10324,12 +10391,102 @@
 +            }
 +            return .navigate(url)
 +        }
-+        var search = URLComponents(url: provider.endpoint, resolvingAgainstBaseURL: false)!
-+        search.queryItems = [URLQueryItem(name: "q", value: text)]
-+        // Search endpoints decode form queries, where a literal + means space.
-+        // URLComponents uses RFC 3986 and leaves + unescaped by default.
-+        search.percentEncodedQuery = search.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-+        return .search(search.url!)
++        return .search(searchURL(for: text, provider: provider))
++    }
++
++    public static func searchURL(for text: String, provider: CommandBarSearchProvider) -> URL {
++        formURL(provider.endpoint, [URLQueryItem(name: "q", value: text)])
++    }
++
++    /// Search endpoints decode form queries, where a literal + means space.
++    /// URLComponents uses RFC 3986 and leaves + unescaped by default.
++    static func formURL(_ endpoint: URL, _ items: [URLQueryItem]) -> URL {
++        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
++        components.queryItems = items
++        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
++        return components.url!
++    }
++}
++
++/// Typed-query completions from the selected search provider. The typed text leaves the device only
++/// when the user has search suggestions on, and never for addresses.
++public enum SearchSuggestions {
++    public static let maxQueryLength = 100
++
++    /// Nil unless the input is a plain search: addresses and invalid input are never sent to a provider.
++    public static func endpoint(for query: String, provider: CommandBarSearchProvider) -> URL? {
++        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard text.count <= maxQueryLength, case .search = CommandBarInput.resolve(text, provider: provider) else { return nil }
++        switch provider {
++        case .duckDuckGo:
++            return CommandBarInput.formURL(URL(string: "https://duckduckgo.com/ac/")!, [URLQueryItem(name: "q", value: text)])
++        case .google:
++            return CommandBarInput.formURL(URL(string: "https://suggestqueries.google.com/complete/search")!,
++                                           [URLQueryItem(name: "client", value: "firefox"), URLQueryItem(name: "q", value: text)])
++        case .brave:
++            return CommandBarInput.formURL(URL(string: "https://search.brave.com/api/suggest")!, [URLQueryItem(name: "q", value: text)])
++        case .bing:
++            return CommandBarInput.formURL(URL(string: "https://api.bing.com/osjson.aspx")!, [URLQueryItem(name: "query", value: text)])
++        }
++    }
++
++    /// Reads the OpenSearch shape (`["q", ["a", "b"]]`, Google, Brave, Bing) and DuckDuckGo's
++    /// `[{"phrase": "a"}]`. Anything else yields no suggestions.
++    public static func parse(_ data: Data) -> [String] {
++        guard let json = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
++        let raw: [String]
++        if json.first is String, json.count > 1, let list = json[1] as? [Any] {
++            raw = list.compactMap { $0 as? String }
++        } else {
++            raw = json.compactMap { ($0 as? [String: Any])?["phrase"] as? String }
++        }
++        var seen = Set<String>()
++        return raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
++            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
++    }
++}
++
++/// Fetches suggestions after the user pauses typing. A new request cancels the previous one, so a slow
++/// response for an old query is never delivered.
++@MainActor
++public final class SearchSuggestionFetcher {
++    public typealias Fetch = @Sendable (URL) async throws -> Data
++    public static let debounce: Duration = .milliseconds(120)
++
++    private let delay: Duration
++    private let fetch: Fetch
++    private var task: Task<Void, Never>?
++
++    public init(delay: Duration = SearchSuggestionFetcher.debounce, fetch: @escaping Fetch = SearchSuggestionFetcher.live) {
++        self.delay = delay
++        self.fetch = fetch
++    }
++
++    public func request(query: String, provider: CommandBarSearchProvider,
++                        deliver: @escaping @MainActor (_ query: String, _ suggestions: [String]) -> Void) {
++        task?.cancel()
++        guard let url = SearchSuggestions.endpoint(for: query, provider: provider) else { task = nil; return }
++        task = Task { [delay, fetch] in
++            do {
++                try await Task.sleep(for: delay)
++                let data = try await fetch(url)
++                try Task.checkCancellation()
++                deliver(query, SearchSuggestions.parse(data))
++            } catch {}
++        }
++    }
++
++    public func cancel() {
++        task?.cancel()
++        task = nil
++    }
++
++    private static let session = URLSession(configuration: .ephemeral)
++
++    public static let live: Fetch = { url in
++        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 3))
++        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
++        return data
 +    }
 +}
 +
@@ -10363,6 +10520,10 @@
 +    public let title: String
 +    public let subtitle: String
 +    public let action: CommandBarAction
++
++    public static let webSearchSubtitle = "Web search"
++    public static let suggestionSubtitle = "Suggestion"
++    public var isSearch: Bool { subtitle == Self.webSearchSubtitle || subtitle == Self.suggestionSubtitle }
 +}
 +
 +public enum CommandBarSelection {
@@ -10377,8 +10538,13 @@
 +public enum CommandBarResults {
 +    /// Stable IDs let the UI preserve selection while organization events arrive.
 +    /// Results never mutate state; activation must revalidate through PageRuntime.
++    /// A typed query shows at most this many rows, so the palette stays about as tall as Arc's.
++    public static let queryRowLimit = 7
++    /// Open-tab matches that rank above search suggestions; further matches follow the suggestions.
++    static let leadingPageMatches = 3
++
 +    public static func make(query: String, state: BrowserState, provider: CommandBarSearchProvider = .duckDuckGo,
-+                            navigatingCurrentPage: Bool = false) -> [CommandBarResult] {
++                            navigatingCurrentPage: Bool = false, suggestions: [String] = []) -> [CommandBarResult] {
 +        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
 +        var results: [CommandBarResult] = []
 +        switch CommandBarInput.resolve(text, provider: provider) {
@@ -10394,7 +10560,7 @@
 +            }
 +        case .search(let url):
 +            results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
-+                subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
++                subtitle: CommandBarResult.webSearchSubtitle, action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
 +        case .empty, .invalid: break
 +        }
 +        let commands = CommandBarCommand.allCases.filter {
@@ -10412,12 +10578,18 @@
 +            results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
 +            remainingCommands.removeAll(where: isExactCommand)
 +        }
-+        results += state.searchPages(matching: text).map {
++        let pages = state.searchPages(matching: text).map {
 +            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
 +                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
 +        }
-+        results += remainingCommands
-+        return results
++        let suggestionRows = suggestions.filter { $0.caseInsensitiveCompare(text) != .orderedSame }.map { suggestion in
++            let url = CommandBarInput.searchURL(for: suggestion, provider: provider)
++            return CommandBarResult(id: "suggestion:\(suggestion)", title: suggestion,
++                subtitle: CommandBarResult.suggestionSubtitle, action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url))
++        }
++        guard !text.isEmpty else { return results + pages + remainingCommands }
++        results += pages.prefix(leadingPageMatches) + suggestionRows + pages.dropFirst(leadingPageMatches) + remainingCommands
++        return Array(results.prefix(queryRowLimit))
 +    }
 +}
 +
@@ -10438,12 +10610,13 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,509 @@
 +import AppKit
 +import BatoCore
 +
-+/// A native modal surface: Chromium retains ownership of the parent window and
-+/// its sheet lifecycle. No page or network work happens while the user types.
++/// A borderless panel attached to the browser window and anchored by its top edge, so it grows downward
++/// as rows are added. It is not a sheet: AppKit re-centres a sheet whenever its height changes.
++/// Typed text goes to the search provider only when suggestions are on.
 +@MainActor
 +final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
 +    private let field = NSTextField(string: "")
@@ -10455,7 +10628,15 @@
 +    private let stack = NSStackView()
 +    private var listHeight: NSLayoutConstraint!
 +    private var refreshedQuery = ""
-+    private let resultsForQuery: (String) -> [CommandBarResult]
++    private let resultsForQuery: (String, [String]) -> [CommandBarResult]
++    private let suggestionsEnabled: () -> Bool
++    private let fetcher: SearchSuggestionFetcher
++    private var suggestions: [String] = []
++    private weak var parent: NSWindow?
++    private var cardFrame: (() -> NSRect)?
++    private var completion: ((NSApplication.ModalResponse) -> Void)?
++    private var mouseMonitor: Any?
++    private var observers: [NSObjectProtocol] = []
 +    private let pageIcon: (UUID) -> NSImage?
 +    private var results: [CommandBarResult] = []
 +    private(set) var chosenAction: CommandBarAction?
@@ -10464,9 +10645,13 @@
 +    init(query: String = "", error: String? = nil,
 +         provider: CommandBarSearchProvider = .duckDuckGo,
 +         pageIcon: @escaping (UUID) -> NSImage? = { _ in nil },
-+         results: @escaping (String) -> [CommandBarResult]) {
++         suggestionsEnabled: @escaping () -> Bool = { false },
++         fetcher: SearchSuggestionFetcher = SearchSuggestionFetcher(),
++         results: @escaping (String, [String]) -> [CommandBarResult]) {
 +        self.provider = provider
 +        self.pageIcon = pageIcon
++        self.suggestionsEnabled = suggestionsEnabled
++        self.fetcher = fetcher
 +        resultsForQuery = results
 +        let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: SidebarStyle.commandBarWidth, height: 300),
 +                                    styleMask: [.borderless], backing: .buffered, defer: false)
@@ -10477,6 +10662,7 @@
 +        panel.isOpaque = false
 +        panel.backgroundColor = .clear
 +        panel.hasShadow = true
++        panel.hidesOnDeactivate = false
 +        super.init(window: panel)
 +        let surface = CommandBarSurface()
 +        panel.contentView = surface
@@ -10506,6 +10692,7 @@
 +        table.dataSource = self
 +        table.delegate = self
 +        table.headerView = nil
++        table.style = .plain
 +        table.rowHeight = SidebarStyle.commandBarRowHeight
 +        table.intercellSpacing = .zero
 +        table.backgroundColor = .clear
@@ -10524,6 +10711,8 @@
 +        table.cancel = { [weak self] in self?.dismiss(.cancel) }
 +        scroll.documentView = table
 +        scroll.drawsBackground = false
++        scroll.automaticallyAdjustsContentInsets = false
++        scroll.contentInsets = NSEdgeInsetsZero
 +        scroll.hasVerticalScroller = false
 +        scroll.translatesAutoresizingMaskIntoConstraints = false
 +        let listHost = NSView()
@@ -10583,7 +10772,7 @@
 +    func refresh() {
 +        let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
 +        let query = field.stringValue
-+        results = resultsForQuery(query)
++        results = resultsForQuery(query, suggestions)
 +        table.reloadData()
 +        if let row = CommandBarSelection.rowAfterRefresh(previousID: selectedID, previousQuery: refreshedQuery,
 +                                                         query: query, results: results) {
@@ -10599,21 +10788,69 @@
 +        fitToResults()
 +    }
 +
-+    /// The panel hugs its rows, as Arc's does. Resizing a sheet re-centres it, so the top edge is pinned back.
++    /// The panel hugs its rows, up to the cap, hanging from the fixed anchor.
 +    private func fitToResults() {
 +        listHeight.constant = CGFloat(min(results.count, SidebarStyle.commandBarMaxRows)) * SidebarStyle.commandBarRowHeight
 +        status.superview?.isHidden = status.stringValue.isEmpty
 +        guard let window else { return }
 +        window.contentView?.layoutSubtreeIfNeeded()
 +        let height = ceil(stack.fittingSize.height)
-+        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
-+        window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
-+        window.setFrameTopLeftPoint(topLeft)
++        if let card = cardFrame?() {
++            window.setFrame(SidebarStyle.commandBarFrame(card: card, height: height), display: true)
++        } else {
++            window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
++        }
++        window.invalidateShadow()
++    }
++
++    /// Shows the panel over `parent`. `completion` runs once, after the panel is gone, with `.OK` when a result was chosen.
++    func present(over parent: NSWindow, card: @escaping () -> NSRect,
++                 completion: @escaping (NSApplication.ModalResponse) -> Void) {
++        guard let panel = window else { return }
++        self.parent = parent
++        cardFrame = card
++        self.completion = completion
++        fitToResults()
++        parent.addChildWindow(panel, ordered: .above)
++        panel.makeKeyAndOrderFront(nil)
++        focusSearch()
++        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
++            guard let self, event.window !== self.window else { return event }
++            self.dismiss(.cancel)
++            return nil
++        }
++        let center = NotificationCenter.default
++        func observe(_ name: Notification.Name, _ object: NSWindow, _ action: @escaping @MainActor (CommandBarController) -> Void) {
++            observers.append(center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
++                MainActor.assumeIsolated { if let self { action(self) } }
++            })
++        }
++        observe(NSWindow.didResizeNotification, parent) { $0.fitToResults() }
++        observe(NSWindow.willCloseNotification, parent) { $0.dismiss(.cancel) }
++        observe(NSWindow.didResignKeyNotification, panel) { $0.dismiss(.cancel) }
++        requestSuggestions()
++    }
++
++    private func requestSuggestions() {
++        guard suggestionsEnabled() else { suggestions = []; return }
++        fetcher.request(query: field.stringValue, provider: provider) { [weak self] query, found in
++            guard let self, query == self.field.stringValue else { return }
++            self.suggestions = found
++            self.refresh()
++        }
++    }
++
++    /// Suggestions for a shorter prefix stay until fresh ones arrive, so the row count does not flicker per keystroke.
++    private func keepSuggestionsMatchingQuery() {
++        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        suggestions = suggestions.filter { $0.range(of: typed, options: [.anchored, .caseInsensitive]) != nil }
 +    }
 +
 +    func controlTextDidChange(_ notification: Notification) {
 +        if status.textColor == .systemRed { status.stringValue = ""; status.textColor = .secondaryLabelColor }
++        keepSuggestionsMatchingQuery()
 +        refresh()
++        requestSuggestions()
 +    }
 +
 +    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -10646,8 +10883,15 @@
 +        var selectedTrailing = "Open"
 +        var image: NSImage?
 +        switch result.action {
-+        case .open(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString
-+        case .navigateCurrent(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString; trailing = "Go"; selectedTrailing = "Go"
++        case .open(let url):
++            symbol = result.isSearch ? "magnifyingglass" : "globe"
++            detail = result.isSearch ? "" : url.absoluteString
++            if result.isSearch { trailing = ""; selectedTrailing = "Search" }
++        case .navigateCurrent(let url):
++            symbol = result.isSearch ? "magnifyingglass" : "globe"
++            detail = result.isSearch ? "" : url.absoluteString
++            trailing = result.isSearch ? "" : "Go"
++            selectedTrailing = result.isSearch ? "Search" : "Go"
 +        case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
 +        case .activate(let page):
 +            symbol = "rectangle.on.rectangle"
@@ -10659,8 +10903,10 @@
 +        }
 +        let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
 +            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
++        let isQuery = !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
 +        let cell = PaletteCell(result: result, icon: image ?? symbolImage ?? NSImage(), iconIsSymbol: image == nil,
-+                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing)
++                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing,
++                               titleOnlyWhenSelected: isQuery, accessoriesOnlyWhenSelected: result.isSearch)
 +        return cell
 +    }
 +
@@ -10670,9 +10916,19 @@
 +        dismiss(.OK)
 +    }
 +    private func dismiss(_ response: NSApplication.ModalResponse) {
-+        guard let window, let parent = window.sheetParent else { return }
-+        parent.endSheet(window, returnCode: response)
-+        window.orderOut(nil)
++        guard let completion else { return }
++        self.completion = nil
++        fetcher.cancel()
++        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
++        mouseMonitor = nil
++        observers.forEach(NotificationCenter.default.removeObserver)
++        observers = []
++        if let window, let parent {
++            parent.removeChildWindow(window)
++            window.orderOut(nil)
++            parent.makeKey()
++        }
++        completion(response)
 +    }
 +}
 +
@@ -10680,9 +10936,18 @@
 +private final class CommandBarPanel: NSPanel {
 +    weak var searchField: NSTextField?
 +    private var focusedOnFirstKey = false
++    /// Edit and app-level shortcuts only. Any other Cmd shortcut would reach the browser window behind
++    /// the panel (Cmd-W would close its page), so it is swallowed.
++    private static let passThroughKeys: Set<String> = ["a", "c", "v", "x", "z", "q", "h", "m"]
 +    override var canBecomeKey: Bool { true }
-+    /// A sheet becomes key after beginSheet returns, which can reset the first responder set
-+    /// before then; Return would then reach neither the field nor the default button.
++    override func performKeyEquivalent(with event: NSEvent) -> Bool {
++        guard event.modifierFlags.contains(.command),
++              !Self.passThroughKeys.contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
++            return super.performKeyEquivalent(with: event)
++        }
++        return true
++    }
++    /// The first responder set before the panel became key can be reset when it does; Return would then reach neither the field nor the table.
 +    override func becomeKey() {
 +        super.becomeKey()
 +        guard !focusedOnFirstKey, let searchField else { return }
@@ -10786,9 +11051,14 @@
 +    private let unselectedTrailing: String
 +    private let selectedTrailing: String
 +    private let iconIsSymbol: Bool
++    private let titleOnlyWhenSelected: Bool
++    private let accessoriesOnlyWhenSelected: Bool
 +
 +    init(result: CommandBarResult, icon image: NSImage, iconIsSymbol: Bool, detail text: String,
-+         unselectedTrailing: String, selectedTrailing: String) {
++         unselectedTrailing: String, selectedTrailing: String,
++         titleOnlyWhenSelected: Bool, accessoriesOnlyWhenSelected: Bool) {
++        self.titleOnlyWhenSelected = titleOnlyWhenSelected
++        self.accessoriesOnlyWhenSelected = accessoriesOnlyWhenSelected
 +        self.unselectedTrailing = unselectedTrailing
 +        self.selectedTrailing = selectedTrailing
 +        self.iconIsSymbol = iconIsSymbol
@@ -10836,7 +11106,10 @@
 +    func apply(selected: Bool) {
 +        textField?.textColor = selected ? .white : .labelColor
 +        detail.textColor = selected ? NSColor.white.withAlphaComponent(0.7) : .secondaryLabelColor
++        detail.isHidden = selected && titleOnlyWhenSelected
 +        trailing.stringValue = selected ? selectedTrailing : unselectedTrailing
++        trailing.isHidden = trailing.stringValue.isEmpty
++        arrowBox.isHidden = accessoriesOnlyWhenSelected && !selected
 +        trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.85) : .secondaryLabelColor
 +        if iconIsSymbol { icon.contentTintColor = selected ? .white : .secondaryLabelColor }
 +        let arrowColor = selected ? PaletteRowView.accent : NSColor.secondaryLabelColor
@@ -13094,7 +13367,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,718 @@
+@@ -0,0 +1,739 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -13116,6 +13389,8 @@
 +    let openArchive: () -> Void
 +    let searchProvider: () -> CommandBarSearchProvider
 +    let setSearchProvider: (CommandBarSearchProvider) -> Void
++    let searchSuggestions: () -> Bool
++    let setSearchSuggestions: (Bool) -> Void
 +}
 +
 +extension DefaultBrowser {
@@ -13351,11 +13626,29 @@
 +        return [note, SettingsGroup(rows: rows), trailingAligned(create)]
 +    }
 +
++    private func searchSuggestionsGroup() -> [NSView] {
++        let toggle = NSSwitch()
++        toggle.state = hooks.searchSuggestions() ? .on : .off
++        let handler = ActionTarget { [weak self, weak toggle] in
++            guard let toggle else { return }
++            self?.hooks.setSearchSuggestions(toggle.state == .on)
++        }
++        toggle.target = handler
++        toggle.action = #selector(ActionTarget.fire)
++        toggle.setAccessibilityLabel("Search suggestions")
++        toggle.setAccessibilityIdentifier("bato-search-suggestions")
++        let row = SettingsRow(leading: SymbolTile(symbol: "text.magnifyingglass", color: .systemBlue),
++                              title: "Search suggestions",
++                              detail: "Sends what you type in the command bar to your search engine to suggest searches. Addresses are never sent.",
++                              trailing: toggle, keeping: handler)
++        return [sectionHeading("Command bar"), SettingsGroup(rows: [row])]
++    }
++
 +    private func privacyPane() -> [NSView] {
 +        let state = hooks.state()
 +        guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
 +              let service = hooks.blockingService(profile.id.uuidString) else {
-+            return [caption("Content blocking starts with the browser engine and isn’t available yet."),
++            return searchSuggestionsGroup() + [caption("Content blocking starts with the browser engine and isn’t available yet."),
 +                    sectionHeading("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
 +        }
 +        let toggle = NSSwitch()
@@ -13371,7 +13664,8 @@
 +        let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
 +                                   title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
 +                                   trailing: toggle, keeping: handler)
-+        var views: [NSView] = [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
++        var views = searchSuggestionsGroup()
++        views += [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
 +        views += sitePermissions(forProfile: profile.name)
 +        let exceptions = service.exceptions
 +        views.append(exceptions.isEmpty ? caption("No sites are excluded from blocking.") : sectionHeading("Sites excluded from blocking"))
@@ -13815,7 +14109,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,127 @@
 +import AppKit
 +import BatoCore
 +
@@ -13835,6 +14129,15 @@
 +    static let commandBarInset: CGFloat = 8
 +    static let commandBarMaxRows = 7
 +    static let commandBarWidth: CGFloat = 760
++    static let commandBarTopFraction: CGFloat = 0.38
++
++    /// The palette hangs from a fixed point: centred on the content card, top edge a set fraction down it
++    /// (screen coordinates, y up). More rows only extend it downward.
++    static func commandBarFrame(card: NSRect, height: CGFloat) -> NSRect {
++        let top = card.maxY - card.height * commandBarTopFraction
++        return NSRect(x: (card.midX - commandBarWidth / 2).rounded(), y: (top - height).rounded(),
++                      width: commandBarWidth, height: height)
++    }
 +    static let downloadsPopoverWidth: CGFloat = 320
 +    static let downloadsPopoverMaxListHeight: CGFloat = 360
 +
@@ -14214,23 +14517,26 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,71 @@
 +import BatoCore
 +import Foundation
 +
 +public struct AppPreferences: Equatable, Sendable {
 +    public var searchProvider: CommandBarSearchProvider = .default
++    /// Sends what is typed in the command bar to the search provider for completions.
++    public var searchSuggestions = true
 +    public init() {}
 +}
 +
 +extension AppPreferences: Codable {
-+    private enum CodingKeys: String, CodingKey { case searchProvider }
++    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions }
 +
 +    /// An unknown provider name, e.g. from a newer build, falls back to the default instead of dropping the file.
 +    public init(from decoder: any Decoder) throws {
 +        let values = try decoder.container(keyedBy: CodingKeys.self)
 +        let name = try values.decodeIfPresent(String.self, forKey: .searchProvider)
 +        searchProvider = name.flatMap(CommandBarSearchProvider.init(rawValue:)) ?? .default
++        searchSuggestions = try values.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
 +    }
 +}
 +
@@ -17069,4 +17375,54 @@
 +        window.addChildWindow(panel, ordered: .above)
 +        self.panel = panel
 +    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/SidebarPeekDismissal.swift
+@@ -0,0 +1,47 @@
++/// When a hidden sidebar that floats over the page (peek) goes away again.
++///
++/// Programmatic focus requests reveal the sidebar without the pointer ever entering it, so
++/// `mouseExited` cannot be the only way out: the pointer poll covers that case.
++public enum SidebarPeekDismissal {
++    public enum Event: Equatable {
++        case pointerExited
++        case pointerPoll
++        case pageKey
++        case pageClicked
++        case windowResigned
++    }
++
++    public struct Context: Equatable {
++        public var pointerInside: Bool
++        /// Focus is in the sidebar, e.g. rename or search fields: leaving them to the pointer would eat typing.
++        public var sidebarFocused: Bool
++        /// The sidebar was revealed by a focus request (Cmd-T, a menu) and focus still sits on the control
++        /// that request landed on: nobody chose to work in the sidebar.
++        public var focusIsIncidental: Bool
++        /// No sheet, modal or open menu owns the window; the overlay stays up beneath them.
++        public var interactive: Bool
++
++        public init(pointerInside: Bool, sidebarFocused: Bool, focusIsIncidental: Bool = false, interactive: Bool) {
++            self.pointerInside = pointerInside
++            self.sidebarFocused = sidebarFocused
++            self.focusIsIncidental = focusIsIncidental
++            self.interactive = interactive
++        }
++    }
++
++    public static func shouldDismiss(on event: Event, _ context: Context) -> Bool {
++        guard context.interactive else { return false }
++        switch event {
++        case .pointerExited:
++            return !context.holdsFocus
++        case .pointerPoll:
++            return !context.pointerInside && !context.holdsFocus
++        case .pageKey, .pageClicked, .windowResigned:
++            return true
++        }
++    }
++}
++
++private extension SidebarPeekDismissal.Context {
++    var holdsFocus: Bool { sidebarFocused && !focusIsIncidental }
 +}

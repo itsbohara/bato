@@ -113,3 +113,15 @@ final class AppearanceTokenTests: XCTestCase {
         XCTAssertEqual(alpha(lightFill, in: light), 0.07, accuracy: 0.01)
     }
 }
+
+final class CommandBarAnchorTests: XCTestCase {
+    func testTopEdgeIsFixedWhateverTheHeightAndCentredOnTheCard() {
+        let card = NSRect(x: 300, y: 100, width: 1000, height: 700)
+        let heights: [CGFloat] = [56, 106, 206, 406]
+        let frames = heights.map { SidebarStyle.commandBarFrame(card: card, height: $0) }
+        XCTAssertEqual(Set(frames.map(\.maxY)).count, 1)
+        XCTAssertEqual(frames[0].maxY, card.maxY - card.height * SidebarStyle.commandBarTopFraction, accuracy: 0.5)
+        for frame in frames { XCTAssertEqual(frame.midX, card.midX, accuracy: 0.5) }
+        XCTAssertEqual(frames.map(\.height), heights)
+    }
+}

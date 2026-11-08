@@ -19,6 +19,8 @@ struct SettingsHooks {
     let openArchive: () -> Void
     let searchProvider: () -> CommandBarSearchProvider
     let setSearchProvider: (CommandBarSearchProvider) -> Void
+    let searchSuggestions: () -> Bool
+    let setSearchSuggestions: (Bool) -> Void
 }
 
 extension DefaultBrowser {
@@ -254,11 +256,29 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         return [note, SettingsGroup(rows: rows), trailingAligned(create)]
     }
 
+    private func searchSuggestionsGroup() -> [NSView] {
+        let toggle = NSSwitch()
+        toggle.state = hooks.searchSuggestions() ? .on : .off
+        let handler = ActionTarget { [weak self, weak toggle] in
+            guard let toggle else { return }
+            self?.hooks.setSearchSuggestions(toggle.state == .on)
+        }
+        toggle.target = handler
+        toggle.action = #selector(ActionTarget.fire)
+        toggle.setAccessibilityLabel("Search suggestions")
+        toggle.setAccessibilityIdentifier("bato-search-suggestions")
+        let row = SettingsRow(leading: SymbolTile(symbol: "text.magnifyingglass", color: .systemBlue),
+                              title: "Search suggestions",
+                              detail: "Sends what you type in the command bar to your search engine to suggest searches. Addresses are never sent.",
+                              trailing: toggle, keeping: handler)
+        return [sectionHeading("Command bar"), SettingsGroup(rows: [row])]
+    }
+
     private func privacyPane() -> [NSView] {
         let state = hooks.state()
         guard let profile = state.profiles.first(where: { $0.id == state.currentWorkspace.profileID }),
               let service = hooks.blockingService(profile.id.uuidString) else {
-            return [caption("Content blocking starts with the browser engine and isn’t available yet."),
+            return searchSuggestionsGroup() + [caption("Content blocking starts with the browser engine and isn’t available yet."),
                     sectionHeading("Site permissions"), sitePermissionsGroup(detail: "Camera, location, notifications and more, per site.")]
         }
         let toggle = NSSwitch()
@@ -274,7 +294,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let blocking = SettingsRow(leading: SymbolTile(symbol: "hand.raised.fill", color: .systemRed),
                                    title: "Block ads and trackers", detail: "For the \(profile.name) Profile",
                                    trailing: toggle, keeping: handler)
-        var views: [NSView] = [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
+        var views = searchSuggestionsGroup()
+        views += [sectionHeading("Content blocking"), SettingsGroup(rows: [blocking, uBlockListsRow()])]
         views += sitePermissions(forProfile: profile.name)
         let exceptions = service.exceptions
         views.append(exceptions.isEmpty ? caption("No sites are excluded from blocking.") : sectionHeading("Sites excluded from blocking"))

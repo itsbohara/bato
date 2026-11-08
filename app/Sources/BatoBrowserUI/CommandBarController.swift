@@ -1,8 +1,9 @@
 import AppKit
 import BatoCore
 
-/// A native modal surface: Chromium retains ownership of the parent window and
-/// its sheet lifecycle. No page or network work happens while the user types.
+/// A borderless panel attached to the browser window and anchored by its top edge, so it grows downward
+/// as rows are added. It is not a sheet: AppKit re-centres a sheet whenever its height changes.
+/// Typed text goes to the search provider only when suggestions are on.
 @MainActor
 final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let field = NSTextField(string: "")
@@ -14,7 +15,15 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
     private let stack = NSStackView()
     private var listHeight: NSLayoutConstraint!
     private var refreshedQuery = ""
-    private let resultsForQuery: (String) -> [CommandBarResult]
+    private let resultsForQuery: (String, [String]) -> [CommandBarResult]
+    private let suggestionsEnabled: () -> Bool
+    private let fetcher: SearchSuggestionFetcher
+    private var suggestions: [String] = []
+    private weak var parent: NSWindow?
+    private var cardFrame: (() -> NSRect)?
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+    private var mouseMonitor: Any?
+    private var observers: [NSObjectProtocol] = []
     private let pageIcon: (UUID) -> NSImage?
     private var results: [CommandBarResult] = []
     private(set) var chosenAction: CommandBarAction?
@@ -23,9 +32,13 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
     init(query: String = "", error: String? = nil,
          provider: CommandBarSearchProvider = .duckDuckGo,
          pageIcon: @escaping (UUID) -> NSImage? = { _ in nil },
-         results: @escaping (String) -> [CommandBarResult]) {
+         suggestionsEnabled: @escaping () -> Bool = { false },
+         fetcher: SearchSuggestionFetcher = SearchSuggestionFetcher(),
+         results: @escaping (String, [String]) -> [CommandBarResult]) {
         self.provider = provider
         self.pageIcon = pageIcon
+        self.suggestionsEnabled = suggestionsEnabled
+        self.fetcher = fetcher
         resultsForQuery = results
         let panel = CommandBarPanel(contentRect: NSRect(x: 0, y: 0, width: SidebarStyle.commandBarWidth, height: 300),
                                     styleMask: [.borderless], backing: .buffered, defer: false)
@@ -36,6 +49,7 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.hidesOnDeactivate = false
         super.init(window: panel)
         let surface = CommandBarSurface()
         panel.contentView = surface
@@ -65,6 +79,7 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         table.dataSource = self
         table.delegate = self
         table.headerView = nil
+        table.style = .plain
         table.rowHeight = SidebarStyle.commandBarRowHeight
         table.intercellSpacing = .zero
         table.backgroundColor = .clear
@@ -83,6 +98,8 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         table.cancel = { [weak self] in self?.dismiss(.cancel) }
         scroll.documentView = table
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         scroll.hasVerticalScroller = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let listHost = NSView()
@@ -142,7 +159,7 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
     func refresh() {
         let selectedID = results.indices.contains(table.selectedRow) ? results[table.selectedRow].id : nil
         let query = field.stringValue
-        results = resultsForQuery(query)
+        results = resultsForQuery(query, suggestions)
         table.reloadData()
         if let row = CommandBarSelection.rowAfterRefresh(previousID: selectedID, previousQuery: refreshedQuery,
                                                          query: query, results: results) {
@@ -158,21 +175,69 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         fitToResults()
     }
 
-    /// The panel hugs its rows, as Arc's does. Resizing a sheet re-centres it, so the top edge is pinned back.
+    /// The panel hugs its rows, up to the cap, hanging from the fixed anchor.
     private func fitToResults() {
         listHeight.constant = CGFloat(min(results.count, SidebarStyle.commandBarMaxRows)) * SidebarStyle.commandBarRowHeight
         status.superview?.isHidden = status.stringValue.isEmpty
         guard let window else { return }
         window.contentView?.layoutSubtreeIfNeeded()
         let height = ceil(stack.fittingSize.height)
-        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
-        window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
-        window.setFrameTopLeftPoint(topLeft)
+        if let card = cardFrame?() {
+            window.setFrame(SidebarStyle.commandBarFrame(card: card, height: height), display: true)
+        } else {
+            window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
+        }
+        window.invalidateShadow()
+    }
+
+    /// Shows the panel over `parent`. `completion` runs once, after the panel is gone, with `.OK` when a result was chosen.
+    func present(over parent: NSWindow, card: @escaping () -> NSRect,
+                 completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        guard let panel = window else { return }
+        self.parent = parent
+        cardFrame = card
+        self.completion = completion
+        fitToResults()
+        parent.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        focusSearch()
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, event.window !== self.window else { return event }
+            self.dismiss(.cancel)
+            return nil
+        }
+        let center = NotificationCenter.default
+        func observe(_ name: Notification.Name, _ object: NSWindow, _ action: @escaping @MainActor (CommandBarController) -> Void) {
+            observers.append(center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { if let self { action(self) } }
+            })
+        }
+        observe(NSWindow.didResizeNotification, parent) { $0.fitToResults() }
+        observe(NSWindow.willCloseNotification, parent) { $0.dismiss(.cancel) }
+        observe(NSWindow.didResignKeyNotification, panel) { $0.dismiss(.cancel) }
+        requestSuggestions()
+    }
+
+    private func requestSuggestions() {
+        guard suggestionsEnabled() else { suggestions = []; return }
+        fetcher.request(query: field.stringValue, provider: provider) { [weak self] query, found in
+            guard let self, query == self.field.stringValue else { return }
+            self.suggestions = found
+            self.refresh()
+        }
+    }
+
+    /// Suggestions for a shorter prefix stay until fresh ones arrive, so the row count does not flicker per keystroke.
+    private func keepSuggestionsMatchingQuery() {
+        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        suggestions = suggestions.filter { $0.range(of: typed, options: [.anchored, .caseInsensitive]) != nil }
     }
 
     func controlTextDidChange(_ notification: Notification) {
         if status.textColor == .systemRed { status.stringValue = ""; status.textColor = .secondaryLabelColor }
+        keepSuggestionsMatchingQuery()
         refresh()
+        requestSuggestions()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -205,8 +270,15 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         var selectedTrailing = "Open"
         var image: NSImage?
         switch result.action {
-        case .open(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString
-        case .navigateCurrent(let url): symbol = result.subtitle == "Web search" ? "magnifyingglass" : "globe"; detail = result.subtitle == "Web search" ? "" : url.absoluteString; trailing = "Go"; selectedTrailing = "Go"
+        case .open(let url):
+            symbol = result.isSearch ? "magnifyingglass" : "globe"
+            detail = result.isSearch ? "" : url.absoluteString
+            if result.isSearch { trailing = ""; selectedTrailing = "Search" }
+        case .navigateCurrent(let url):
+            symbol = result.isSearch ? "magnifyingglass" : "globe"
+            detail = result.isSearch ? "" : url.absoluteString
+            trailing = result.isSearch ? "" : "Go"
+            selectedTrailing = result.isSearch ? "Search" : "Go"
         case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
         case .activate(let page):
             symbol = "rectangle.on.rectangle"
@@ -218,8 +290,10 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         }
         let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        let isQuery = !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
         let cell = PaletteCell(result: result, icon: image ?? symbolImage ?? NSImage(), iconIsSymbol: image == nil,
-                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing)
+                               detail: detail, unselectedTrailing: trailing, selectedTrailing: selectedTrailing,
+                               titleOnlyWhenSelected: isQuery, accessoriesOnlyWhenSelected: result.isSearch)
         return cell
     }
 
@@ -229,9 +303,19 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         dismiss(.OK)
     }
     private func dismiss(_ response: NSApplication.ModalResponse) {
-        guard let window, let parent = window.sheetParent else { return }
-        parent.endSheet(window, returnCode: response)
-        window.orderOut(nil)
+        guard let completion else { return }
+        self.completion = nil
+        fetcher.cancel()
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        mouseMonitor = nil
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        if let window, let parent {
+            parent.removeChildWindow(window)
+            window.orderOut(nil)
+            parent.makeKey()
+        }
+        completion(response)
     }
 }
 
@@ -239,9 +323,18 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
 private final class CommandBarPanel: NSPanel {
     weak var searchField: NSTextField?
     private var focusedOnFirstKey = false
+    /// Edit and app-level shortcuts only. Any other Cmd shortcut would reach the browser window behind
+    /// the panel (Cmd-W would close its page), so it is swallowed.
+    private static let passThroughKeys: Set<String> = ["a", "c", "v", "x", "z", "q", "h", "m"]
     override var canBecomeKey: Bool { true }
-    /// A sheet becomes key after beginSheet returns, which can reset the first responder set
-    /// before then; Return would then reach neither the field nor the default button.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command),
+              !Self.passThroughKeys.contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
+            return super.performKeyEquivalent(with: event)
+        }
+        return true
+    }
+    /// The first responder set before the panel became key can be reset when it does; Return would then reach neither the field nor the table.
     override func becomeKey() {
         super.becomeKey()
         guard !focusedOnFirstKey, let searchField else { return }
@@ -345,9 +438,14 @@ private final class PaletteCell: NSTableCellView {
     private let unselectedTrailing: String
     private let selectedTrailing: String
     private let iconIsSymbol: Bool
+    private let titleOnlyWhenSelected: Bool
+    private let accessoriesOnlyWhenSelected: Bool
 
     init(result: CommandBarResult, icon image: NSImage, iconIsSymbol: Bool, detail text: String,
-         unselectedTrailing: String, selectedTrailing: String) {
+         unselectedTrailing: String, selectedTrailing: String,
+         titleOnlyWhenSelected: Bool, accessoriesOnlyWhenSelected: Bool) {
+        self.titleOnlyWhenSelected = titleOnlyWhenSelected
+        self.accessoriesOnlyWhenSelected = accessoriesOnlyWhenSelected
         self.unselectedTrailing = unselectedTrailing
         self.selectedTrailing = selectedTrailing
         self.iconIsSymbol = iconIsSymbol
@@ -395,7 +493,10 @@ private final class PaletteCell: NSTableCellView {
     func apply(selected: Bool) {
         textField?.textColor = selected ? .white : .labelColor
         detail.textColor = selected ? NSColor.white.withAlphaComponent(0.7) : .secondaryLabelColor
+        detail.isHidden = selected && titleOnlyWhenSelected
         trailing.stringValue = selected ? selectedTrailing : unselectedTrailing
+        trailing.isHidden = trailing.stringValue.isEmpty
+        arrowBox.isHidden = accessoriesOnlyWhenSelected && !selected
         trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.85) : .secondaryLabelColor
         if iconIsSymbol { icon.contentTintColor = selected ? .white : .secondaryLabelColor }
         let arrowColor = selected ? PaletteRowView.accent : NSColor.secondaryLabelColor

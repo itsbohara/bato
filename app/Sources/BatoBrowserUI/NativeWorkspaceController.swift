@@ -266,7 +266,11 @@ public final class NativeWorkspaceController: NSObject {
             setWorkspaceArchivePeriod: { [weak self] in _ = self?.runtime.setArchivePeriod($1, forWorkspace: $0) },
             openArchive: { [weak self] in self?.fromBrowserWindow { $0.archiveController.show() } },
             searchProvider: { [weak self] in self?.commandBarSearchProvider ?? .default },
-            setSearchProvider: { [weak self] in self?.setSearchProvider($0) }))
+            setSearchProvider: { [weak self] in self?.setSearchProvider($0) },
+            searchSuggestions: { [weak self] in self?.preferences.current().searchSuggestions ?? true },
+            setSearchSuggestions: { [weak self] enabled in
+                try? self?.preferences.update { $0.searchSuggestions = enabled }
+            }))
         settingsWindow = window
         window.show(pane)
     }
@@ -290,11 +294,13 @@ public final class NativeWorkspaceController: NSObject {
         commandBarNavigationTarget = target
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
-                                       pageIcon: { [weak self] in self?.pageIcons[$0] }) { [weak self] query in
+                                       pageIcon: { [weak self] in self?.pageIcons[$0] },
+                                       suggestionsEnabled: { [weak self] in self?.preferences.current().searchSuggestions ?? false }) { [weak self] query, suggestions in
             guard let self else { return [] }
             return CommandBarResults.make(query: query, state: self.runtime.state,
                                           provider: self.commandBarSearchProvider,
-                                          navigatingCurrentPage: target != nil).filter { result in
+                                          navigatingCurrentPage: target != nil,
+                                          suggestions: suggestions).filter { result in
                 switch result.action {
                 case .command(.toggleSidebar): return self.requestSidebarToggle != nil
                 case .command(.closePage): return self.runtime.state.currentWorkspace.activeEntryID != nil
@@ -305,17 +311,23 @@ public final class NativeWorkspaceController: NSObject {
             }
         }
         commandBar = bar
-        guard let sheet = bar.window else { commandBar = nil; commandBarNavigationTarget = nil; return }
-        window.beginSheet(sheet) { [weak self, weak bar, weak window] response in
+        bar.present(over: window, card: { [weak self, weak window] in
+            guard let window else { return .zero }
+            return self?.cardFrames.allObjects.first { $0.window === window }?.cardRectOnScreen ?? window.frame
+        }) { [weak self, weak bar, weak window] response in
             guard let self else { return }
             if response == .OK, let bar, let action = bar.chosenAction {
                 self.pendingCommandBarAction = (action, bar.query)
                 self.pendingCommandBarWindow = window
             }
             self.commandBar = nil
-            guard response == .OK else { self.commandBarNavigationTarget = nil; return }
-            // Do not create/select/close a Chromium page inside sheet completion.
-            // The host restores its native slot before this scheduled callback.
+            guard response == .OK else {
+                self.commandBarNavigationTarget = nil
+                self.requestNativeFocus?()
+                return
+            }
+            // Do not create/select/close a Chromium page inside the dismissal callback;
+            // the parent window must be key again before the page is created.
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let self else { return }
                 guard let window, self.root.window === window else {
@@ -328,7 +340,6 @@ public final class NativeWorkspaceController: NSObject {
                 else { self.resumeCommittedSelection() }
             }
         }
-        bar.focusSearch()
     }
 
     private func executeCommandBarAction(_ pending: (action: CommandBarAction, query: String)) {
@@ -2792,6 +2803,12 @@ public final class ContentCardFrameView: NSView {
         if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
         showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
                                          width: side, height: side)
+    }
+
+    /// The page card in screen coordinates (y up), for anchoring panels to it.
+    var cardRectOnScreen: NSRect? {
+        guard let window else { return nil }
+        return window.convertToScreen(convert(cardRect, to: nil))
     }
 
     private var cardRect: NSRect {
