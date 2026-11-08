@@ -1004,6 +1004,87 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Where a dragged entry lands. Indices count the destination list as displayed, before the entry leaves it.
+    public enum SidebarSection: Equatable, Sendable {
+        case favorites
+        case pinned(folder: UUID?)
+        case tabs
+    }
+
+    /// The section currently listing the entry, in the active workspace and its Profile.
+    public func sidebarSection(of id: UUID) -> SidebarSection? {
+        let workspace = currentWorkspace
+        if profiles[currentProfileIndex].favorites.contains(where: { $0.id == id }) { return .favorites }
+        if workspace.pins.contains(where: { $0.id == id }) { return .pinned(folder: workspace.folder(containingPin: id)?.id) }
+        if workspace.tabs.contains(where: { $0.id == id }) { return .tabs }
+        return nil
+    }
+
+    public func canPlaceEntry(_ id: UUID, in section: SidebarSection) -> Bool {
+        guard sidebarSection(of: id) != nil else { return false }
+        if case .pinned(let folder?) = section { return currentWorkspace.folder(folder) != nil }
+        return true
+    }
+
+    /// Reorders within a section, or moves between Favorites, pins, folders and tabs, converting the entry's
+    /// kind as needed. Selection stays with the entry; a pair is dissolved when its member changes kind.
+    public mutating func placeEntry(_ id: UUID, in section: SidebarSection, at index: Int) throws {
+        try transact { draft in
+            guard let source = draft.sidebarSection(of: id),
+                  var entry = draft.visibleEntries.first(where: { $0.id == id }) else {
+                throw BrowserStateError.missingEntry
+            }
+            guard draft.canPlaceEntry(id, in: section) else { throw BrowserStateError.invalidFolder }
+            let workspace = draft.currentWorkspaceIndex
+            let profile = draft.currentProfileIndex
+            var position = max(0, index)
+            if source == section, let current = draft.sectionContaining(id)?.firstIndex(where: { $0.id == id }),
+               current < position {
+                position -= 1
+            }
+            let kind: EntryKind
+            switch section {
+            case .favorites: kind = .favorite
+            case .pinned: kind = .pinned
+            case .tabs: kind = .temporary
+            }
+            if entry.kind != kind { draft.removeSplits(containing: id) }
+            draft.profiles[profile].favorites.removeAll { $0.id == id }
+            draft.workspaces[workspace].pins.removeAll { $0.id == id }
+            for folder in draft.workspaces[workspace].folders.indices {
+                draft.workspaces[workspace].folders[folder].pinIDs.removeAll { $0 == id }
+            }
+            draft.workspaces[workspace].tabs.removeAll { $0.id == id }
+            entry.kind = kind
+            entry.savedURL = kind == .temporary ? nil : (entry.savedURL ?? entry.lastURL)
+            switch section {
+            case .favorites:
+                draft.profiles[profile].favorites.insert(entry, at: min(position, draft.profiles[profile].favorites.count))
+                for other in draft.workspaces.indices where other != workspace && draft.workspaces[other].activeEntryID == id {
+                    draft.workspaces[other].activeEntryID = nil
+                }
+            case .tabs:
+                draft.workspaces[workspace].tabs.insert(entry, at: min(position, draft.workspaces[workspace].tabs.count))
+            case .pinned(let folder):
+                if let folder {
+                    let target = try draft.currentFolderIndex(folder)
+                    let pinIDs = draft.workspaces[workspace].folders[target].pinIDs
+                    draft.workspaces[workspace].folders[target].pinIDs.insert(id, at: min(position, pinIDs.count))
+                    draft.workspaces[workspace].pins.append(entry)
+                } else {
+                    let filed = Set(draft.workspaces[workspace].folders.flatMap(\.pinIDs))
+                    let unfiled = draft.workspaces[workspace].pins.filter { !filed.contains($0.id) }
+                    if position < unfiled.count,
+                       let anchor = draft.workspaces[workspace].pins.firstIndex(where: { $0.id == unfiled[position].id }) {
+                        draft.workspaces[workspace].pins.insert(entry, at: anchor)
+                    } else {
+                        draft.workspaces[workspace].pins.append(entry)
+                    }
+                }
+            }
+        }
+    }
+
     /// Only local pins/tabs can move; Favorites already span their Profile's workspaces.
     public func canMoveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
         let source = currentWorkspace

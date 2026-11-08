@@ -459,6 +459,18 @@ public final class PageRuntime {
         change(reconcileSelection: false) { try $0.moveEntry(id, direction: direction) }
     }
 
+    /// Drag-and-drop placement. Only an in-flight close blocks it: saved/temporary semantics must not change mid-close.
+    @discardableResult
+    public func placeEntry(_ id: UUID, in section: BrowserState.SidebarSection, at index: Int) -> Bool {
+        guard !pendingClose.contains(where: { $0.entryID == id }), state.canPlaceEntry(id, in: section) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change(reconcileSelection: state.currentSplit?.contains(id) == true) {
+            try $0.placeEntry(id, in: section, at: index)
+        }
+    }
+
     /// Moving an active entry hides it after commit; background moves leave focus untouched.
     @discardableResult
     public func moveEntry(_ id: UUID, toWorkspace destinationID: UUID) -> Bool {
