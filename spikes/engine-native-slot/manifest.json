@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "81c9c09fee9d23e381e61fe1676c30818b34c98d59a70cf806780f741b08c05b",
+  "patch_sha256": "098c10b9ba065f0bf47b61c06b14e94e1044e3f5f42060f684de566c00557122",
   "files": [
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "f6c4c2415899b72c60c9664972d8bc14a453d5f62b62e580ea95d4724710850c"
+      "patched_sha256": "ff2b8da373c63f2fd7d7cfa2d2642d1f8bfd4f46554988471cb0f3c49e0671aa"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "include/internal/bato_native_slot.h",
       "original_sha256": null,
-      "patched_sha256": "837d595506a546042be7089325295f21c97067c90bffc883cc08f7936b59e10a"
+      "patched_sha256": "bf830e0ed3149badc94e6d7603298e3e56a4fd16cca0c8c5ea6d5812c4b28553"
     },
     {
       "root": "cef",
@@ -171,6 +171,18 @@
       "path": "ui/native_theme/os_settings_provider_mac.mm",
       "original_sha256": "3e6df164c1734612fa788a0dcbdcdf9a0d7cfee758a78c885d45bbf07dc55e9d",
       "patched_sha256": "b6711eb6ac7217e189dcc2d385fea00f83a0ea2ffa7b3c597248811cb7291708"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.cc",
+      "original_sha256": "9ddc040a446cc63bb62519e9c43b9502537189c565716e495624552512bcf66e",
+      "patched_sha256": "708fda10450712970c2bf418c895cc3e9e65ec18eefc5ba74a3370386b2e2b8e"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.cc",
+      "original_sha256": "669040691b81c722b150b694bd4804818239fb5cea8e9b71b596b9972e6ccf03",
+      "patched_sha256": "aa48bfe0f1251eed16303c61b16846019cefd69c847afeec2cc657c43ce56b3f"
     }
   ]
 }

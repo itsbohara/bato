@@ -169,6 +169,20 @@ CEF_EXPORT int bato_native_slot_download_snapshot_v1(void);
 // Returns 1 when accepted; 0 for an unknown id or Profile or an action invalid for the state.
 CEF_EXPORT int bato_native_slot_download_action_v1(const char* profile_key, const char* id, int action);
 
+// Audio state of every tab in a slot window, observed from Chromium's own audible and muted
+// flags (the ones behind the stock tab speaker badge). Delivered on the UI thread, possibly
+// inside a tab-model mutation: clients copy the values and defer real work. A tab inserted
+// into a slot window replays its state once. browser_id is the process-local CEF identifier.
+typedef struct BatoAudioCallbacksV1 {
+  size_t size;
+  uint32_t version;  // 1
+  void* context;
+  void (*changed)(void* context, int browser_id, int audible, int muted);
+} BatoAudioCallbacksV1;
+CEF_EXPORT int bato_native_slot_register_audio_callbacks_v1(const BatoAudioCallbacksV1* callbacks);
+// Mutes or unmutes one tab by its CEF identifier. Returns 1 when the page exists. UI thread only.
+CEF_EXPORT int bato_native_slot_set_muted_v1(int browser_id, int muted);
+
 // Closes every window of the Profile directory `profile_key` (a 36-character UUID directory name
 // under the user data dir) without beforeunload prompts, wipes its browsing data and removes its
 // directory (Chromium's profile deletion: immediately when the Profile can be released, otherwise

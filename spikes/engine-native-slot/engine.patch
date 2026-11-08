@@ -159,7 +159,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,1272 @@
+@@ -49,3 +49,1334 @@
  }
 
  }  // namespace cef
@@ -211,6 +211,7 @@
 +namespace {
 +BatoNativeSlotCallbacksV1 g_slot_callbacks = {};
 +BatoPageCallbacksV1 g_page_callbacks = {};
++BatoAudioCallbacksV1 g_audio_callbacks = {};
 +BatoSplitCallbacksV1 g_split_callbacks = {};
 +BatoPeekCallbacksV1 g_peek_callbacks = {};
 +BatoPeekInteractionCallbacksV1 g_peek_interaction_callbacks = {};
@@ -290,15 +291,58 @@
 +void NotifyActivePage(uint64_t token, content::WebContents* contents);
 +void NotifyManagedSplit(uint64_t token);
 +void RevalidatePeek(uint64_t token);
++// WebContents owns the observer through user data, so a closed tab cannot leave it dangling.
++// Reports only transitions: the audible flag and the tab-level muted flag.
++const char kAudioObserverKey[] = "bato-native-slot-audio-observer";
++class AudioObserver final : public base::SupportsUserData::Data,
++                            public content::WebContentsObserver {
++ public:
++  explicit AudioObserver(content::WebContents* contents)
++      : content::WebContentsObserver(contents) {}
++  void OnAudioStateChanged(bool audible) override { Report(audible, web_contents()->IsAudioMuted()); }
++  void DidUpdateAudioMutingState(bool muted) override {
++    Report(web_contents()->IsCurrentlyAudible(), muted);
++  }
++  // A tab moved from another window keeps its observer; replay so the client never misses state.
++  void Replay() { Report(web_contents()->IsCurrentlyAudible(), web_contents()->IsAudioMuted(), true); }
++ private:
++  void Report(bool audible, bool muted, bool force = false) {
++    if (!force && audible == audible_ && muted == muted_) return;
++    audible_ = audible;
++    muted_ = muted;
++    const auto callbacks = g_audio_callbacks;
++    auto browser = ChromeBrowserHostImpl::GetBrowserForContents(web_contents());
++    if (!callbacks.changed || !browser || browser->GetIdentifier() <= 0) return;
++    // No access to this object after invoking client code.
++    callbacks.changed(callbacks.context, browser->GetIdentifier(), audible ? 1 : 0, muted ? 1 : 0);
++  }
++  bool audible_ = false;
++  bool muted_ = false;
++};
++void WatchAudio(content::WebContents* contents) {
++  if (!g_audio_callbacks.changed || !contents) return;
++  if (auto* existing = static_cast<AudioObserver*>(contents->GetUserData(&kAudioObserverKey))) {
++    existing->Replay();
++    return;
++  }
++  auto observer = std::make_unique<AudioObserver>(contents);
++  auto* raw = observer.get();
++  contents->SetUserData(&kAudioObserverKey, std::move(observer));
++  if (contents->IsCurrentlyAudible() || contents->IsAudioMuted()) raw->Replay();
++}
 +class SlotTabObserver final : public TabStripModelObserver {
 + public:
 +  SlotTabObserver(TabStripModel* model, uint64_t token) : token_(token) {
 +    model->AddObserver(this);
++    for (int index = 0; index < model->count(); ++index) WatchAudio(model->GetWebContentsAt(index));
 +  }
 +  void OnTabStripModelChanged(TabStripModel* model,
 +                             const TabStripModelChange& change,
 +                             const TabStripSelectionChange& selection) override {
 +    RevalidatePeek(token_);
++    if (change.type() == TabStripModelChange::kInserted) {
++      for (const auto& inserted : change.GetInsert()->contents) WatchAudio(inserted.contents);
++    }
 +    if (selection.active_tab_changed()) NotifyActivePage(token_, selection.new_contents);
 +  }
 +  void OnSplitTabChanged(const SplitTabChange& change) override {
@@ -943,6 +987,24 @@
 +      callbacks->version != 1 || !callbacks->close_cancelled ||
 +      !callbacks->active_changed) return 0;
 +  g_page_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_register_audio_callbacks_v1(
++    const BatoAudioCallbacksV1* callbacks) {
++  if (!NSThread.isMainThread || g_audio_callbacks.version ||
++      g_slot_registration_closed || (CefContext::Get() && CefContext::Get()->initialized()) ||
++      !callbacks || callbacks->size != sizeof(BatoAudioCallbacksV1) ||
++      callbacks->version != 1 || !callbacks->changed) return 0;
++  g_audio_callbacks = *callbacks;
++  return 1;
++}
++extern "C" CEF_EXPORT int bato_native_slot_set_muted_v1(int browser_id, int muted) {
++  if (!NSThread.isMainThread || browser_id <= 0) return 0;
++  auto browser = CefBrowserHost::GetBrowserByIdentifier(browser_id);
++  auto host = browser ? CefBrowserHostBase::FromBrowser(browser) : nullptr;
++  auto* contents = host ? host->GetWebContents() : nullptr;
++  if (!contents) return 0;
++  contents->SetAudioMuted(muted != 0);
 +  return 1;
 +}
 +extern "C" CEF_EXPORT int bato_native_slot_new_tab_v1(uint64_t token) {
@@ -2234,7 +2296,7 @@
 
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,195 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -2405,6 +2467,20 @@
 +// 6 keep a warned download, 7 discard a warned download (removes it and its partial file).
 +// Returns 1 when accepted; 0 for an unknown id or Profile or an action invalid for the state.
 +CEF_EXPORT int bato_native_slot_download_action_v1(const char* profile_key, const char* id, int action);
++
++// Audio state of every tab in a slot window, observed from Chromium's own audible and muted
++// flags (the ones behind the stock tab speaker badge). Delivered on the UI thread, possibly
++// inside a tab-model mutation: clients copy the values and defer real work. A tab inserted
++// into a slot window replays its state once. browser_id is the process-local CEF identifier.
++typedef struct BatoAudioCallbacksV1 {
++  size_t size;
++  uint32_t version;  // 1
++  void* context;
++  void (*changed)(void* context, int browser_id, int audible, int muted);
++} BatoAudioCallbacksV1;
++CEF_EXPORT int bato_native_slot_register_audio_callbacks_v1(const BatoAudioCallbacksV1* callbacks);
++// Mutes or unmutes one tab by its CEF identifier. Returns 1 when the page exists. UI thread only.
++CEF_EXPORT int bato_native_slot_set_muted_v1(int browser_id, int muted);
 +
 +// Closes every window of the Profile directory `profile_key` (a 36-character UUID directory name
 +// under the user data dir) without beforeunload prompts, wipes its browsing data and removes its
@@ -6795,3 +6871,49 @@
  }
 
  bool OsSettingsProviderMac::PrefersReducedTransparency() const {
+--- a/chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.cc
++++ b/chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.cc
+@@ -4,6 +4,7 @@
+
+ #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+
++#include "base/command_line.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+@@ -20,6 +21,11 @@
+          (profile->IsOffTheRecord() &&
+           profile->GetOTRProfileID().IsCaptivePortal());
+ #else
++  // Bato has its own Profiles; the stock avatar only stays to badge a private window.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-slot") &&
++      profile->IsRegularProfile()) {
++    return false;
++  }
+   // DevTools profiles are OffTheRecord, so hide it there.
+   return profile->IsIncognitoProfile() || profile->IsGuestSession() ||
+          profile->IsEnterpriseIsolatedModeProfile() ||
+--- a/chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.cc
++++ b/chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.cc
+@@ -6,6 +6,7 @@
+
+ #include <optional>
+
++#include "base/command_line.h"
+ #include "base/i18n/rtl.h"
+ #include "base/metrics/user_metrics.h"
+ #include "base/metrics/user_metrics_action.h"
+@@ -58,6 +59,13 @@
+       browser_window_(browser_window) {
+   pref_change_registrar_.Init(pref_service_);
+
++  // Bato's private window has no native sidebar; it gets Chromium's vertical strip instead of
++  // the stock horizontal one. The overlay pref of an incognito Profile is never persisted.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("bato-native-slot") &&
++      browser_window.GetProfile()->IsIncognitoProfile()) {
++    pref_service_->SetBoolean(prefs::kVerticalTabsEnabled, true);
++  }
++
+   is_vertical_tabs_enabled_ =
+       pref_service_->GetBoolean(prefs::kVerticalTabsEnabled);
+
