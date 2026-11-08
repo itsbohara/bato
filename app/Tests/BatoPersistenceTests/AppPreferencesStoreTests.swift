@@ -13,6 +13,21 @@ struct AppPreferencesStoreTests {
         #expect(store.current().searchProvider == .duckDuckGo)
     }
 
+    @Test func searchSuggestionsDefaultOnAndPersistWhenTurnedOff() throws {
+        let dir = directory()
+        #expect(AppPreferencesStore(directory: dir).current().searchSuggestions)
+        try AppPreferencesStore(directory: dir).update { $0.searchSuggestions = false }
+        #expect(!AppPreferencesStore(directory: dir).current().searchSuggestions)
+    }
+
+    @Test func fileWithoutTheSuggestionsKeyKeepsThemOn() throws {
+        let dir = directory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let store = AppPreferencesStore(directory: dir)
+        try Data(#"{"searchProvider":"google"}"#.utf8).write(to: store.fileURL)
+        #expect(store.current().searchSuggestions)
+    }
+
     @Test func chosenProviderSurvivesANewStore() throws {
         let dir = directory()
         try AppPreferencesStore(directory: dir).update { $0.searchProvider = .brave }
