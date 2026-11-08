@@ -68,4 +68,47 @@ final class SidebarDropMapTests: XCTestCase {
     func testNoSlotsMeansNoTarget() {
         XCTAssertNil(SidebarDropMap.resolve(point: .zero, slots: [], unfiledPinCount: 0))
     }
+
+    func testFirstTileLineStaysClearOfTheSidebarEdge() {
+        guard case .line(let line)? = target(10, 20)?.indicator else { return XCTFail("expected a line") }
+        XCTAssertGreaterThanOrEqual(line.minX, 3)
+        XCTAssertEqual(line.width, SidebarDropMap.tileLineThickness)
+    }
+
+    func testEmptyFavoritesZoneTakesTheDropAsFirstEssential() {
+        let zone = SidebarDropSlot(kind: .emptyFavorites, frame: frame(0, height: 52))
+        let shifted = slots.map { SidebarDropSlot(kind: $0.kind, frame: $0.frame.offsetBy(dx: 0, dy: 60)) }
+        let target = SidebarDropMap.resolve(point: NSPoint(x: 50, y: 20), slots: [zone] + shifted, unfiledPinCount: 2)
+        XCTAssertEqual(target?.section, .favorites)
+        XCTAssertEqual(target?.index, 0)
+        XCTAssertEqual(target?.indicator, .highlight(zone.frame))
+    }
+
+    func testRowsBelowTheLineShiftAndTheLineMovesIntoTheGap() throws {
+        guard case .line(let line)? = target(50, 275)?.indicator else { return XCTFail("expected a line") }
+        let plan = SidebarDropMap.shiftPlan(line: line, slots: slots)
+        XCTAssertEqual(plan.shifted, [7, 8])
+        XCTAssertEqual(plan.line.midY, line.midY + SidebarDropMap.shiftAmount / 2)
+    }
+
+    func testTilesAndRowsAboveTheLineNeverShift() throws {
+        guard case .line(let line)? = target(50, 135)?.indicator else { return XCTFail("expected a line") }
+        let plan = SidebarDropMap.shiftPlan(line: line, slots: slots)
+        XCTAssertFalse(plan.shifted.contains { $0 <= 3 })
+        XCTAssertTrue(plan.shifted.contains(4))
+    }
+
+    func testTileLinesNeverShiftRows() throws {
+        guard case .line(let line)? = target(10, 20)?.indicator else { return XCTFail("expected a line") }
+        let plan = SidebarDropMap.shiftPlan(line: line, slots: slots)
+        XCTAssertTrue(plan.shifted.isEmpty)
+        XCTAssertEqual(plan.line, line)
+    }
+
+    func testNothingShiftsWhenDroppingAtTheEnd() throws {
+        guard case .line(let line)? = target(50, 500)?.indicator else { return XCTFail("expected a line") }
+        let plan = SidebarDropMap.shiftPlan(line: line, slots: slots)
+        XCTAssertTrue(plan.shifted.isEmpty)
+        XCTAssertEqual(plan.line, line)
+    }
 }

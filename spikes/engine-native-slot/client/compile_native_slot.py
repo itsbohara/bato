@@ -34,7 +34,7 @@ def main():
                                               'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
                                               'AppearanceWatcher.swift', 'SwitcherPopover.swift',
                                               'WorkspaceSwipe.swift', 'TabAudio.swift',
-                                              'SidebarDragDrop.swift'])]:
+                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',

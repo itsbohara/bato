@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "b8785938e590f8f8d65a504323b40fba8e6fc11587fba0ad1ee603407668f900",
+  "patch_sha256": "712eeacce5554432ad30d8b02bad3a3ee3bb782d4f34f309d012dd7bce336293",
   "files": [
     {
       "root": "cef",
@@ -14,7 +14,7 @@
       "root": "cef",
       "path": "BUILD.gn",
       "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
-      "patched_sha256": "149acc7b87d57d02a232d99f7bf7d2f86003bc4d2ace50f30a689e9e86408b2a"
+      "patched_sha256": "6d105819f2f2e5c53ca41b460c4ff13aa5ed97fa75bb10a1928ad68f54bf0639"
     },
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "7105ba6702967b76341c123cdcbfba64c56b4fe160689fc52fb696aa50e68481"
+      "patched_sha256": "8e93ab8e7a90886e284e0fab05db1cd9caaa32f4b684b959b628ed0cf77d69b2"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "1781e3d35b431eb70e9dd34c29a6510679146cd8194ff288297157dce9238061"
+      "patched_sha256": "2d7017a2b109f4d769671222f5b9b11ccbd0404c3a6bccee3ea37ed9cb0fb241"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "98d1b3dc73bd3388b4afa2eb8b8010df5d44b1416a6d419a4f3e1439aa213da5"
+      "patched_sha256": "c03063216c7b52e1583ef55c22d9b064a3128fab3aebb68cbc4fe7d7eedfd97c"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "2752ebc4feb6ddae6083c0a034bc66c5aedceb84b7d55ab6378e471e59175c81"
+      "patched_sha256": "ebec0e7e9de1b5c86cf2ec1e516ae43b740afea81c7afc611ad8ed6a9a635a54"
     },
     {
       "root": "cef",
@@ -350,7 +350,13 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift",
       "original_sha256": null,
-      "patched_sha256": "adb8e2560f524c81c8f4f49adc55d9c6b2ee0fc81957867d323eee1a2ca75650"
+      "patched_sha256": "d5853e62ac770f5c3d6a20a0729e30976456119118e4de577a2d3f26faa7535e"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift",
+      "original_sha256": null,
+      "patched_sha256": "e8ffbb1be322dc8546873b7be8843b97d8a0f58f77a273f719306c98a528020f"
     }
   ],
   "source_mirrors": {
@@ -406,6 +412,7 @@
     "app/Sources/BatoPersistence/ClosedTabsStore.swift": "tests/cefsimple/bato/BatoPersistence/ClosedTabsStore.swift",
     "app/Sources/BatoBrowserUI/WorkspaceSwipe.swift": "tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift",
     "app/Sources/BatoBrowserUI/TabAudio.swift": "tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift",
-    "app/Sources/BatoBrowserUI/SidebarDragDrop.swift": "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift"
+    "app/Sources/BatoBrowserUI/SidebarDragDrop.swift": "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift",
+    "app/Sources/BatoBrowserUI/SidebarHoverCard.swift": "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift"
   }
 }

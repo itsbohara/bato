@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,76 @@
+@@ -2313,6 +2317,77 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -307,6 +307,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -325,7 +326,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2410,19 @@
+@@ -2336,12 +2411,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2043,7 +2044,7 @@
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
-+                                              'SidebarDragDrop.swift'])]:
++                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -4479,7 +4480,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1417 @@
+@@ -0,0 +1,1427 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -5148,13 +5149,23 @@
 +        profile.color ?? workspaces.first { $0.profileID == profile.id }?.color ?? "#B47879"
 +    }
 +
++    /// The first palette colour no workspace of the Profile uses, so a new Space does not repeat a neighbour.
++    public func nextWorkspaceColor(in palette: [String], profileID: UUID) -> String {
++        let used = Set(workspaces.filter { $0.profileID == profileID }.map { $0.color.uppercased() })
++        return palette.first { !used.contains($0.uppercased()) } ?? palette.first ?? "#B47879"
++    }
++
 +    @discardableResult
-+    public mutating func addWorkspace(name: String, profileID: UUID) throws -> UUID {
++    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil) throws -> UUID {
 +        try transact { draft in
 +            guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
 +            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
 +            try Self.validateName(name)
-+            let workspace = Workspace(profileID: profileID, name: name)
++            var workspace = Workspace(profileID: profileID, name: name)
++            if let color {
++                try Self.validateColor(color)
++                workspace.color = color.uppercased()
++            }
 +            draft.workspaces.append(workspace)
 +            return workspace.id
 +        }
@@ -6406,9 +6417,9 @@
 +    }
 +
 +    @discardableResult
-+    public func addWorkspace(name: String) -> Bool {
++    public func addWorkspace(name: String, color: String? = nil) -> Bool {
 +        change { candidate in
-+            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID)
++            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID, color: color)
 +            try candidate.activateWorkspace(id)
 +        }
 +    }
@@ -7361,7 +7372,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2758 @@
+@@ -0,0 +1,2801 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7401,6 +7412,7 @@
 +    private var pageIcons: [UUID: NSImage] = [:]
 +    private var dropSlotViews: [(view: NSView, kind: SidebarDropSlot.Kind)] = []
 +    private let entryDragSource = SidebarEntryDragSource()
++    private let hoverCard = SidebarHoverCard()
 +    private var splitControls: [String: NSButton] = [:]
 +    private let peekRow = NSStackView()
 +    private let peekLabel = NSTextField(labelWithString: "")
@@ -7827,9 +7839,7 @@
 +
 +    public func switchToSpace(_ id: UUID) { switchWorkspace(id) }
 +    public func switchToAdjacentSpace(next: Bool) { swipeWorkspace(next ? .next : .previous) }
-+    public func addSpace() {
-+        perform { runtime.addWorkspace(name: "Workspace \(runtime.state.workspaces.count + 1)") }
-+    }
++    public func addSpace() { createSpace() }
 +
 +    /// Each Profile has exactly one window, so a new window can only bring that one forward.
 +    public func showWindow() {
@@ -7940,6 +7950,8 @@
 +        peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +
++        entries.slotViews = { [weak self] in self?.dropSlotViews ?? [] }
++        entryDragSource.onEnded = { [weak self] in self?.entries.setFavoritesZone(visible: false) }
 +        entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
 +        entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
 +        entries.orientation = .vertical
@@ -8098,6 +8110,7 @@
 +        pageControls.removeAll()
 +        folderControls.removeAll()
 +        dropSlotViews.removeAll()
++        hoverCard.dismiss()
 +        entries.accent = accent
 +        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
 +                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
@@ -8114,6 +8127,7 @@
 +        addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) }, includeEmpty: !workspace.folders.isEmpty)
 +        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
 +        addSection("Tabs", pages: workspace.tabs)
++        entries.restoreFavoritesZone()
 +        if let focusedControl, let controls = pageControls[focusedControl.id] {
 +            root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
 +        } else if let focusedSplit, let control = splitControls[focusedSplit] {
@@ -8395,7 +8409,7 @@
 +        (select.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
 +        select.setAccessibilityIdentifier("bato-page-\(page.id.uuidString)")
 +        select.setAccessibilityLabel(title)
-+        select.toolTip = "\(title)\n\(page.lastURL.absoluteString)"
++        select.setAccessibilityHelp(page.lastURL.absoluteString)
 +        configurePageMenu(select, page: page)
 +        let close = ActionButton(title: "") { [weak self] in
 +            guard let self else { return }
@@ -8417,8 +8431,17 @@
 +                                  selected: runtime.state.currentWorkspace.activeEntryID == page.id,
 +                                  accent: accent)
 +        pageControls[page.id] = (select, close)
++        let card = SidebarHoverCardContent(title: page.title, url: page.lastURL)
++        row.hoverChanged = { [weak self, weak row] inside in
++            guard let self, let row else { return }
++            guard inside, self.hasStarted, self.root.window?.attachedSheet == nil else { return self.hoverCard.dismiss() }
++            self.hoverCard.schedule(card, anchor: row)
++        }
 +        select.beginDrag = { [weak self, weak row] event in
 +            guard let self, let row, self.runtime.state.visibleEntries.contains(where: { $0.id == page.id }) else { return }
++            self.hoverCard.dismiss()
++            let noFavorites = self.runtime.state.profiles.first { $0.id == self.runtime.state.currentWorkspace.profileID }?.favorites.isEmpty ?? false
++            self.entries.setFavoritesZone(visible: noFavorites && self.runtime.state.canPlaceEntry(page.id, in: .favorites))
 +            self.entryDragSource.begin(entryID: page.id, row: row, event: event)
 +        }
 +        TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
@@ -8808,7 +8831,7 @@
 +            guard slot.view.window != nil else { return nil }
 +            return SidebarDropSlot(kind: slot.kind, frame: entries.convert(slot.view.bounds, from: slot.view))
 +        }
-+        guard let target = SidebarDropMap.resolve(point: point, slots: slots,
++        guard let target = SidebarDropMap.resolve(point: point, slots: (entries.favoritesZoneSlot.map { [$0] } ?? []) + slots,
 +                                                  unfiledPinCount: workspace.pins.filter { !filed.contains($0.id) }.count),
 +              runtime.state.canPlaceEntry(entryID, in: target.section) else { return nil }
 +        return target
@@ -8921,6 +8944,34 @@
 +        finder.focusSearch()
 +    }
 +
++    /// Asks for the name and colour first, so Cancel leaves organization untouched.
++    private func createSpace() {
++        guard hasStarted, workspaceEditor == nil, folderEditor == nil, profileEditor == nil, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        let state = runtime.state
++        let profileID = state.currentWorkspace.profileID
++        let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
++        requestNativeFocus?()
++        let editor = WorkspaceEditor(creating: true, name: "Workspace \(state.workspaces.count + 1)", color: color) { [weak self] name, color in
++            guard let self else { return "Bato is no longer available." }
++            guard self.runtime.state.currentWorkspace.profileID == profileID else { return "The Profile is no longer active." }
++            let before = self.runtime.state.workspaces.count
++            // An empty new Space has no page to show, so addWorkspace reports false even though it was saved.
++            _ = self.runtime.addWorkspace(name: name, color: color)
++            guard self.runtime.state.workspaces.count > before else {
++                return self.runtime.lastError == .saveFailed
++                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
++                    : "The Space couldn’t be created. Check its name and try again."
++            }
++            self.render()
++            return nil
++        }
++        workspaceEditor = editor
++        guard let sheet = editor.window else { workspaceEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] _ in self?.workspaceEditor = nil }
++        editor.focusName()
++    }
++
 +    private func editWorkspace() {
 +        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
 +              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -8985,8 +9036,7 @@
 +        }
 +        entries.append(.separator)
 +        entries.append(switcherAction("New Workspace", symbol: "plus", id: "new-workspace") { [weak self] in
-+            guard let self else { return }
-+            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
++            self?.createSpace()
 +        })
 +        entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
 +            self?.editProfile(creating: true)
@@ -9177,6 +9227,7 @@
 +    private let accent: NSColor
 +    private let tile: Bool
 +    private var hovered = false { didSet { close.alphaValue = hovered ? 1 : 0 } }
++    var hoverChanged: ((Bool) -> Void)?
 +    private let close: NSButton
 +    private var tracking: NSTrackingArea?
 +    init(select: NSButton, close: NSButton, tile: Bool, selected: Bool, accent: NSColor) {
@@ -9223,8 +9274,8 @@
 +        addTrackingArea(area)
 +        tracking = area
 +    }
-+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
++    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true; hoverChanged?(true) }
++    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true; hoverChanged?(false) }
 +    override func otherMouseUp(with event: NSEvent) {
 +        guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
 +            return super.otherMouseUp(with: event)
@@ -9520,11 +9571,11 @@
 +    private let save: (String, String) -> String?
 +    private var colors: [String] = []
 +
-+    init(name: String, color: String, save: @escaping (String, String) -> String?) {
++    init(creating: Bool = false, name: String, color: String, save: @escaping (String, String) -> String?) {
 +        self.save = save
 +        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
 +                              styleMask: [.titled], backing: .buffered, defer: false)
-+        window.title = "Edit workspace"
++        window.title = creating ? "New Space" : "Edit workspace"
 +        window.isReleasedWhenClosed = false
 +        super.init(window: window)
 +        nameField.stringValue = name
@@ -9535,6 +9586,7 @@
 +        colorPicker.setAccessibilityIdentifier("bato-workspace-color")
 +        for (title, value) in sidebarColorPalette {
 +            colorPicker.addItem(withTitle: title)
++            colorPicker.lastItem?.image = colorDot(workspaceColor(value))
 +            colors.append(value)
 +        }
 +        if let index = colors.firstIndex(where: { $0.caseInsensitiveCompare(color) == .orderedSame }) {
@@ -9552,7 +9604,7 @@
 +        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
 +        cancel.keyEquivalent = "\u{1b}"
 +        cancel.setAccessibilityIdentifier("bato-workspace-edit-cancel")
-+        let apply = ActionButton(title: "Save") { [weak self] in self?.saveDraft() }
++        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
 +        apply.keyEquivalent = "\r"
 +        apply.setAccessibilityIdentifier("bato-workspace-edit-save")
 +        window.defaultButtonCell = apply.cell as? NSButtonCell
@@ -9574,11 +9626,13 @@
 +                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
 +                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
 +                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
++                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
 +                nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
 +            ])
++            SidebarStyle.fitSheet(window, to: stack)
 +        }
 +    }
 +
@@ -16472,7 +16526,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,350 @@
 +import AppKit
 +import BatoCore
 +
@@ -16487,6 +16541,7 @@
 +        case row(section: BrowserState.SidebarSection, index: Int)
 +        case folder(id: UUID, pinCount: Int)
 +        case newTabRow
++        case emptyFavorites
 +    }
 +    var kind: Kind
 +    var frame: NSRect
@@ -16505,9 +16560,30 @@
 +/// Pure hit-testing from a pointer to a placement, so every move kind is covered without AppKit drags.
 +enum SidebarDropMap {
 +    static let lineThickness: CGFloat = 2
++    static let tileLineThickness: CGFloat = 3
 +    private static let rowGap: CGFloat = 2.5
 +
++    static let shiftAmount: CGFloat = 10
++
++    /// Rows below an insertion line move down to open a gap; the line is recentred in that gap.
++    static func shiftPlan(line: NSRect, slots: [SidebarDropSlot], amount: CGFloat = shiftAmount) -> (shifted: [Int], line: NSRect) {
++        guard line.width > line.height else { return ([], line) }
++        let shifted = slots.indices.filter { index in
++            switch slots[index].kind {
++            case .row, .folder, .newTabRow: return slots[index].frame.midY > line.midY
++            case .tile, .emptyFavorites: return false
++            }
++        }
++        guard !shifted.isEmpty else { return ([], line) }
++        return (shifted, line.offsetBy(dx: 0, dy: amount / 2))
++    }
++
 +    static func resolve(point: NSPoint, slots: [SidebarDropSlot], unfiledPinCount: Int) -> SidebarDropTarget? {
++        for slot in slots {
++            if case .emptyFavorites = slot.kind, slot.frame.contains(point) {
++                return SidebarDropTarget(section: .favorites, index: 0, indicator: .highlight(slot.frame))
++            }
++        }
 +        for slot in slots {
 +            if case .folder(let id, let count) = slot.kind, slot.frame.contains(point) {
 +                return SidebarDropTarget(section: .pinned(folder: id), index: count, indicator: .highlight(slot.frame))
@@ -16520,7 +16596,7 @@
 +        let candidates = slots.filter {
 +            switch $0.kind {
 +            case .row, .newTabRow: return true
-+            case .tile, .folder: return false
++            case .tile, .folder, .emptyFavorites: return false
 +            }
 +        }
 +        guard let nearest = candidates.min(by: { distance(point.y, $0.frame) < distance(point.y, $1.frame) }) else { return nil }
@@ -16536,7 +16612,7 @@
 +                                         indicator: .line(horizontalLine(at: frame.minY, in: frame)))
 +            }
 +            return SidebarDropTarget(section: .tabs, index: 0, indicator: .line(horizontalLine(at: frame.maxY, in: frame)))
-+        case .tile, .folder:
++        case .tile, .folder, .emptyFavorites:
 +            return nil
 +        }
 +    }
@@ -16562,8 +16638,9 @@
 +        return NSRect(x: frame.minX + 6, y: centre - lineThickness / 2, width: frame.width - 12, height: lineThickness)
 +    }
 +
++    /// Kept clear of the sidebar's leading edge, where the first slot's line would otherwise be clipped.
 +    private static func verticalLine(at x: CGFloat, in frame: NSRect) -> NSRect {
-+        NSRect(x: x - lineThickness / 2, y: frame.minY + 4, width: lineThickness, height: frame.height - 8)
++        NSRect(x: max(x - tileLineThickness / 2, 3), y: frame.minY + 2, width: tileLineThickness, height: frame.height - 4)
 +    }
 +}
 +
@@ -16576,11 +16653,46 @@
 +    // instead of being bottom-aligned above the workspace footer.
 +    override var isFlipped: Bool { true }
 +
++    var slotViews: (() -> [(view: NSView, kind: SidebarDropSlot.Kind)])?
 +    var resolveDrop: ((UUID, NSPoint) -> SidebarDropTarget?)?
 +    var performDrop: ((UUID, SidebarDropTarget) -> Bool)?
 +    var accent: NSColor = .controlAccentColor
 +    private let indicator = NSView()
 +    private var pending: SidebarDropTarget?
++    private var shiftedViews: [NSView] = []
++    private var favoritesZone: FavoritesDropZone?
++    private var wantsFavoritesZone = false
++
++    /// The empty-Favorites drop area as a slot, so hit testing treats it like any other sidebar view.
++    var favoritesZoneSlot: SidebarDropSlot? {
++        guard let zone = favoritesZone, zone.window != nil else { return nil }
++        return SidebarDropSlot(kind: .emptyFavorites, frame: convert(zone.bounds, from: zone))
++    }
++
++    /// With no Essentials there is no tile to drop next to, so a dashed area is offered at the top.
++    func setFavoritesZone(visible: Bool) {
++        wantsFavoritesZone = visible
++        if visible {
++            guard favoritesZone?.superview !== self else { return }
++            let zone = favoritesZone ?? FavoritesDropZone()
++            favoritesZone = zone
++            zone.alphaValue = 0
++            insertArrangedSubview(zone, at: 0)
++            zone.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
++            NSAnimationContext.runAnimationGroup { $0.duration = 0.15; zone.animator().alphaValue = 1 }
++        } else if let zone = favoritesZone {
++            removeArrangedSubview(zone)
++            zone.removeFromSuperview()
++            favoritesZone = nil
++        }
++    }
++
++    /// `render()` empties the stack, which would drop the zone out from under a drag still in flight.
++    func restoreFavoritesZone() {
++        guard wantsFavoritesZone else { return }
++        favoritesZone = nil
++        setFavoritesZone(visible: true)
++    }
 +
 +    override init(frame frameRect: NSRect) {
 +        super.init(frame: frameRect)
@@ -16604,16 +16716,54 @@
 +        }
 +        pending = target
 +        show(target.indicator)
++        favoritesZone?.isTargeted = target.section == .favorites
 +        return .move
++    }
++
++    private func applyShift(for shape: SidebarDropTarget.Indicator) -> SidebarDropTarget.Indicator {
++        guard case .line(let line) = shape, let views = slotViews?() else {
++            setShifted([])
++            return shape
++        }
++        let slots = views.map { SidebarDropSlot(kind: $0.kind, frame: convert($0.view.bounds, from: $0.view)) }
++        let plan = SidebarDropMap.shiftPlan(line: line, slots: slots)
++        setShifted(plan.shifted.map { views[$0].view })
++        return .line(plan.line)
++    }
++
++    private func setShifted(_ views: [NSView]) {
++        let amount = SidebarDropMap.shiftAmount
++        let wanted = Set(views.map(ObjectIdentifier.init))
++        for view in shiftedViews where !wanted.contains(ObjectIdentifier(view)) { move(view, by: 0) }
++        let current = Set(shiftedViews.map(ObjectIdentifier.init))
++        for view in views where !current.contains(ObjectIdentifier(view)) { move(view, by: amount) }
++        shiftedViews = views
++    }
++
++    private func move(_ view: NSView, by offset: CGFloat) {
++        view.wantsLayer = true
++        guard let layer = view.layer else { return }
++        let from = layer.presentation()?.transform ?? layer.transform
++        // Rows inside a folder sit in a non-flipped stack, where positive y moves up.
++        let downward: CGFloat = view.superview?.isFlipped == false ? -1 : 1
++        let to = CATransform3DMakeTranslation(0, offset * downward, 0)
++        layer.transform = to
++        let animation = CABasicAnimation(keyPath: "transform")
++        animation.fromValue = from
++        animation.toValue = to
++        animation.duration = 0.15
++        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
++        layer.add(animation, forKey: "bato-shift")
 +    }
 +
 +    private func show(_ shape: SidebarDropTarget.Indicator) {
 +        if indicator.superview !== self { addSubview(indicator, positioned: .above, relativeTo: nil) }
 +        let color = SidebarStyle.vivid(accent)
++        let shape = applyShift(for: shape)
 +        switch shape {
 +        case .line(let frame):
 +            indicator.frame = frame
-+            indicator.layer?.cornerRadius = SidebarDropMap.lineThickness / 2
++            indicator.layer?.cornerRadius = min(frame.width, frame.height) / 2
 +            indicator.layer?.backgroundColor = color.cgColor
 +            indicator.layer?.borderWidth = 0
 +        case .highlight(let frame):
@@ -16629,6 +16779,8 @@
 +    private func clear() {
 +        pending = nil
 +        indicator.isHidden = true
++        setShifted([])
++        favoritesZone?.isTargeted = false
 +    }
 +
 +    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
@@ -16643,6 +16795,38 @@
 +    }
 +}
 +
++/// A dashed rounded target shown at the top of the sidebar while a tab is dragged and there are no Essentials.
++@MainActor
++final class FavoritesDropZone: AdaptiveSidebarView {
++    var isTargeted = false { didSet { if isTargeted != oldValue { needsDisplay = true } } }
++    private let label = NSTextField(labelWithString: "Drop to add to Favorites")
++
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        label.font = .systemFont(ofSize: 12, weight: .medium)
++        label.textColor = .secondaryLabelColor
++        label.alignment = .center
++        label.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(label)
++        NSLayoutConstraint.activate([
++            heightAnchor.constraint(equalToConstant: 52),
++            label.centerXAnchor.constraint(equalTo: centerXAnchor),
++            label.centerYAnchor.constraint(equalTo: centerYAnchor)
++        ])
++        setAccessibilityIdentifier("bato-favorites-drop-zone")
++        setAccessibilityLabel("Drop to add to Favorites")
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
++        path.lineWidth = 1.5
++        path.setLineDash([5, 4], count: 2, phase: 0)
++        NSColor.secondaryLabelColor.withAlphaComponent(isTargeted ? 0.9 : 0.5).setStroke()
++        path.stroke()
++    }
++}
++
 +/// Owns drag sessions for sidebar rows; it holds no state so a re-render mid-drag cannot orphan it.
 +@MainActor
 +final class SidebarEntryDragSource: NSObject, NSDraggingSource {
@@ -16652,9 +16836,12 @@
 +        context == .withinApplication ? .move : []
 +    }
 +
++    var onEnded: (() -> Void)?
++
 +    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
 +        draggedRow?.alphaValue = 1
 +        draggedRow = nil
++        onEnded?()
 +    }
 +
 +    func begin(entryID: UUID, row: NSView, event: NSEvent) {
@@ -16688,5 +16875,116 @@
 +        snapshot?.draw(in: body)
 +        image.unlockFocus()
 +        return image
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift
+@@ -0,0 +1,108 @@
++import AppKit
++
++/// What the card for a sidebar row says: the page title and where it lives.
++struct SidebarHoverCardContent: Equatable {
++    var title: String
++    var host: String
++
++    init(title: String, url: URL) {
++        let host = (url.host ?? url.absoluteString).replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression)
++        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
++        self.title = trimmed.isEmpty ? host : trimmed
++        self.host = host
++    }
++}
++
++/// A small card beside a hovered sidebar row. It is a non-activating, click-through panel so it can never
++/// take focus from the page or catch a click meant for the row.
++@MainActor
++final class SidebarHoverCard {
++    static let delay: TimeInterval = 0.6
++    private var timer: Timer?
++    private var panel: NSPanel?
++    private var monitor: Any?
++    /// Where the pointer was when a click, scroll or key dismissed the card. The row is rebuilt under a
++    /// stationary pointer and would otherwise raise the card again straight away.
++    private var suppressedAt: NSPoint?
++
++    func schedule(_ content: SidebarHoverCardContent, anchor: NSView) {
++        dismiss()
++        if let suppressedAt, hypot(NSEvent.mouseLocation.x - suppressedAt.x, NSEvent.mouseLocation.y - suppressedAt.y) < 2 { return }
++        suppressedAt = nil
++        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .keyDown]) { [weak self] event in
++            MainActor.assumeIsolated {
++                self?.suppressedAt = NSEvent.mouseLocation
++                self?.dismiss()
++            }
++            return event
++        }
++        timer = Timer.scheduledTimer(withTimeInterval: Self.delay, repeats: false) { [weak self, weak anchor] _ in
++            MainActor.assumeIsolated {
++                guard let self, let anchor else { return }
++                self.show(content, anchor: anchor)
++            }
++        }
++    }
++
++    func dismiss() {
++        timer?.invalidate()
++        timer = nil
++        if let monitor { NSEvent.removeMonitor(monitor) }
++        monitor = nil
++        if let panel, let parent = panel.parent { parent.removeChildWindow(panel) }
++        panel?.orderOut(nil)
++        panel = nil
++    }
++
++    private static func width(of text: String, font: NSFont?) -> CGFloat {
++        ceil((text as NSString).size(withAttributes: [.font: font ?? .systemFont(ofSize: 12)]).width) + 2
++    }
++
++    private func show(_ content: SidebarHoverCardContent, anchor: NSView) {
++        guard let window = anchor.window, window.isKeyWindow, window.attachedSheet == nil else { return dismiss() }
++        let title = NSTextField(wrappingLabelWithString: content.title)
++        title.font = .systemFont(ofSize: 12, weight: .semibold)
++        title.maximumNumberOfLines = 2
++        title.lineBreakMode = .byTruncatingTail
++        let host = NSTextField(labelWithString: content.host)
++        host.font = .systemFont(ofSize: 11)
++        host.textColor = .secondaryLabelColor
++        host.lineBreakMode = .byTruncatingTail
++        let stack = NSStackView(views: [title, host])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 2
++        stack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        let effect = NSVisualEffectView()
++        effect.material = .popover
++        effect.state = .active
++        effect.wantsLayer = true
++        effect.layer?.cornerRadius = 8
++        effect.layer?.masksToBounds = true
++        effect.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
++            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
++            stack.topAnchor.constraint(equalTo: effect.topAnchor),
++            stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
++        ])
++        let textWidth = max(Self.width(of: content.title, font: title.font), Self.width(of: content.host, font: host.font))
++        let width = min(textWidth, 240) + 20
++        title.preferredMaxLayoutWidth = width - 20
++        let size = NSSize(width: width, height: stack.fittingSize.height)
++        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
++                            backing: .buffered, defer: false)
++        panel.contentView = effect
++        panel.isOpaque = false
++        panel.backgroundColor = .clear
++        panel.hasShadow = true
++        panel.ignoresMouseEvents = true
++        panel.isReleasedWhenClosed = false
++        panel.setAccessibilityElement(false)
++        let rowInScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
++        panel.setFrameOrigin(NSPoint(x: rowInScreen.maxX + 8, y: rowInScreen.midY - size.height / 2))
++        window.addChildWindow(panel, ordered: .above)
++        self.panel = panel
 +    }
 +}

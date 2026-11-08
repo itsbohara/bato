@@ -37,6 +37,7 @@ public final class NativeWorkspaceController: NSObject {
     private var pageIcons: [UUID: NSImage] = [:]
     private var dropSlotViews: [(view: NSView, kind: SidebarDropSlot.Kind)] = []
     private let entryDragSource = SidebarEntryDragSource()
+    private let hoverCard = SidebarHoverCard()
     private var splitControls: [String: NSButton] = [:]
     private let peekRow = NSStackView()
     private let peekLabel = NSTextField(labelWithString: "")
@@ -463,9 +464,7 @@ public final class NativeWorkspaceController: NSObject {
 
     public func switchToSpace(_ id: UUID) { switchWorkspace(id) }
     public func switchToAdjacentSpace(next: Bool) { swipeWorkspace(next ? .next : .previous) }
-    public func addSpace() {
-        perform { runtime.addWorkspace(name: "Workspace \(runtime.state.workspaces.count + 1)") }
-    }
+    public func addSpace() { createSpace() }
 
     /// Each Profile has exactly one window, so a new window can only bring that one forward.
     public func showWindow() {
@@ -576,6 +575,8 @@ public final class NativeWorkspaceController: NSObject {
         peekLabel.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 
+        entries.slotViews = { [weak self] in self?.dropSlotViews ?? [] }
+        entryDragSource.onEnded = { [weak self] in self?.entries.setFavoritesZone(visible: false) }
         entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
         entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
         entries.orientation = .vertical
@@ -734,6 +735,7 @@ public final class NativeWorkspaceController: NSObject {
         pageControls.removeAll()
         folderControls.removeAll()
         dropSlotViews.removeAll()
+        hoverCard.dismiss()
         entries.accent = accent
         let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
                               state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
@@ -750,6 +752,7 @@ public final class NativeWorkspaceController: NSObject {
         addSection("Pinned", pages: workspace.pins.filter { !filedIDs.contains($0.id) }, includeEmpty: !workspace.folders.isEmpty)
         for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace) }
         addSection("Tabs", pages: workspace.tabs)
+        entries.restoreFavoritesZone()
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
         } else if let focusedSplit, let control = splitControls[focusedSplit] {
@@ -1031,7 +1034,7 @@ public final class NativeWorkspaceController: NSObject {
         (select.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
         select.setAccessibilityIdentifier("bato-page-\(page.id.uuidString)")
         select.setAccessibilityLabel(title)
-        select.toolTip = "\(title)\n\(page.lastURL.absoluteString)"
+        select.setAccessibilityHelp(page.lastURL.absoluteString)
         configurePageMenu(select, page: page)
         let close = ActionButton(title: "") { [weak self] in
             guard let self else { return }
@@ -1053,8 +1056,17 @@ public final class NativeWorkspaceController: NSObject {
                                   selected: runtime.state.currentWorkspace.activeEntryID == page.id,
                                   accent: accent)
         pageControls[page.id] = (select, close)
+        let card = SidebarHoverCardContent(title: page.title, url: page.lastURL)
+        row.hoverChanged = { [weak self, weak row] inside in
+            guard let self, let row else { return }
+            guard inside, self.hasStarted, self.root.window?.attachedSheet == nil else { return self.hoverCard.dismiss() }
+            self.hoverCard.schedule(card, anchor: row)
+        }
         select.beginDrag = { [weak self, weak row] event in
             guard let self, let row, self.runtime.state.visibleEntries.contains(where: { $0.id == page.id }) else { return }
+            self.hoverCard.dismiss()
+            let noFavorites = self.runtime.state.profiles.first { $0.id == self.runtime.state.currentWorkspace.profileID }?.favorites.isEmpty ?? false
+            self.entries.setFavoritesZone(visible: noFavorites && self.runtime.state.canPlaceEntry(page.id, in: .favorites))
             self.entryDragSource.begin(entryID: page.id, row: row, event: event)
         }
         TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
@@ -1444,7 +1456,7 @@ public final class NativeWorkspaceController: NSObject {
             guard slot.view.window != nil else { return nil }
             return SidebarDropSlot(kind: slot.kind, frame: entries.convert(slot.view.bounds, from: slot.view))
         }
-        guard let target = SidebarDropMap.resolve(point: point, slots: slots,
+        guard let target = SidebarDropMap.resolve(point: point, slots: (entries.favoritesZoneSlot.map { [$0] } ?? []) + slots,
                                                   unfiledPinCount: workspace.pins.filter { !filed.contains($0.id) }.count),
               runtime.state.canPlaceEntry(entryID, in: target.section) else { return nil }
         return target
@@ -1557,6 +1569,34 @@ public final class NativeWorkspaceController: NSObject {
         finder.focusSearch()
     }
 
+    /// Asks for the name and colour first, so Cancel leaves organization untouched.
+    private func createSpace() {
+        guard hasStarted, workspaceEditor == nil, folderEditor == nil, profileEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let state = runtime.state
+        let profileID = state.currentWorkspace.profileID
+        let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
+        requestNativeFocus?()
+        let editor = WorkspaceEditor(creating: true, name: "Workspace \(state.workspaces.count + 1)", color: color) { [weak self] name, color in
+            guard let self else { return "Bato is no longer available." }
+            guard self.runtime.state.currentWorkspace.profileID == profileID else { return "The Profile is no longer active." }
+            let before = self.runtime.state.workspaces.count
+            // An empty new Space has no page to show, so addWorkspace reports false even though it was saved.
+            _ = self.runtime.addWorkspace(name: name, color: color)
+            guard self.runtime.state.workspaces.count > before else {
+                return self.runtime.lastError == .saveFailed
+                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
+                    : "The Space couldn’t be created. Check its name and try again."
+            }
+            self.render()
+            return nil
+        }
+        workspaceEditor = editor
+        guard let sheet = editor.window else { workspaceEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] _ in self?.workspaceEditor = nil }
+        editor.focusName()
+    }
+
     private func editWorkspace() {
         guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -1621,8 +1661,7 @@ public final class NativeWorkspaceController: NSObject {
         }
         entries.append(.separator)
         entries.append(switcherAction("New Workspace", symbol: "plus", id: "new-workspace") { [weak self] in
-            guard let self else { return }
-            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
+            self?.createSpace()
         })
         entries.append(switcherAction("New Profile…", symbol: "person.crop.circle.badge.plus", id: "new-profile") { [weak self] in
             self?.editProfile(creating: true)
@@ -1813,6 +1852,7 @@ private final class SidebarPageView: AdaptiveSidebarView {
     private let accent: NSColor
     private let tile: Bool
     private var hovered = false { didSet { close.alphaValue = hovered ? 1 : 0 } }
+    var hoverChanged: ((Bool) -> Void)?
     private let close: NSButton
     private var tracking: NSTrackingArea?
     init(select: NSButton, close: NSButton, tile: Bool, selected: Bool, accent: NSColor) {
@@ -1859,8 +1899,8 @@ private final class SidebarPageView: AdaptiveSidebarView {
         addTrackingArea(area)
         tracking = area
     }
-    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true; hoverChanged?(true) }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true; hoverChanged?(false) }
     override func otherMouseUp(with event: NSEvent) {
         guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
             return super.otherMouseUp(with: event)
@@ -2156,11 +2196,11 @@ private final class WorkspaceEditor: NSWindowController {
     private let save: (String, String) -> String?
     private var colors: [String] = []
 
-    init(name: String, color: String, save: @escaping (String, String) -> String?) {
+    init(creating: Bool = false, name: String, color: String, save: @escaping (String, String) -> String?) {
         self.save = save
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
-        window.title = "Edit workspace"
+        window.title = creating ? "New Space" : "Edit workspace"
         window.isReleasedWhenClosed = false
         super.init(window: window)
         nameField.stringValue = name
@@ -2171,6 +2211,7 @@ private final class WorkspaceEditor: NSWindowController {
         colorPicker.setAccessibilityIdentifier("bato-workspace-color")
         for (title, value) in sidebarColorPalette {
             colorPicker.addItem(withTitle: title)
+            colorPicker.lastItem?.image = colorDot(workspaceColor(value))
             colors.append(value)
         }
         if let index = colors.firstIndex(where: { $0.caseInsensitiveCompare(color) == .orderedSame }) {
@@ -2188,7 +2229,7 @@ private final class WorkspaceEditor: NSWindowController {
         let cancel = ActionButton(title: "Cancel") { [weak self] in self?.dismiss(.cancel) }
         cancel.keyEquivalent = "\u{1b}"
         cancel.setAccessibilityIdentifier("bato-workspace-edit-cancel")
-        let apply = ActionButton(title: "Save") { [weak self] in self?.saveDraft() }
+        let apply = ActionButton(title: creating ? "Create" : "Save") { [weak self] in self?.saveDraft() }
         apply.keyEquivalent = "\r"
         apply.setAccessibilityIdentifier("bato-workspace-edit-save")
         window.defaultButtonCell = apply.cell as? NSButtonCell
@@ -2210,11 +2251,13 @@ private final class WorkspaceEditor: NSWindowController {
                 stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
                 stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
                 stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
                 nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 colorPicker.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
             ])
+            SidebarStyle.fitSheet(window, to: stack)
         }
     }
 
