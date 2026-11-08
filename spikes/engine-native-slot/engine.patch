@@ -2151,7 +2151,7 @@
  #include "ui/gfx/geometry/outsets.h"
  #include "ui/gfx/geometry/rect.h"
  #include "ui/gfx/geometry/rounded_corners_f.h"
-@@ -52,7 +53,41 @@
+@@ -52,7 +53,43 @@
  #include "ui/views/layout/proposed_layout.h"
  #include "ui/views/view_class_properties.h"
 
@@ -2163,6 +2163,8 @@
 +// Height of each pane's native toolbar row; must equal SplitPaneChrome.toolbarHeight
 +// (BatoCore/SplitPaneChrome.swift).
 +constexpr int kNativePaneToolbarHeight = 40;
++// Space between the two panes; must equal SplitPaneChrome.paneGap.
++constexpr int kNativePaneGap = 10;
 +}  // namespace
 +
 +namespace {
@@ -2193,7 +2195,7 @@
  constexpr int kSnapDistance = 15;
  }
 
-@@ -135,6 +170,14 @@
+@@ -135,6 +172,14 @@
    lens_overlay_view->SetLayoutManager(std::make_unique<views::FillLayout>());
    lens_overlay_view_ = AddChildView(std::move(lens_overlay_view));
 
@@ -2208,7 +2210,7 @@
    for (auto& contents_container_view : contents_container_views_) {
      auto& view_map = container_focusable_map_[contents_container_view];
 
-@@ -192,6 +235,7 @@
+@@ -192,6 +237,7 @@
    }
    drop_target_view_ = nullptr;
    lens_overlay_view_ = nullptr;
@@ -2216,7 +2218,7 @@
    resize_area_ = nullptr;
    contents_separators_.Reset();
    background_view_ = nullptr;
-@@ -227,7 +271,9 @@
+@@ -227,7 +273,9 @@
 
    background_view_->SetRoundedCorners(radii);
 
@@ -2227,7 +2229,7 @@
      GetActiveContentsContainerView()->SetRoundedCorners(radii);
      GetInactiveContentsContainerView()->SetRoundedCorners(
          gfx::RoundedCornersF());
-@@ -277,6 +323,99 @@
+@@ -277,6 +325,99 @@
            &tabs::TabInterface::MaybeGetFromContents))
        .Then(&SadTabHelper::From)
        .Then(&SadTabHelper::ReinstallInWebView);
@@ -2327,7 +2329,7 @@
  }
 
  void MultiContentsView::ShowSplitView(
-@@ -494,6 +633,15 @@
+@@ -494,6 +635,15 @@
    }
  }
 
@@ -2343,7 +2345,7 @@
  // TODO(crbug.com/397777917): Consider using FlexSpecification weights and
  // interior margins instead of a custom layout once this bug is resolved.
  views::ProposedLayout MultiContentsView::CalculateProposedLayout(
-@@ -507,8 +655,8 @@
+@@ -507,8 +657,8 @@
 
    gfx::Rect available_space = gfx::Rect(width, height);
 
@@ -2354,7 +2356,7 @@
    layouts.child_layouts.emplace_back(background_view_.get(), show_background,
                                       available_space);
 
-@@ -520,7 +668,26 @@
+@@ -520,7 +670,26 @@
    available_space =
        CalculateSeparatorLayouts(available_space, layouts.child_layouts);
 
@@ -2382,7 +2384,7 @@
      available_space.Inset(split_view_insets_);
    }
    ViewSizes sizes = GetViewSizes(available_space);
-@@ -542,6 +709,11 @@
+@@ -542,6 +711,11 @@
                           gfx::Size(available_space.width(), sizes.end));
    }
 
@@ -2394,7 +2396,7 @@
    layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
                                       contents_container_views_[0]->GetVisible(),
                                       start_rect);
-@@ -558,7 +730,37 @@
+@@ -558,7 +732,37 @@
    return layouts;
  }
 
@@ -2432,7 +2434,18 @@
    if (!target_content_bounds_) {
      for (auto& contents : contents_container_views_) {
        contents->SetTargetContentBounds(std::nullopt);
-@@ -799,12 +1001,22 @@
+@@ -741,7 +945,9 @@
+   if (IsInSplitView()) {
+     CHECK(contents_container_views_[0]->GetVisible() &&
+           contents_container_views_[1]->GetVisible());
+-    sizes.resize = GetSplitLayout() == split_tabs::SplitTabLayout::kSideBySide
++    sizes.resize = HasNativePaneToolbars()
++                       ? kNativePaneGap
++                   : GetSplitLayout() == split_tabs::SplitTabLayout::kSideBySide
+                        ? resize_area_->GetPreferredSize().width()
+                        : resize_area_->GetPreferredSize().height();
+     sizes.start = std::round(visual_data_.split_ratio() *
+@@ -799,12 +1005,22 @@
    for (auto& contents_container_view : contents_container_views_) {
      const bool is_active =
          contents_container_view->contents_view() == GetActiveContentsView();

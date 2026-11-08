@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "b7ae4b589fca9ce8635694c34ddc5e9a702425e5c7cf7e9bd7525c93e8b7138a",
+  "patch_sha256": "85dbf8a91be5929ef7ef55ade9e066a08f61d8916c21bb13110219e62da16562",
   "files": [
     {
       "root": "cef",
@@ -80,7 +80,7 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/multi_contents_view.cc",
       "original_sha256": "ff8865424bd11f2705c0dff3b247e6facd98aad40ac1f25407960b2e1a6f727b",
-      "patched_sha256": "b07d55b26fd9b2cfcd8cea843e09c57496023539943e251466ae65aece466f68"
+      "patched_sha256": "dee74a30b132588740cca89588809cf93a9ffcd212c97d644f869606b986043e"
     },
     {
       "root": "cef",
