@@ -37,6 +37,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 @MainActor private var deleteProfileData: DeleteProfileData?
 @MainActor private var downloadSnapshot: DownloadSnapshot?
 @MainActor private var downloadAct: DownloadAct?
+@MainActor private var setPageMuted: (@convention(c) (Int32, Int32) -> Int32)?
 @MainActor private var nativeDownloads: NativeDownloadsEngine?
 @MainActor private var downloadsController: DownloadsController?
 @MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
@@ -257,11 +258,13 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         case 2:
             pages.removeValue(forKey: id)
             transient.removeValue(forKey: id)
+            TabAudioCenter.shared.update(entryID: page.entryID, audible: false, muted: false)
             onEvent?(.closed(page))
         case 3: onEvent?(.closeCancelled(page))
         case 4:
             pages.removeValue(forKey: id)
             transient.removeValue(forKey: id)
+            TabAudioCenter.shared.update(entryID: page.entryID, audible: false, muted: false)
             onEvent?(.unloaded(page))
         default: break
         }
@@ -773,6 +776,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     if command == 7 { controller.showSettings() }
     if command == 8 { controller.reopenClosedTab() }
     if (40..<60).contains(command) { controller.reopenClosedTab(at: Int(command) - 40) }
+    if command == 35 { controller.showWindow() }
     if command == 31 { controller.duplicateSelection() }
     if command == 32 { controller.togglePinSelection() }
     if command == 33 { controller.closeOtherTemporaryTabs() }
@@ -793,6 +797,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 
 
 /// Chromium builds its menu titles from its own product name ("Quit Chromium"); the app is Bato.
+/// Menus for features Bato replaces (Bookmarks, Chromium Profiles, vertical tabs) are hidden or removed.
 /// Titles are rewritten when the shortcuts install and again whenever a menu opens, because
 /// Chromium refreshes some items as menus open.
 @MainActor private enum MenuBranding {
@@ -806,10 +811,17 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         }
     }
 
-    private static func apply(to menu: NSMenu?) {
+    /// Chromium re-shows a hidden item as its menu opens, so unwanted items are removed instead.
+    private static func apply(to menu: NSMenu?, topLevel: Bool = true) {
         for item in menu?.items ?? [] {
             if item.title.contains("Chromium") { item.title = item.title.replacingOccurrences(of: "Chromium", with: "Bato") }
-            apply(to: item.submenu)
+            if topLevel, ChromiumMenuPolicy.hidesMenu(titled: item.title) {
+                item.isHidden = true
+            } else if !topLevel, ChromiumMenuPolicy.hidesItem(titled: item.title) {
+                menu?.removeItem(item)
+                continue
+            }
+            apply(to: item.submenu, topLevel: false)
         }
     }
 }
@@ -873,6 +885,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     private var sidebarMenuItem: NSMenuItem?
     private var peekMenuItem: NSMenuItem?
     private var pageMenuItem: NSMenuItem?
+    private var spacesMenuItem: NSMenuItem?
+    private var copyURLItems: [NSMenuItem] = []
     init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
          dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
          editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool,
@@ -891,6 +905,51 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     @objc private func toggleFromMenu() { _ = toggle() }
     @objc private func promotePeekFromMenu() { _ = promotePeek() }
     @objc private func copyLinkFromMenu() { _ = copyLink() }
+    @objc private func copyMarkdownFromMenu() { _ = workspaceHost.controller?.copyCurrentLink(as: .markdown) }
+    @objc private func spaceFromMenu(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? UUID { workspaceHost.controller?.switchToSpace(id) }
+    }
+    @objc private func nextSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: true) }
+    @objc private func previousSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: false) }
+    @objc private func newSpaceFromMenu() { workspaceHost.controller?.addSpace() }
+
+    /// Menu key equivalents reach Bato where the sidebar view's performKeyEquivalent does not
+    /// while Chromium owns focus, so Control-1…9 live here. Rebuilt on every workspace change.
+    private func refreshSpaces() {
+        guard let menu = spacesMenuItem?.submenu, let controller = workspaceHost.controller else { return }
+        menu.removeAllItems()
+        for entry in controller.spaceMenuEntries {
+            let item = NSMenuItem(title: entry.title, action: #selector(spaceFromMenu(_:)),
+                                  keyEquivalent: entry.shortcut.map(String.init) ?? "")
+            item.keyEquivalentModifierMask = entry.shortcut == nil ? [] : .control
+            item.target = self
+            item.representedObject = entry.id
+            item.state = entry.isActive ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let next = NSMenuItem(title: "Next Space", action: #selector(nextSpaceFromMenu),
+                              keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
+        let previous = NSMenuItem(title: "Previous Space", action: #selector(previousSpaceFromMenu),
+                                  keyEquivalent: String(UnicodeScalar(NSLeftArrowFunctionKey)!))
+        for item in [next, previous] { item.keyEquivalentModifierMask = [.command, .control] }
+        let create = NSMenuItem(title: "New Space", action: #selector(newSpaceFromMenu), keyEquivalent: "")
+        for item in [next, previous, create] { item.target = self; menu.addItem(item) }
+    }
+
+    /// Edit > Copy URL carries Shift-Cmd-C: Chromium's Inspect chord is claimed before it reaches the Developer menu.
+    private func installCopyURLItems(in mainMenu: NSMenu) {
+        guard copyURLItems.isEmpty,
+              let edit = mainMenu.items.first(where: { $0.title == "Edit" })?.submenu else { return }
+        let copy = NSMenuItem(title: "Copy URL", action: #selector(copyLinkFromMenu), keyEquivalent: "c")
+        copy.keyEquivalentModifierMask = [.command, .shift]
+        let markdown = NSMenuItem(title: "Copy URL as Markdown", action: #selector(copyMarkdownFromMenu), keyEquivalent: "c")
+        markdown.keyEquivalentModifierMask = [.command, .shift, .option]
+        copyURLItems = [copy, markdown]
+        copyURLItems.forEach { $0.target = self }
+        let after = edit.items.firstIndex { $0.title == "Copy" }.map { $0 + 1 } ?? edit.items.count
+        copyURLItems.enumerated().forEach { edit.insertItem($1, at: after + $0) }
+    }
     func install() {
         if let window = root?.window { ownedWindow = window }
         if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
@@ -918,16 +977,22 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         if pageMenuItem == nil, let mainMenu = NSApp.mainMenu {
             let item = NSMenuItem(title: "Page", action: nil, keyEquivalent: "")
             let menu = NSMenu(title: "Page")
-            let copyItem = NSMenuItem(title: "Copy URL", action: #selector(copyLinkFromMenu), keyEquivalent: "c")
-            copyItem.target = self
-            copyItem.keyEquivalentModifierMask = [.command, .shift]
-            menu.addItem(copyItem)
-            let extra = pageItems()
-            if !extra.isEmpty { menu.addItem(.separator()) }
-            extra.forEach(menu.addItem)
+            pageItems().forEach(menu.addItem)
             item.submenu = menu
             mainMenu.addItem(item)
             pageMenuItem = item
+        }
+        if let mainMenu = NSApp.mainMenu {
+            installCopyURLItems(in: mainMenu)
+            if spacesMenuItem == nil {
+                let item = NSMenuItem(title: "Spaces", action: nil, keyEquivalent: "")
+                item.submenu = NSMenu(title: "Spaces")
+                let window = mainMenu.items.firstIndex { $0.title == "Window" } ?? mainMenu.items.count
+                mainMenu.insertItem(item, at: window)
+                spacesMenuItem = item
+                workspaceHost.controller?.onSpacesChanged = { [weak self] in self?.refreshSpaces() }
+                refreshSpaces()
+            }
         }
         MenuBranding.install()
         WindowTitleBranding.install()
@@ -955,6 +1020,11 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         peekMenuItem = nil
         if let pageMenuItem { pageMenuItem.menu?.removeItem(pageMenuItem) }
         pageMenuItem = nil
+        if let spacesMenuItem { spacesMenuItem.menu?.removeItem(spacesMenuItem) }
+        spacesMenuItem = nil
+        workspaceHost.controller?.onSpacesChanged = nil
+        copyURLItems.forEach { $0.menu?.removeItem($0) }
+        copyURLItems = []
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
@@ -1190,4 +1260,23 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 @MainActor public func downloadRemoved(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>) {
     precondition(Thread.isMainThread)
     nativeDownloads?.onEvent?(.removed(profileKey: String(cString: profileKey), id: String(cString: id)))
+}
+
+@_cdecl("BatoSwiftAudioConfigure")
+@MainActor public func configureAudio(_ setMuted: @escaping @convention(c) (Int32, Int32) -> Int32) {
+    precondition(Thread.isMainThread)
+    setPageMuted = setMuted
+    TabAudioCenter.shared.setMuted = { entryID, muted in
+        guard let engine = workspaceHost.engine,
+              let id = engine.pages.first(where: { $0.value.entryID == entryID })?.key else { return false }
+        return setPageMuted?(id, muted ? 1 : 0) == 1
+    }
+}
+
+/// Only organization pages carry audio badges; a preview or a closed page is ignored.
+@_cdecl("BatoSwiftAudioChanged")
+@MainActor public func audioChanged(_ browserID: Int32, _ audible: Int32, _ muted: Int32) {
+    precondition(Thread.isMainThread)
+    guard let page = workspaceHost.engine?.pages[browserID] else { return }
+    TabAudioCenter.shared.update(entryID: page.entryID, audible: audible != 0, muted: muted != 0)
 }

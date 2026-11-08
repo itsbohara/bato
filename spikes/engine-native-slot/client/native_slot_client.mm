@@ -68,6 +68,10 @@ using SwiftDownloadsConfigure = void (*)(int (*)(), int (*)(const char*, const c
 using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
                                        int64_t, int64_t, int64_t, int, int, int, int);
 using SwiftDownloadRemoved = void (*)(const char*, const char*);
+// Audio hooks are optional Swift exports. AudioConfigure(set_muted): set_muted(browser_id, muted).
+// AudioChanged(browser_id, audible, muted) arrives on the main thread, deferred out of the engine.
+using SwiftAudioConfigure = void (*)(int (*)(int, int));
+using SwiftAudioChanged = void (*)(int, int, int);
 // ConfigureProfileDelete(destroy): destroy(profile_key) closes the Profile's windows and wipes its data.
 using SwiftConfigureProfileDelete = void (*)(int (*)(const char*));
 
@@ -94,6 +98,8 @@ decltype(&bato_native_slot_download_action_v1) g_download_action = nullptr;
 decltype(&bato_native_slot_delete_profile_v1) g_delete_profile = nullptr;
 SwiftDownloadUpserted g_swift_download_upserted = nullptr;
 SwiftDownloadRemoved g_swift_download_removed = nullptr;
+decltype(&bato_native_slot_set_muted_v1) g_set_muted = nullptr;
+SwiftAudioChanged g_swift_audio_changed = nullptr;
 SwiftPeekEnded g_swift_peek_ended = nullptr;
 SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
@@ -890,6 +896,16 @@ int PerformDownloadAction(const char* profile_key, const char* id, int action) {
   return g_download_action(EngineKeyForBatoKey(profile_key).c_str(), id, action);
 }
 
+void AudioChanged(void*, int browser_id, int audible, int muted) {
+  CefPostTask(TID_UI, base::BindOnce([](int browser_id, int audible, int muted) {
+    if (g_swift_audio_changed) g_swift_audio_changed(browser_id, audible, muted);
+  }, browser_id, audible, muted));
+}
+
+int SetPageMuted(int browser_id, int muted) {
+  return g_set_muted ? g_set_muted(browser_id, muted) : 0;
+}
+
 void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
   auto slot = WorkspaceSlots().find(token);
   if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
@@ -1280,8 +1296,8 @@ bool BatoWorkspaceChromeCommand(CefRefPtr<CefBrowser> browser, int command_id) {
   if (command_id == 1000001) command = 30;
   // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
   // Chrome's restore service, window creation and tab selection must not act on them.
-  // New Window opens the command bar because each Profile has exactly one window.
-  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
+  // New Window brings the Profile's window forward because each Profile has exactly one window.
+  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 35;
   if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
   // History > Recently Closed rows: the engine offers 1000100 + position (history_menu_cocoa_controller.mm).
   if (command_id >= 1000100 && command_id < 1000120) command = 40 + (command_id - 1000100);
@@ -1448,6 +1464,14 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
   auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
       dlsym(loaded, "bato_native_slot_download_action_v1"));
+  auto register_audio = reinterpret_cast<decltype(&bato_native_slot_register_audio_callbacks_v1)>(
+      dlsym(loaded, "bato_native_slot_register_audio_callbacks_v1"));
+  auto set_muted = reinterpret_cast<decltype(&bato_native_slot_set_muted_v1)>(
+      dlsym(loaded, "bato_native_slot_set_muted_v1"));
+  auto swift_configure_audio = reinterpret_cast<SwiftAudioConfigure>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftAudioConfigure"));
+  auto swift_audio_changed = reinterpret_cast<SwiftAudioChanged>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftAudioChanged"));
   auto delete_profile = reinterpret_cast<decltype(&bato_native_slot_delete_profile_v1)>(
       dlsym(loaded, "bato_native_slot_delete_profile_v1"));
   auto swift_configure_profile_delete = reinterpret_cast<SwiftConfigureProfileDelete>(
@@ -1528,6 +1552,18 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
         g_swift_download_upserted = swift_download_upserted;
         g_swift_download_removed = swift_download_removed;
         swift_configure_downloads(RequestDownloadSnapshot, PerformDownloadAction);
+      }
+    }
+    // Tab audio is additive: without the engine exports sidebar rows simply show no speaker.
+    if (register_audio && set_muted && swift_configure_audio && swift_audio_changed) {
+      BatoAudioCallbacksV1 audio = {};
+      audio.size = sizeof(audio);
+      audio.version = 1;
+      audio.changed = AudioChanged;
+      if (register_audio(&audio) == 1) {
+        g_set_muted = set_muted;
+        g_swift_audio_changed = swift_audio_changed;
+        swift_configure_audio(SetPageMuted);
       }
     }
     if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);

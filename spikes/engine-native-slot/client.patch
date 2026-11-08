@@ -52,13 +52,17 @@
  }
 
  - (void)tryToTerminateApplication:(NSApplication*)app {
-@@ -160,6 +142,64 @@
+@@ -160,6 +142,68 @@
  }
  @end
 
 +// In-product-help promos that Chromium would show a fresh Profile ("Make Chromium faster" is
 +// IPH_HighEfficiencyMode). Workspace mode disables them so the browser stays quiet. A promo that
 +// a later Chromium adds shows until its feature name is listed here; dropped names are ignored.
++// Google surfaces Bato does not offer: the omnibox "AI Mode" chip and its entry points
++// (AimEnabled) and the chrome://history sync promo, since Bato has no sync (UnoPhase2FollowUp).
++static const char* const kSuppressedFeatures[] = {"AimEnabled", "UnoPhase2FollowUp"};
++
 +static const char* const kSuppressedPromoFeatures[] = {
 +    "IPH_BatterySaverMode", "IPH_CompanionSidePanel", "IPH_CompanionSidePanelRegionSearch",
 +    "IPH_ContextualTasksEphemeralToolbarButton", "IPH_CriticalActionAppMenu",
@@ -117,7 +121,7 @@
  // Entry point function for the browser process.
  int main(int argc, char* argv[]) {
    // Load the CEF framework library at runtime instead of linking directly
-@@ -169,6 +209,68 @@
+@@ -169,6 +213,69 @@
      return 1;
    }
 
@@ -174,6 +178,7 @@
 +      pinned_strings.push_back("--no-default-browser-check");
 +      disabled_features += (disabled_features.empty() ? "" : ",") + std::string("OmniboxEverywhere");
 +      for (const char* feature : kSuppressedPromoFeatures) disabled_features += std::string(",") + feature;
++      for (const char* feature : kSuppressedFeatures) disabled_features += std::string(",") + feature;
 +      has_disabled_features = true;
 +    }
 +    if (has_disabled_features) pinned_strings.push_back(kDisableSwitch + disabled_features);
@@ -186,7 +191,7 @@
    // Provide CEF with command-line arguments.
    CefMainArgs main_args(argc, argv);
 
-@@ -187,21 +289,18 @@
+@@ -187,21 +294,18 @@
      command_line->InitFromArgv(argc, argv);
 
      // Specify CEF global settings here.
@@ -214,7 +219,7 @@
        return 1;
      }
      CefSettings settings;
-@@ -220,6 +319,15 @@
+@@ -220,6 +324,15 @@
      // CEF has initialized.
      CefRefPtr<SimpleApp> app(new SimpleApp);
 
@@ -243,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,74 @@
+@@ -2313,6 +2317,75 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -300,6 +305,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/AppearanceWatcher.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SwitcherPopover.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -318,7 +324,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2408,19 @@
+@@ -2336,12 +2409,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -341,7 +347,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1572 @@
+@@ -0,0 +1,1608 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -412,6 +418,10 @@
 +using SwiftDownloadUpserted = void (*)(const char*, const char*, const char*, const char*,
 +                                       int64_t, int64_t, int64_t, int, int, int, int);
 +using SwiftDownloadRemoved = void (*)(const char*, const char*);
++// Audio hooks are optional Swift exports. AudioConfigure(set_muted): set_muted(browser_id, muted).
++// AudioChanged(browser_id, audible, muted) arrives on the main thread, deferred out of the engine.
++using SwiftAudioConfigure = void (*)(int (*)(int, int));
++using SwiftAudioChanged = void (*)(int, int, int);
 +// ConfigureProfileDelete(destroy): destroy(profile_key) closes the Profile's windows and wipes its data.
 +using SwiftConfigureProfileDelete = void (*)(int (*)(const char*));
 +
@@ -438,6 +448,8 @@
 +decltype(&bato_native_slot_delete_profile_v1) g_delete_profile = nullptr;
 +SwiftDownloadUpserted g_swift_download_upserted = nullptr;
 +SwiftDownloadRemoved g_swift_download_removed = nullptr;
++decltype(&bato_native_slot_set_muted_v1) g_set_muted = nullptr;
++SwiftAudioChanged g_swift_audio_changed = nullptr;
 +SwiftPeekEnded g_swift_peek_ended = nullptr;
 +SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 +SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
@@ -1234,6 +1246,16 @@
 +  return g_download_action(EngineKeyForBatoKey(profile_key).c_str(), id, action);
 +}
 +
++void AudioChanged(void*, int browser_id, int audible, int muted) {
++  CefPostTask(TID_UI, base::BindOnce([](int browser_id, int audible, int muted) {
++    if (g_swift_audio_changed) g_swift_audio_changed(browser_id, audible, muted);
++  }, browser_id, audible, muted));
++}
++
++int SetPageMuted(int browser_id, int muted) {
++  return g_set_muted ? g_set_muted(browser_id, muted) : 0;
++}
++
 +void PeekEnded(void*, uint64_t token, uint64_t generation, int parent, int preview, int reason) {
 +  auto slot = WorkspaceSlots().find(token);
 +  if (slot == WorkspaceSlots().end() || slot->second.peek_generation != generation) return;
@@ -1624,8 +1646,8 @@
 +  if (command_id == 1000001) command = 30;
 +  // Same hook shape for Chrome's tab-strip and window chords: Bato pages live in the sidebar, so
 +  // Chrome's restore service, window creation and tab selection must not act on them.
-+  // New Window opens the command bar because each Profile has exactly one window.
-+  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 1;
++  // New Window brings the Profile's window forward because each Profile has exactly one window.
++  if (command_id == cef_id_for_command_id_name("IDC_NEW_WINDOW")) command = 35;
 +  if (command_id == cef_id_for_command_id_name("IDC_RESTORE_TAB")) command = 8;
 +  // History > Recently Closed rows: the engine offers 1000100 + position (history_menu_cocoa_controller.mm).
 +  if (command_id >= 1000100 && command_id < 1000120) command = 40 + (command_id - 1000100);
@@ -1792,6 +1814,14 @@
 +      dlsym(loaded, "bato_native_slot_download_snapshot_v1"));
 +  auto download_action = reinterpret_cast<decltype(&bato_native_slot_download_action_v1)>(
 +      dlsym(loaded, "bato_native_slot_download_action_v1"));
++  auto register_audio = reinterpret_cast<decltype(&bato_native_slot_register_audio_callbacks_v1)>(
++      dlsym(loaded, "bato_native_slot_register_audio_callbacks_v1"));
++  auto set_muted = reinterpret_cast<decltype(&bato_native_slot_set_muted_v1)>(
++      dlsym(loaded, "bato_native_slot_set_muted_v1"));
++  auto swift_configure_audio = reinterpret_cast<SwiftAudioConfigure>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftAudioConfigure"));
++  auto swift_audio_changed = reinterpret_cast<SwiftAudioChanged>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftAudioChanged"));
 +  auto delete_profile = reinterpret_cast<decltype(&bato_native_slot_delete_profile_v1)>(
 +      dlsym(loaded, "bato_native_slot_delete_profile_v1"));
 +  auto swift_configure_profile_delete = reinterpret_cast<SwiftConfigureProfileDelete>(
@@ -1872,6 +1902,18 @@
 +        g_swift_download_upserted = swift_download_upserted;
 +        g_swift_download_removed = swift_download_removed;
 +        swift_configure_downloads(RequestDownloadSnapshot, PerformDownloadAction);
++      }
++    }
++    // Tab audio is additive: without the engine exports sidebar rows simply show no speaker.
++    if (register_audio && set_muted && swift_configure_audio && swift_audio_changed) {
++      BatoAudioCallbacksV1 audio = {};
++      audio.size = sizeof(audio);
++      audio.version = 1;
++      audio.changed = AudioChanged;
++      if (register_audio(&audio) == 1) {
++        g_set_muted = set_muted;
++        g_swift_audio_changed = swift_audio_changed;
++        swift_configure_audio(SetPageMuted);
 +      }
 +    }
 +    if (swift_configure_navigation) swift_configure_navigation(NavigateWorkspacePage);
@@ -1999,7 +2041,7 @@
 +                                              'DownloadsButton.swift', 'DownloadsPopover.swift', 'DownloadsSidebar.swift',
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
-+                                              'WorkspaceSwipe.swift'])]:
++                                              'WorkspaceSwipe.swift', 'TabAudio.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -2177,7 +2219,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1193 @@
+@@ -0,0 +1,1282 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2217,6 +2259,7 @@
 +@MainActor private var deleteProfileData: DeleteProfileData?
 +@MainActor private var downloadSnapshot: DownloadSnapshot?
 +@MainActor private var downloadAct: DownloadAct?
++@MainActor private var setPageMuted: (@convention(c) (Int32, Int32) -> Int32)?
 +@MainActor private var nativeDownloads: NativeDownloadsEngine?
 +@MainActor private var downloadsController: DownloadsController?
 +@MainActor private var workspaceSlots: [UInt64: WorkspaceSlot] = [:]
@@ -2437,11 +2480,13 @@
 +        case 2:
 +            pages.removeValue(forKey: id)
 +            transient.removeValue(forKey: id)
++            TabAudioCenter.shared.update(entryID: page.entryID, audible: false, muted: false)
 +            onEvent?(.closed(page))
 +        case 3: onEvent?(.closeCancelled(page))
 +        case 4:
 +            pages.removeValue(forKey: id)
 +            transient.removeValue(forKey: id)
++            TabAudioCenter.shared.update(entryID: page.entryID, audible: false, muted: false)
 +            onEvent?(.unloaded(page))
 +        default: break
 +        }
@@ -2953,6 +2998,7 @@
 +    if command == 7 { controller.showSettings() }
 +    if command == 8 { controller.reopenClosedTab() }
 +    if (40..<60).contains(command) { controller.reopenClosedTab(at: Int(command) - 40) }
++    if command == 35 { controller.showWindow() }
 +    if command == 31 { controller.duplicateSelection() }
 +    if command == 32 { controller.togglePinSelection() }
 +    if command == 33 { controller.closeOtherTemporaryTabs() }
@@ -2973,6 +3019,7 @@
 +
 +
 +/// Chromium builds its menu titles from its own product name ("Quit Chromium"); the app is Bato.
++/// Menus for features Bato replaces (Bookmarks, Chromium Profiles, vertical tabs) are hidden or removed.
 +/// Titles are rewritten when the shortcuts install and again whenever a menu opens, because
 +/// Chromium refreshes some items as menus open.
 +@MainActor private enum MenuBranding {
@@ -2986,10 +3033,17 @@
 +        }
 +    }
 +
-+    private static func apply(to menu: NSMenu?) {
++    /// Chromium re-shows a hidden item as its menu opens, so unwanted items are removed instead.
++    private static func apply(to menu: NSMenu?, topLevel: Bool = true) {
 +        for item in menu?.items ?? [] {
 +            if item.title.contains("Chromium") { item.title = item.title.replacingOccurrences(of: "Chromium", with: "Bato") }
-+            apply(to: item.submenu)
++            if topLevel, ChromiumMenuPolicy.hidesMenu(titled: item.title) {
++                item.isHidden = true
++            } else if !topLevel, ChromiumMenuPolicy.hidesItem(titled: item.title) {
++                menu?.removeItem(item)
++                continue
++            }
++            apply(to: item.submenu, topLevel: false)
 +        }
 +    }
 +}
@@ -3053,6 +3107,8 @@
 +    private var sidebarMenuItem: NSMenuItem?
 +    private var peekMenuItem: NSMenuItem?
 +    private var pageMenuItem: NSMenuItem?
++    private var spacesMenuItem: NSMenuItem?
++    private var copyURLItems: [NSMenuItem] = []
 +    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
 +         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
 +         editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool,
@@ -3071,6 +3127,51 @@
 +    @objc private func toggleFromMenu() { _ = toggle() }
 +    @objc private func promotePeekFromMenu() { _ = promotePeek() }
 +    @objc private func copyLinkFromMenu() { _ = copyLink() }
++    @objc private func copyMarkdownFromMenu() { _ = workspaceHost.controller?.copyCurrentLink(as: .markdown) }
++    @objc private func spaceFromMenu(_ sender: NSMenuItem) {
++        if let id = sender.representedObject as? UUID { workspaceHost.controller?.switchToSpace(id) }
++    }
++    @objc private func nextSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: true) }
++    @objc private func previousSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: false) }
++    @objc private func newSpaceFromMenu() { workspaceHost.controller?.addSpace() }
++
++    /// Menu key equivalents reach Bato where the sidebar view's performKeyEquivalent does not
++    /// while Chromium owns focus, so Control-1…9 live here. Rebuilt on every workspace change.
++    private func refreshSpaces() {
++        guard let menu = spacesMenuItem?.submenu, let controller = workspaceHost.controller else { return }
++        menu.removeAllItems()
++        for entry in controller.spaceMenuEntries {
++            let item = NSMenuItem(title: entry.title, action: #selector(spaceFromMenu(_:)),
++                                  keyEquivalent: entry.shortcut.map(String.init) ?? "")
++            item.keyEquivalentModifierMask = entry.shortcut == nil ? [] : .control
++            item.target = self
++            item.representedObject = entry.id
++            item.state = entry.isActive ? .on : .off
++            menu.addItem(item)
++        }
++        menu.addItem(.separator())
++        let next = NSMenuItem(title: "Next Space", action: #selector(nextSpaceFromMenu),
++                              keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
++        let previous = NSMenuItem(title: "Previous Space", action: #selector(previousSpaceFromMenu),
++                                  keyEquivalent: String(UnicodeScalar(NSLeftArrowFunctionKey)!))
++        for item in [next, previous] { item.keyEquivalentModifierMask = [.command, .control] }
++        let create = NSMenuItem(title: "New Space", action: #selector(newSpaceFromMenu), keyEquivalent: "")
++        for item in [next, previous, create] { item.target = self; menu.addItem(item) }
++    }
++
++    /// Edit > Copy URL carries Shift-Cmd-C: Chromium's Inspect chord is claimed before it reaches the Developer menu.
++    private func installCopyURLItems(in mainMenu: NSMenu) {
++        guard copyURLItems.isEmpty,
++              let edit = mainMenu.items.first(where: { $0.title == "Edit" })?.submenu else { return }
++        let copy = NSMenuItem(title: "Copy URL", action: #selector(copyLinkFromMenu), keyEquivalent: "c")
++        copy.keyEquivalentModifierMask = [.command, .shift]
++        let markdown = NSMenuItem(title: "Copy URL as Markdown", action: #selector(copyMarkdownFromMenu), keyEquivalent: "c")
++        markdown.keyEquivalentModifierMask = [.command, .shift, .option]
++        copyURLItems = [copy, markdown]
++        copyURLItems.forEach { $0.target = self }
++        let after = edit.items.firstIndex { $0.title == "Copy" }.map { $0 + 1 } ?? edit.items.count
++        copyURLItems.enumerated().forEach { edit.insertItem($1, at: after + $0) }
++    }
 +    func install() {
 +        if let window = root?.window { ownedWindow = window }
 +        if sidebarMenuItem == nil, let mainMenu = NSApp.mainMenu {
@@ -3098,16 +3199,22 @@
 +        if pageMenuItem == nil, let mainMenu = NSApp.mainMenu {
 +            let item = NSMenuItem(title: "Page", action: nil, keyEquivalent: "")
 +            let menu = NSMenu(title: "Page")
-+            let copyItem = NSMenuItem(title: "Copy URL", action: #selector(copyLinkFromMenu), keyEquivalent: "c")
-+            copyItem.target = self
-+            copyItem.keyEquivalentModifierMask = [.command, .shift]
-+            menu.addItem(copyItem)
-+            let extra = pageItems()
-+            if !extra.isEmpty { menu.addItem(.separator()) }
-+            extra.forEach(menu.addItem)
++            pageItems().forEach(menu.addItem)
 +            item.submenu = menu
 +            mainMenu.addItem(item)
 +            pageMenuItem = item
++        }
++        if let mainMenu = NSApp.mainMenu {
++            installCopyURLItems(in: mainMenu)
++            if spacesMenuItem == nil {
++                let item = NSMenuItem(title: "Spaces", action: nil, keyEquivalent: "")
++                item.submenu = NSMenu(title: "Spaces")
++                let window = mainMenu.items.firstIndex { $0.title == "Window" } ?? mainMenu.items.count
++                mainMenu.insertItem(item, at: window)
++                spacesMenuItem = item
++                workspaceHost.controller?.onSpacesChanged = { [weak self] in self?.refreshSpaces() }
++                refreshSpaces()
++            }
 +        }
 +        MenuBranding.install()
 +        WindowTitleBranding.install()
@@ -3135,6 +3242,11 @@
 +        peekMenuItem = nil
 +        if let pageMenuItem { pageMenuItem.menu?.removeItem(pageMenuItem) }
 +        pageMenuItem = nil
++        if let spacesMenuItem { spacesMenuItem.menu?.removeItem(spacesMenuItem) }
++        spacesMenuItem = nil
++        workspaceHost.controller?.onSpacesChanged = nil
++        copyURLItems.forEach { $0.menu?.removeItem($0) }
++        copyURLItems = []
 +        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
 +        keyMonitor = nil
 +        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
@@ -3370,6 +3482,25 @@
 +@MainActor public func downloadRemoved(_ profileKey: UnsafePointer<CChar>, _ id: UnsafePointer<CChar>) {
 +    precondition(Thread.isMainThread)
 +    nativeDownloads?.onEvent?(.removed(profileKey: String(cString: profileKey), id: String(cString: id)))
++}
++
++@_cdecl("BatoSwiftAudioConfigure")
++@MainActor public func configureAudio(_ setMuted: @escaping @convention(c) (Int32, Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    setPageMuted = setMuted
++    TabAudioCenter.shared.setMuted = { entryID, muted in
++        guard let engine = workspaceHost.engine,
++              let id = engine.pages.first(where: { $0.value.entryID == entryID })?.key else { return false }
++        return setPageMuted?(id, muted ? 1 : 0) == 1
++    }
++}
++
++/// Only organization pages carry audio badges; a preview or a closed page is ignored.
++@_cdecl("BatoSwiftAudioChanged")
++@MainActor public func audioChanged(_ browserID: Int32, _ audible: Int32, _ muted: Int32) {
++    precondition(Thread.isMainThread)
++    guard let page = workspaceHost.engine?.pages[browserID] else { return }
++    TabAudioCenter.shared.update(entryID: page.entryID, audible: audible != 0, muted: muted != 0)
 +}
 --- a/cef/tests/cefsimple/simple_handler.cc
 +++ b/cef/tests/cefsimple/simple_handler.cc
@@ -7135,7 +7266,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2561 @@
+@@ -0,0 +1,2679 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7586,10 +7717,29 @@
 +
 +    /// Copies the selected live page's latest URL; false when there is no such page or it is not copyable.
 +    @discardableResult
-+    public func copyCurrentLink() -> Bool {
++    public func copyCurrentLink(as format: LinkFormat = .url) -> Bool {
 +        guard runtime.navigationTarget != nil, let entryID = runtime.state.currentWorkspace.activeEntryID else { return false }
 +        return copyLink(entryID: entryID, workspaceID: runtime.state.activeWorkspaceID,
-+                        profileID: runtime.state.currentWorkspace.profileID)
++                        profileID: runtime.state.currentWorkspace.profileID, format: format)
++    }
++
++    /// Rows for the Spaces menu, in the order Control-1…9 follow.
++    public var spaceMenuEntries: [SpaceMenuEntry] { runtime.state.spaceMenuEntries }
++    /// Called after every render, so the Spaces menu can follow workspace changes.
++    public var onSpacesChanged: (() -> Void)?
++
++    public func switchToSpace(_ id: UUID) { switchWorkspace(id) }
++    public func switchToAdjacentSpace(next: Bool) { swipeWorkspace(next ? .next : .previous) }
++    public func addSpace() {
++        perform { runtime.addWorkspace(name: "Workspace \(runtime.state.workspaces.count + 1)") }
++    }
++
++    /// Each Profile has exactly one window, so a new window can only bring that one forward.
++    public func showWindow() {
++        guard let window = root.window else { return }
++        if window.isMiniaturized { window.deminiaturize(nil) }
++        NSApp.activate(ignoringOtherApps: true)
++        window.makeKeyAndOrderFront(nil)
 +    }
 +
 +    private func configureView() {
@@ -7717,7 +7867,7 @@
 +        workspacePager.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        let workspaceAdd = ActionButton(title: "") { [weak self] in
 +            guard let self else { return }
-+            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
++            self.addSpace()
 +        }
 +        configureIcon(workspaceAdd, symbol: "plus", label: "New workspace")
 +        workspaceAdd.setAccessibilityIdentifier("bato-add-workspace")
@@ -7822,6 +7972,7 @@
 +    }
 +
 +    private func render() {
++        defer { onSpacesChanged?() }
 +        fitTrafficLightClearance()
 +        commandBar?.refresh()
 +        settingsWindow?.reload()
@@ -8160,12 +8311,13 @@
 +                                  selected: runtime.state.currentWorkspace.activeEntryID == page.id,
 +                                  accent: accent)
 +        pageControls[page.id] = (select, close)
++        TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
 +        return row
 +    }
 +
 +    private func configurePageMenu(_ select: NSButton, page: PageEntry) {
 +        if page.kind == .temporary {
-+            let menu = NSMenu()
++            let menu = PageMenu()
 +            menu.addItem(ActionMenuItem(title: "Pin Tab") { [weak self] in
 +                guard let self else { return }
 +                self.perform { self.runtime.pinEntry(page.id) }
@@ -8180,7 +8332,7 @@
 +            })
 +            select.menu = menu
 +        } else {
-+            let menu = NSMenu()
++            let menu = PageMenu()
 +            // Keep the explicit live-page gate: AppKit's automatic target
 +            // validation would otherwise re-enable this action.
 +            menu.autoenablesItems = false
@@ -8205,10 +8357,11 @@
 +        if let menu = select.menu {
 +            // Boundary actions stay disabled for every entry kind.
 +            menu.autoenablesItems = false
++            addBasicItems(to: menu, page: page)
 +            let workspaceID = runtime.state.activeWorkspaceID
 +            let profileID = runtime.state.currentWorkspace.profileID
 +            let entryID = page.id
-+            let copy = ActionMenuItem(title: "Copy Link") { [weak self] in
++            let copy = ActionMenuItem(title: "Copy URL") { [weak self] in
 +                self?.copyLink(entryID: entryID, workspaceID: workspaceID, profileID: profileID)
 +            }
 +            copy.toolTip = "Copy this page’s current address."
@@ -8299,8 +8452,41 @@
 +        }
 +    }
 +
++    /// Close, Duplicate, Reload and Open in Peek lead every tab's menu. Reload and Peek act on
++    /// the page the engine is showing, so they are enabled only for the selected page.
++    private func addBasicItems(to menu: NSMenu, page: PageEntry) {
++        let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
++        let isSelected = runtime.state.currentWorkspace.activeEntryID == page.id
++        let close = ActionMenuItem(title: "Close Tab") { [weak self] in
++            guard let self else { return }
++            self.perform { self.runtime.closeEntry(page.id) }
++        }
++        close.isEnabled = !isClosing
++        let duplicate = ActionMenuItem(title: "Duplicate") { [weak self] in
++            guard let self else { return }
++            self.perform { self.runtime.addTab(url: page.lastURL, title: page.title) }
++        }
++        duplicate.isEnabled = !isClosing
++        let reload = ActionMenuItem(title: "Reload") { [weak self] in
++            guard let self, self.runtime.state.currentWorkspace.activeEntryID == page.id else { return }
++            self.perform { self.runtime.perform(.load(page.lastURL)) }
++        }
++        reload.isEnabled = isSelected && !isClosing && runtime.canPerform(.load(page.lastURL))
++        let peek = ActionMenuItem(title: "Open in Peek") { [weak self] in
++            guard let self, let live = self.runtime.livePages[page.id] else { return }
++            self.perform { self.runtime.openPeek(from: live, url: page.lastURL) }
++        }
++        peek.isEnabled = isSelected && runtime.livePages[page.id].map {
++            runtime.canOpenPeek(from: $0, url: page.lastURL)
++        } == true
++        menu.addItem(.separator())
++        [close, duplicate, reload, peek].forEach(menu.addItem)
++        if let menu = menu as? PageMenu { menu.add(muteItemFor: page.id) }
++        menu.addItem(.separator())
++    }
++
 +    @discardableResult
-+    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID) -> Bool {
++    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID, format: LinkFormat = .url) -> Bool {
 +        guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
 +              runtime.state.currentWorkspace.profileID == profileID,
 +              commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil,
@@ -8315,7 +8501,8 @@
 +        // was built, and their saved destination must remain unchanged.
 +        let pasteboard = NSPasteboard.general
 +        pasteboard.clearContents()
-+        pasteboard.setString(entry.lastURL.absoluteString, forType: .string)
++        pasteboard.setString(format.text(title: entry.title, url: entry.lastURL), forType: .string)
++        CopiedToast.show(in: window)
 +        return true
 +    }
 +
@@ -8898,6 +9085,12 @@
 +    }
 +    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
 +    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
++    override func otherMouseUp(with event: NSEvent) {
++        guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
++            return super.otherMouseUp(with: event)
++        }
++        close.performClick(nil)
++    }
 +    override func draw(_ dirtyRect: NSRect) {
 +        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
 +        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
@@ -9034,6 +9227,62 @@
 +        default: break
 +        }
 +        return super.performKeyEquivalent(with: event)
++    }
++}
++
++/// A tab menu whose Mute item follows the page's audio as the menu opens.
++@MainActor
++private final class PageMenu: NSMenu {
++    private var refreshMute: (() -> Void)?
++
++    func add(muteItemFor entryID: UUID) {
++        let item = ActionMenuItem(title: "Mute Tab") { TabAudioCenter.shared.toggleMute(entryID: entryID) }
++        addItem(item)
++        refreshMute = { [weak item] in
++            let state = TabAudioCenter.shared.states[entryID]
++            item?.title = state?.muted == true ? "Unmute Tab" : "Mute Tab"
++            item?.isEnabled = state != nil
++        }
++        refreshMute?()
++    }
++
++    override func update() {
++        refreshMute?()
++        super.update()
++    }
++}
++
++/// A brief "Copied" pill at the top of the window, like Arc's.
++@MainActor
++private enum CopiedToast {
++    private static weak var current: NSView?
++
++    static func show(in window: NSWindow) {
++        guard let content = window.contentView else { return }
++        current?.removeFromSuperview()
++        let label = NSTextField(labelWithString: "Copied")
++        label.font = .systemFont(ofSize: 13, weight: .medium)
++        label.textColor = .white
++        label.sizeToFit()
++        let pill = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 28, height: 28))
++        pill.wantsLayer = true
++        pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
++        pill.layer?.cornerRadius = 14
++        label.frame.origin = NSPoint(x: 14, y: (pill.frame.height - label.frame.height) / 2)
++        pill.addSubview(label)
++        pill.frame.origin = NSPoint(x: (content.bounds.width - pill.frame.width) / 2,
++                                    y: content.bounds.height - pill.frame.height - 66)
++        pill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
++        pill.setAccessibilityLabel("Copied")
++        content.addSubview(pill, positioned: .above, relativeTo: nil)
++        current = pill
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak pill] in
++            guard let pill, pill === current else { return }
++            NSAnimationContext.runAnimationGroup({ context in
++                context.duration = 0.3
++                pill.animator().alphaValue = 0
++            }, completionHandler: { MainActor.assumeIsolated { pill.removeFromSuperview() } })
++        }
 +    }
 +}
 +
@@ -12365,7 +12614,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/SettingsModel.swift
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,142 @@
 +import Foundation
 +
 +public enum SettingsPane: String, CaseIterable, Sendable {
@@ -12432,12 +12681,60 @@
 +        ShortcutRow(title: "Close page", keys: "⌘W"),
 +        ShortcutRow(title: "Toggle sidebar", keys: "⌘S"),
 +        ShortcutRow(title: "Copy page URL", keys: "⇧⌘C"),
++        ShortcutRow(title: "Copy page URL as Markdown", keys: "⌥⇧⌘C"),
 +        ShortcutRow(title: "Open Peek as tab", keys: "⌥⌘↩"),
-+        ShortcutRow(title: "Switch Profile", keys: "⌃1–9"),
++        ShortcutRow(title: "Switch workspace", keys: "⌃1–9"),
 +        ShortcutRow(title: "History", keys: "⌘Y"),
 +        ShortcutRow(title: "Downloads", keys: "⇧⌘J"),
 +        ShortcutRow(title: "Settings", keys: "⌘,"),
 +    ]
++}
++
++/// How the Copy URL commands format a page's address.
++public enum LinkFormat: Sendable {
++    case url, markdown
++
++    public func text(title: String, url: URL) -> String {
++        switch self {
++        case .url: return url.absoluteString
++        case .markdown:
++            let label = title.trimmingCharacters(in: .whitespacesAndNewlines)
++                .replacingOccurrences(of: "\\", with: "\\\\")
++                .replacingOccurrences(of: "[", with: "\\[")
++                .replacingOccurrences(of: "]", with: "\\]")
++            return "[\(label.isEmpty ? url.absoluteString : label)](\(url.absoluteString))"
++        }
++    }
++}
++
++/// A row of the Spaces menu. Rows with a `shortcut` answer to Control plus that digit.
++public struct SpaceMenuEntry: Equatable, Sendable {
++    public let id: UUID
++    public let title: String
++    public let shortcut: Int?
++    public let isActive: Bool
++}
++
++public extension BrowserState {
++    /// Switcher order, so a row's digit matches `switcherWorkspaceID(forShortcut:)`.
++    var spaceMenuEntries: [SpaceMenuEntry] {
++        switcherWorkspaceIDs.enumerated().compactMap { index, id in
++            guard let workspace = workspaces.first(where: { $0.id == id }) else { return nil }
++            return SpaceMenuEntry(id: id, title: workspace.name, shortcut: index < 9 ? index + 1 : nil,
++                                  isActive: id == activeWorkspaceID)
++        }
++    }
++}
++
++/// Chromium menus that describe features Bato replaces or does not have.
++public enum ChromiumMenuPolicy {
++    public static let hiddenMenus: Set<String> = ["Bookmarks", "Profiles"]
++    public static let hiddenItems: Set<String> = [
++        "Show Tabs Vertically", "Always Show Bookmarks Bar", "Always Show AI Mode",
++    ]
++
++    public static func hidesMenu(titled title: String) -> Bool { hiddenMenus.contains(title) }
++    public static func hidesItem(titled title: String) -> Bool { hiddenItems.contains(title) }
 +}
 +
 +public struct AboutInfo: Equatable, Sendable {
@@ -15888,5 +16185,114 @@
 +            onSwipe?(direction)
 +            return true
 +        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift
+@@ -0,0 +1,106 @@
++import AppKit
++
++/// Audio state per sidebar entry, fed by the engine and read by the rows' speaker badges.
++@MainActor
++public final class TabAudioCenter {
++    public struct State: Equatable, Sendable {
++        public var audible: Bool
++        public var muted: Bool
++        public var shown: Bool { audible || muted }
++    }
++
++    public static let shared = TabAudioCenter()
++    public static let didChange = Notification.Name("BatoTabAudioDidChange")
++
++    /// Mutes or unmutes the entry's live page; false when it has none.
++    public var setMuted: ((UUID, Bool) -> Bool)?
++    public private(set) var states: [UUID: State] = [:]
++
++    public func update(entryID: UUID, audible: Bool, muted: Bool) {
++        let next = State(audible: audible, muted: muted)
++        guard states[entryID] != next else { return }
++        states[entryID] = next.shown ? next : nil
++        NotificationCenter.default.post(name: Self.didChange, object: self, userInfo: ["entry": entryID])
++    }
++
++    public func toggleMute(entryID: UUID) {
++        guard let state = states[entryID] else { return }
++        _ = setMuted?(entryID, !state.muted)
++    }
++}
++
++/// A speaker button on a page row while its tab plays sound or is muted; clicking toggles mute.
++@MainActor
++enum TabAudioBadge {
++    static func attach(to row: NSView, entryID: UUID, tile: Bool, select: NSButton) {
++        let badge = TabAudioButton(entryID: entryID, select: select)
++        badge.translatesAutoresizingMaskIntoConstraints = false
++        row.addSubview(badge)
++        NSLayoutConstraint.activate([
++            badge.widthAnchor.constraint(equalToConstant: 18),
++            badge.heightAnchor.constraint(equalToConstant: 18),
++            badge.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: tile ? -4 : -26),
++            tile ? badge.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4)
++                 : badge.centerYAnchor.constraint(equalTo: row.centerYAnchor)
++        ])
++        badge.apply(row: row, tile: tile)
++    }
++}
++
++@MainActor
++private final class TabAudioButton: NSButton {
++    private let entryID: UUID
++    private let select: NSButton
++    private var row: NSView?
++    private var tile = false
++
++    init(entryID: UUID, select: NSButton) {
++        self.entryID = entryID
++        self.select = select
++        super.init(frame: .zero)
++        isBordered = false
++        bezelStyle = .recessed
++        imagePosition = .imageOnly
++        focusRingType = .none
++        contentTintColor = .secondaryLabelColor
++        setAccessibilityIdentifier("bato-audio-\(entryID.uuidString)")
++        target = self
++        action = #selector(toggle)
++        // Selector observers are zeroing references on supported macOS versions.
++        NotificationCenter.default.addObserver(self, selector: #selector(audioChanged(_:)),
++                                               name: TabAudioCenter.didChange, object: nil)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func apply(row: NSView, tile: Bool) {
++        self.row = row
++        self.tile = tile
++        refresh()
++    }
++
++    @objc private func audioChanged(_ note: Notification) {
++        if (note.userInfo?["entry"] as? UUID) == entryID { refresh() }
++    }
++
++    @objc private func toggle() { TabAudioCenter.shared.toggleMute(entryID: entryID) }
++
++    private func refresh() {
++        let state = TabAudioCenter.shared.states[entryID]
++        isHidden = state == nil
++        guard let state else { reserveTitleRoom(false); return }
++        image = sidebarSymbol(state.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 11)
++        let title = state.muted ? "Unmute tab" : "Mute tab"
++        toolTip = title
++        setAccessibilityLabel(title)
++        reserveTitleRoom(true)
++    }
++
++    /// The title must not run under the badge: widen the gap the row keeps before its close button.
++    private func reserveTitleRoom(_ reserve: Bool) {
++        guard !tile, let row,
++              let trailing = row.constraints.first(where: {
++                  $0.firstItem === select && $0.firstAttribute == .trailing && $0.secondAttribute == .leading
++              }) else { return }
++        trailing.constant = reserve ? -22 : -2
 +    }
 +}
