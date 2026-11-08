@@ -448,10 +448,29 @@ public final class NativeWorkspaceController: NSObject {
 
     /// Copies the selected live page's latest URL; false when there is no such page or it is not copyable.
     @discardableResult
-    public func copyCurrentLink() -> Bool {
+    public func copyCurrentLink(as format: LinkFormat = .url) -> Bool {
         guard runtime.navigationTarget != nil, let entryID = runtime.state.currentWorkspace.activeEntryID else { return false }
         return copyLink(entryID: entryID, workspaceID: runtime.state.activeWorkspaceID,
-                        profileID: runtime.state.currentWorkspace.profileID)
+                        profileID: runtime.state.currentWorkspace.profileID, format: format)
+    }
+
+    /// Rows for the Spaces menu, in the order Control-1…9 follow.
+    public var spaceMenuEntries: [SpaceMenuEntry] { runtime.state.spaceMenuEntries }
+    /// Called after every render, so the Spaces menu can follow workspace changes.
+    public var onSpacesChanged: (() -> Void)?
+
+    public func switchToSpace(_ id: UUID) { switchWorkspace(id) }
+    public func switchToAdjacentSpace(next: Bool) { swipeWorkspace(next ? .next : .previous) }
+    public func addSpace() {
+        perform { runtime.addWorkspace(name: "Workspace \(runtime.state.workspaces.count + 1)") }
+    }
+
+    /// Each Profile has exactly one window, so a new window can only bring that one forward.
+    public func showWindow() {
+        guard let window = root.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func configureView() {
@@ -579,7 +598,7 @@ public final class NativeWorkspaceController: NSObject {
         workspacePager.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let workspaceAdd = ActionButton(title: "") { [weak self] in
             guard let self else { return }
-            self.perform { self.runtime.addWorkspace(name: "Workspace \(self.runtime.state.workspaces.count + 1)") }
+            self.addSpace()
         }
         configureIcon(workspaceAdd, symbol: "plus", label: "New workspace")
         workspaceAdd.setAccessibilityIdentifier("bato-add-workspace")
@@ -684,6 +703,7 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private func render() {
+        defer { onSpacesChanged?() }
         fitTrafficLightClearance()
         commandBar?.refresh()
         settingsWindow?.reload()
@@ -1022,12 +1042,13 @@ public final class NativeWorkspaceController: NSObject {
                                   selected: runtime.state.currentWorkspace.activeEntryID == page.id,
                                   accent: accent)
         pageControls[page.id] = (select, close)
+        TabAudioBadge.attach(to: row, entryID: page.id, tile: tile, select: select)
         return row
     }
 
     private func configurePageMenu(_ select: NSButton, page: PageEntry) {
         if page.kind == .temporary {
-            let menu = NSMenu()
+            let menu = PageMenu()
             menu.addItem(ActionMenuItem(title: "Pin Tab") { [weak self] in
                 guard let self else { return }
                 self.perform { self.runtime.pinEntry(page.id) }
@@ -1042,7 +1063,7 @@ public final class NativeWorkspaceController: NSObject {
             })
             select.menu = menu
         } else {
-            let menu = NSMenu()
+            let menu = PageMenu()
             // Keep the explicit live-page gate: AppKit's automatic target
             // validation would otherwise re-enable this action.
             menu.autoenablesItems = false
@@ -1067,10 +1088,11 @@ public final class NativeWorkspaceController: NSObject {
         if let menu = select.menu {
             // Boundary actions stay disabled for every entry kind.
             menu.autoenablesItems = false
+            addBasicItems(to: menu, page: page)
             let workspaceID = runtime.state.activeWorkspaceID
             let profileID = runtime.state.currentWorkspace.profileID
             let entryID = page.id
-            let copy = ActionMenuItem(title: "Copy Link") { [weak self] in
+            let copy = ActionMenuItem(title: "Copy URL") { [weak self] in
                 self?.copyLink(entryID: entryID, workspaceID: workspaceID, profileID: profileID)
             }
             copy.toolTip = "Copy this page’s current address."
@@ -1161,8 +1183,41 @@ public final class NativeWorkspaceController: NSObject {
         }
     }
 
+    /// Close, Duplicate, Reload and Open in Peek lead every tab's menu. Reload and Peek act on
+    /// the page the engine is showing, so they are enabled only for the selected page.
+    private func addBasicItems(to menu: NSMenu, page: PageEntry) {
+        let isClosing = runtime.pendingClose.contains(where: { $0.entryID == page.id })
+        let isSelected = runtime.state.currentWorkspace.activeEntryID == page.id
+        let close = ActionMenuItem(title: "Close Tab") { [weak self] in
+            guard let self else { return }
+            self.perform { self.runtime.closeEntry(page.id) }
+        }
+        close.isEnabled = !isClosing
+        let duplicate = ActionMenuItem(title: "Duplicate") { [weak self] in
+            guard let self else { return }
+            self.perform { self.runtime.addTab(url: page.lastURL, title: page.title) }
+        }
+        duplicate.isEnabled = !isClosing
+        let reload = ActionMenuItem(title: "Reload") { [weak self] in
+            guard let self, self.runtime.state.currentWorkspace.activeEntryID == page.id else { return }
+            self.perform { self.runtime.perform(.load(page.lastURL)) }
+        }
+        reload.isEnabled = isSelected && !isClosing && runtime.canPerform(.load(page.lastURL))
+        let peek = ActionMenuItem(title: "Open in Peek") { [weak self] in
+            guard let self, let live = self.runtime.livePages[page.id] else { return }
+            self.perform { self.runtime.openPeek(from: live, url: page.lastURL) }
+        }
+        peek.isEnabled = isSelected && runtime.livePages[page.id].map {
+            runtime.canOpenPeek(from: $0, url: page.lastURL)
+        } == true
+        menu.addItem(.separator())
+        [close, duplicate, reload, peek].forEach(menu.addItem)
+        if let menu = menu as? PageMenu { menu.add(muteItemFor: page.id) }
+        menu.addItem(.separator())
+    }
+
     @discardableResult
-    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID) -> Bool {
+    private func copyLink(entryID: UUID, workspaceID: UUID, profileID: UUID, format: LinkFormat = .url) -> Bool {
         guard hasStarted, runtime.state.activeWorkspaceID == workspaceID,
               runtime.state.currentWorkspace.profileID == profileID,
               commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil,
@@ -1177,7 +1232,8 @@ public final class NativeWorkspaceController: NSObject {
         // was built, and their saved destination must remain unchanged.
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(entry.lastURL.absoluteString, forType: .string)
+        pasteboard.setString(format.text(title: entry.title, url: entry.lastURL), forType: .string)
+        CopiedToast.show(in: window)
         return true
     }
 
@@ -1760,6 +1816,12 @@ private final class SidebarPageView: AdaptiveSidebarView {
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
+            return super.otherMouseUp(with: event)
+        }
+        close.performClick(nil)
+    }
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
         if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
@@ -1896,6 +1958,62 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
         default: break
         }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// A tab menu whose Mute item follows the page's audio as the menu opens.
+@MainActor
+private final class PageMenu: NSMenu {
+    private var refreshMute: (() -> Void)?
+
+    func add(muteItemFor entryID: UUID) {
+        let item = ActionMenuItem(title: "Mute Tab") { TabAudioCenter.shared.toggleMute(entryID: entryID) }
+        addItem(item)
+        refreshMute = { [weak item] in
+            let state = TabAudioCenter.shared.states[entryID]
+            item?.title = state?.muted == true ? "Unmute Tab" : "Mute Tab"
+            item?.isEnabled = state != nil
+        }
+        refreshMute?()
+    }
+
+    override func update() {
+        refreshMute?()
+        super.update()
+    }
+}
+
+/// A brief "Copied" pill at the top of the window, like Arc's.
+@MainActor
+private enum CopiedToast {
+    private static weak var current: NSView?
+
+    static func show(in window: NSWindow) {
+        guard let content = window.contentView else { return }
+        current?.removeFromSuperview()
+        let label = NSTextField(labelWithString: "Copied")
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .white
+        label.sizeToFit()
+        let pill = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 28, height: 28))
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        pill.layer?.cornerRadius = 14
+        label.frame.origin = NSPoint(x: 14, y: (pill.frame.height - label.frame.height) / 2)
+        pill.addSubview(label)
+        pill.frame.origin = NSPoint(x: (content.bounds.width - pill.frame.width) / 2,
+                                    y: content.bounds.height - pill.frame.height - 66)
+        pill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+        pill.setAccessibilityLabel("Copied")
+        content.addSubview(pill, positioned: .above, relativeTo: nil)
+        current = pill
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak pill] in
+            guard let pill, pill === current else { return }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.3
+                pill.animator().alphaValue = 0
+            }, completionHandler: { MainActor.assumeIsolated { pill.removeFromSuperview() } })
+        }
     }
 }
 
