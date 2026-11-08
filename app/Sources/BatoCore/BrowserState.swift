@@ -1419,6 +1419,16 @@ public struct BrowserState: Codable, Equatable, Sendable {
 
     mutating func selectTabInPlace(_ id: UUID) { selectEntryInPlace(id) }
 
+    /// Selects one page without showing its pair, for when the other member cannot be shown.
+    public mutating func selectEntryAlone(_ id: UUID) throws {
+        try transact { draft in
+            guard draft.visibleEntries.contains(where: { $0.id == id }) else { throw BrowserStateError.missingEntry }
+            let index = draft.currentWorkspaceIndex
+            draft.workspaces[index].activeSplitID = nil
+            draft.workspaces[index].activeEntryID = id
+        }
+    }
+
     private mutating func removeEntry(_ id: UUID) {
         removeSplits(containing: id)
         for index in profiles.indices { profiles[index].favorites.removeAll { $0.id == id } }

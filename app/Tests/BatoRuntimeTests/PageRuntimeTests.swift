@@ -1616,7 +1616,7 @@ extension PageRuntimeTests {
         #expect(engine.created.count == 3)
     }
 
-    @Test func clearedSelectionDiscardsUnpinnedPairWithoutRecreation() throws {
+    @Test func clearedSelectionHidesUnpinnedPairWithoutRecreation() throws {
         var state = BrowserState.initial()
         let left = try state.addTab(url: start, title: "Left")
         _ = try state.addTab(url: next, title: "Right")
@@ -1627,7 +1627,8 @@ extension PageRuntimeTests {
         #expect(runtime.start())
         runtime.receive(.selectionCleared)
         #expect(runtime.state.currentWorkspace.activeEntryID == nil)
-        #expect(runtime.state.currentWorkspace.splits.isEmpty)
+        #expect(runtime.state.currentSplit == nil)
+        #expect(runtime.state.currentWorkspace.splits.count == 1)
         #expect(engine.created.count == 2)
     }
 }

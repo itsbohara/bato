@@ -1044,8 +1044,7 @@ public final class PageRuntime {
         guard let pair = state.currentSplit, pair.contains(page.entryID) else { return }
         let survivor = pair.leftEntryID == page.entryID ? pair.rightEntryID : pair.leftEntryID
         _ = change(reconcileSelection: false) { candidate in
-            try candidate.deactivateSplit()
-            try candidate.selectEntry(survivor)
+            try candidate.selectEntryAlone(survivor)
         }
         _ = engine.separateSplit()
     }
