@@ -15,7 +15,8 @@ private final class NavigationEngine: PageEngine {
     func create(_ page: LivePage, url: URL) -> Bool { true }
     func select(_ page: LivePage?) {}
     func requestClose(_ page: LivePage) {}
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { true }
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool { true }
     func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool { true }
     func endPeek(restoreParent: Bool) -> PeekEndResult { .ended }
     func perform(_ command: PageNavigationCommand, on page: LivePage) -> Bool {

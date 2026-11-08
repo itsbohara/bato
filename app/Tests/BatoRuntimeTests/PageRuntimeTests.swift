@@ -12,10 +12,13 @@ private final class FakeEngine: PageEngine {
     var closes: [LivePage] = []
     var supportsSplits = false
     var presentedSplits: [(LivePage, LivePage, LivePage, Double)] = []
+    var presentedOrientations: [SplitOrientation] = []
     var separations = 0
     var acceptsSplit = true
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool {
         presentedSplits.append((left, right, focused, ratio))
+        presentedOrientations.append(orientation)
         visible = focused
         return acceptsSplit
     }
@@ -1511,6 +1514,22 @@ extension PageRuntimeTests {
         #expect(runtime.state.currentWorkspace.splits.count == 1)
         #expect(runtime.activateSplit(pair, focusedEntryID: right))
         #expect(engine.created.count == 2)
+    }
+
+    @Test func addSplitTabPresentsStackedPairWithNewPaneFocused() throws {
+        var state = BrowserState.initial()
+        let source = try state.addTab(url: start, title: "Source")
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        #expect(runtime.addSplitTab(url: next, title: "New", side: .top))
+        let pair = try #require(runtime.state.currentSplit)
+        #expect(pair.orientation == .vertical)
+        #expect(pair.rightEntryID == source)
+        #expect(runtime.state.currentWorkspace.activeEntryID == pair.leftEntryID)
+        #expect(engine.presentedOrientations.last == .vertical)
+        #expect(engine.presentedSplits.last?.0.entryID == pair.leftEntryID)
     }
 
     @Test func splitCloseCancellationAndSavedCloseKeepSurvivingPage() throws {

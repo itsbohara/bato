@@ -147,21 +147,79 @@ public struct PageFolder: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// How a pair's two panes are arranged. The first member is the left or top pane.
+public enum SplitOrientation: String, Codable, Equatable, Sendable {
+    case horizontal, vertical
+}
+
+/// Where a new pane opens relative to the page it splits from.
+public enum SplitSide: String, CaseIterable, Sendable {
+    case right, left, top, bottom
+
+    public var orientation: SplitOrientation { self == .left || self == .right ? .horizontal : .vertical }
+    /// True when the new page becomes the left or top member.
+    public var newPageIsFirst: Bool { self == .left || self == .top }
+    public var title: String {
+        switch self {
+        case .right: "Add Right Split"
+        case .left: "Add Left Split"
+        case .top: "Add Top Split"
+        case .bottom: "Add Bottom Split"
+        }
+    }
+    public var symbolName: String {
+        switch self {
+        case .right: "rectangle.righthalf.inset.filled"
+        case .left: "rectangle.lefthalf.inset.filled"
+        case .top: "rectangle.tophalf.inset.filled"
+        case .bottom: "rectangle.bottomhalf.inset.filled"
+        }
+    }
+}
+
 /// Stable organization references; Chromium split identifiers are never persisted.
+/// `leftEntryID` and `rightEntryID` are the first (left or top) and second (right or bottom) pane.
 public struct PageSplit: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var leftEntryID: UUID
     public var rightEntryID: UUID
     public var dividerRatio: Double
     public var isPinned: Bool
+    public var orientation: SplitOrientation
 
     public init(id: UUID = UUID(), leftEntryID: UUID, rightEntryID: UUID,
-                dividerRatio: Double = 0.5, isPinned: Bool = false) {
+                dividerRatio: Double = 0.5, isPinned: Bool = false,
+                orientation: SplitOrientation = .horizontal) {
         self.id = id
         self.leftEntryID = leftEntryID
         self.rightEntryID = rightEntryID
         self.dividerRatio = dividerRatio
         self.isPinned = isPinned
+        self.orientation = orientation
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, leftEntryID, rightEntryID, dividerRatio, isPinned, orientation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        leftEntryID = try values.decode(UUID.self, forKey: .leftEntryID)
+        rightEntryID = try values.decode(UUID.self, forKey: .rightEntryID)
+        dividerRatio = try values.decode(Double.self, forKey: .dividerRatio)
+        isPinned = try values.decode(Bool.self, forKey: .isPinned)
+        orientation = try values.decodeIfPresent(SplitOrientation.self, forKey: .orientation) ?? .horizontal
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(leftEntryID, forKey: .leftEntryID)
+        try values.encode(rightEntryID, forKey: .rightEntryID)
+        try values.encode(dividerRatio, forKey: .dividerRatio)
+        try values.encode(isPinned, forKey: .isPinned)
+        if orientation != .horizontal { try values.encode(orientation, forKey: .orientation) }
     }
 
     public func contains(_ id: UUID) -> Bool { leftEntryID == id || rightEntryID == id }
@@ -392,6 +450,12 @@ public struct BrowserState: Codable, Equatable, Sendable {
 
     public func split(containingEntry id: UUID) -> PageSplit? {
         currentWorkspace.splits.first { $0.contains(id) }
+    }
+
+    /// The selected page is a pin or tab; a page already in a pair re-pairs with the new tab.
+    public var canSplitSelection: Bool {
+        guard let focused = currentWorkspace.activeEntryID else { return false }
+        return (currentWorkspace.pins + currentWorkspace.tabs).contains { $0.id == focused }
     }
 
     public func canCreateSplit(with id: UUID) -> Bool {
@@ -1231,16 +1295,42 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func createSplit(with id: UUID) throws -> UUID {
+    public mutating func createSplit(with id: UUID, side: SplitSide = .right) throws -> UUID {
         try transact { draft in
             guard draft.canCreateSplit(with: id), let focused = draft.currentWorkspace.activeEntryID else {
                 throw BrowserStateError.invalidSplit
             }
-            let split = PageSplit(leftEntryID: focused, rightEntryID: id)
+            let split = PageSplit(leftEntryID: side.newPageIsFirst ? id : focused,
+                                  rightEntryID: side.newPageIsFirst ? focused : id,
+                                  orientation: side.orientation)
             let index = draft.currentWorkspaceIndex
             draft.workspaces[index].splits.append(split)
             draft.workspaces[index].activeSplitID = split.id
             return split.id
+        }
+    }
+
+    /// Opens a new temporary tab beside the selected page and focuses it. A page already in a pair
+    /// leaves it, so a pane's split menu replaces the other pane.
+    @discardableResult
+    public mutating func addSplitTab(url: URL, title: String, side: SplitSide) throws -> UUID {
+        try transact { draft in
+            guard draft.canSplitSelection, let source = draft.currentWorkspace.activeEntryID else {
+                throw BrowserStateError.invalidSplit
+            }
+            try Self.validateURL(url)
+            let entry = PageEntry(title: title, lastURL: url, kind: .temporary)
+            let index = draft.currentWorkspaceIndex
+            // The selected page leaves any pair it was in; its old partner stays as an ordinary page.
+            draft.workspaces[index].splits.removeAll { $0.contains(source) }
+            draft.workspaces[index].tabs.append(entry)
+            let split = PageSplit(leftEntryID: side.newPageIsFirst ? entry.id : source,
+                                  rightEntryID: side.newPageIsFirst ? source : entry.id,
+                                  orientation: side.orientation)
+            draft.workspaces[index].splits.append(split)
+            draft.workspaces[index].activeSplitID = split.id
+            draft.workspaces[index].activeEntryID = entry.id
+            return entry.id
         }
     }
 

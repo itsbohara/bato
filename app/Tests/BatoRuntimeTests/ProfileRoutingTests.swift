@@ -23,7 +23,8 @@ private final class ContextEngine: PageEngine {
     }
     func select(_ page: LivePage?) { selections.append(page) }
     func requestClose(_ page: LivePage) {}
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool {
         guard left.profileID == right.profileID, supportsProfile(left.profileID) else { return false }
         splits.append((left, right))
         return true

@@ -58,7 +58,8 @@ public protocol PageEngine: AnyObject {
     /// Only explicit selections call this; an engine-side close must never reopen the window.
     func requestWindowIfMissing(for profileID: UUID) -> Bool
     var supportsSplits: Bool { get }
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool
     func separateSplit() -> Bool
     func create(_ page: LivePage, url: URL) -> Bool
     /// nil hides any previously visible page. A token whose creation is pending
@@ -87,7 +88,8 @@ public extension PageEngine {
     func activateProfile(_ id: UUID) {}
     func requestWindowIfMissing(for profileID: UUID) -> Bool { false }
     var supportsSplits: Bool { false }
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool { false }
     func separateSplit() -> Bool { true }
     var supportsPeek: Bool { false }
     func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool { false }
@@ -410,13 +412,24 @@ public final class PageRuntime {
     }
 
     @discardableResult
-    public func createSplit(with id: UUID) -> Bool {
+    public func createSplit(with id: UUID, side: SplitSide = .right) -> Bool {
         guard supportsSplits, state.canCreateSplit(with: id),
               !pendingClose.contains(where: { $0.entryID == id || $0.entryID == state.currentWorkspace.activeEntryID }) else {
             lastError = .invalidCommand
             return false
         }
-        return change { _ = try $0.createSplit(with: id) }
+        return change { _ = try $0.createSplit(with: id, side: side) }
+    }
+
+    /// Opens a new tab beside the selected page, in the pane on `side`, and focuses it.
+    @discardableResult
+    public func addSplitTab(url: URL, title: String, side: SplitSide) -> Bool {
+        guard supportsSplits, state.canSplitSelection,
+              !pendingClose.contains(where: { $0.entryID == state.currentWorkspace.activeEntryID }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        return change { _ = try $0.addSplitTab(url: url, title: title, side: side) }
     }
 
     @discardableResult
@@ -1027,7 +1040,8 @@ public final class PageRuntime {
                   livePages[left.entryID] == left, livePages[right.entryID] == right,
                   let focusedID = state.currentWorkspace.activeEntryID,
                   let focused = livePages[focusedID], focused == left || focused == right,
-                  engine.presentSplit(left: left, right: right, focused: focused, ratio: current.dividerRatio) else {
+                  engine.presentSplit(left: left, right: right, focused: focused, ratio: current.dividerRatio,
+                                      orientation: current.orientation) else {
                 lastError = .creationRejected
                 return false
             }
