@@ -81,6 +81,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     var supportedProfileIDs: Set<UUID> { [launchProfileID] }
     func supportsProfile(_ id: UUID) -> Bool { id == launchProfileID || openProfileWindow != nil }
     func activateProfile(_ id: UUID) { currentProfileID = id }
+    func requestWindowIfMissing(for profileID: UUID) -> Bool {
+        guard windows[profileID] == nil, supportsProfile(profileID) else { return false }
+        return requestWindow(for: profileID)
+    }
     func token(forProfile id: UUID) -> UInt64? { windows[id] }
     func isCurrentWindow(_ token: UInt64) -> Bool { windows[currentProfileID] == token }
 
@@ -800,6 +804,15 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 /// Menus for features Bato replaces (Bookmarks, Chromium Profiles, vertical tabs) are hidden or removed.
 /// Titles are rewritten when the shortcuts install and again whenever a menu opens, because
 /// Chromium refreshes some items as menus open.
+/// Chrome enables Tab > Close Tabs to the Right from its own strip order, which is creation order and not
+/// the sidebar's. The item is retargeted here so its enable state and action follow the sidebar.
+@MainActor private final class CloseTabsBelowItem: NSObject, NSMenuItemValidation {
+    static let title = "Close Tabs to the Right"
+    static let shared = CloseTabsBelowItem()
+    @objc func closeTabsBelow(_ sender: Any?) { workspaceHost.controller?.closeTemporaryTabsBelowSelection() }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { workspaceHost.controller?.canCloseTemporaryTabsBelowSelection ?? false }
+}
+
 @MainActor private enum MenuBranding {
     private static var observer: NSObjectProtocol?
 
@@ -820,6 +833,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             } else if !topLevel, ChromiumMenuPolicy.hidesItem(titled: item.title) {
                 menu?.removeItem(item)
                 continue
+            }
+            if !topLevel, item.title == CloseTabsBelowItem.title {
+                item.target = CloseTabsBelowItem.shared
+                item.action = #selector(CloseTabsBelowItem.closeTabsBelow(_:))
             }
             apply(to: item.submenu, topLevel: false)
         }
