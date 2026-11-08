@@ -67,6 +67,7 @@ public final class NativeWorkspaceController: NSObject {
     private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
     private weak var pendingCommandBarWindow: NSWindow?
     private var commandBarNavigationTarget: LivePage?
+    private var commandBarSplitSide: SplitSide?
     private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
     private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
@@ -74,8 +75,62 @@ public final class NativeWorkspaceController: NSObject {
         let frame = ContentCardFrameView(accent: accent)
         frame.showsEmptyState = runtime.state.showsEmptySpace
         frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
+        frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
+        frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
         cardFrames.add(frame)
         return frame
+    }
+
+    /// Engine hooks for a pane's back, forward, reload and stop; set by the host that owns the pages.
+    public var paneNavigator: ((LivePage, PaneNavigationAction) -> Bool)?
+    public var paneNavigationState: ((LivePage) -> PaneNavigationState)?
+    private let paneOverlays = NSHashTable<SplitPaneOverlayView>.weakObjects()
+    /// One per window; shows a native toolbar row over each pane of a displayed pair.
+    public func makeSplitPaneOverlay() -> SplitPaneOverlayView {
+        let overlay = SplitPaneOverlayView(frame: .zero)
+        overlay.provider = { [weak self] in self?.splitPaneStates() ?? [] }
+        overlay.actions = SplitPaneActions(
+            focus: { [weak self] id in self?.focusPane(id) },
+            close: { [weak self] id in self?.perform { self?.runtime.closeEntry(id) ?? false } },
+            navigate: { [weak self] id, action in
+                guard let self, let page = self.runtime.livePages[id] else { return }
+                _ = self.paneNavigator?(page, action)
+            },
+            addSplit: { [weak self] side in self?.addSplit(side) },
+            toggleSidebar: { [weak self] in self?.requestSidebarToggle?() })
+        paneOverlays.add(overlay)
+        return overlay
+    }
+
+    private func splitPaneStates() -> [SplitPaneState] {
+        guard let split = runtime.state.currentSplit else { return [] }
+        let workspace = runtime.state.currentWorkspace
+        let pages = workspace.pins + workspace.tabs
+        return [split.leftEntryID, split.rightEntryID].compactMap { id in
+            guard let page = pages.first(where: { $0.id == id }) else { return nil }
+            let navigation = runtime.livePages[id].flatMap { paneNavigationState?($0) } ?? PaneNavigationState()
+            return SplitPaneState(entryID: id, title: pageTitle(page), url: page.lastURL,
+                                  isFocused: workspace.activeEntryID == id, navigation: navigation)
+        }
+    }
+
+    /// The pane that is focused, by index, for the card's outline.
+    public var focusedPaneIndex: Int? {
+        guard let split = runtime.state.currentSplit,
+              let focused = runtime.state.currentWorkspace.activeEntryID else { return nil }
+        return SplitPaneChrome.paneIndex(of: focused, in: split)
+    }
+
+    private func focusPane(_ id: UUID) {
+        guard let split = runtime.state.currentSplit, split.contains(id),
+              runtime.state.currentWorkspace.activeEntryID != id, canRunSplitAction(in: runtime.state.activeWorkspaceID) else { return }
+        perform { runtime.activateSplit(split.id, focusedEntryID: id) }
+    }
+
+    /// Opens the command bar to choose what the new pane on `side` shows (Add Right Split and friends).
+    public func addSplit(_ side: SplitSide) {
+        guard hasStarted, runtime.supportsSplits, runtime.state.canSplitSelection else { return }
+        showCommandBar(splittingTo: side)
     }
 
     /// Load failures throw without replacing the existing document. The factory
@@ -286,12 +341,14 @@ public final class NativeWorkspaceController: NSObject {
         action(self)
     }
 
-    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil) {
+    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil,
+                                splittingTo side: SplitSide? = nil) {
         guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         runtime.endPeek()
         requestNativeFocus?()
         commandBarNavigationTarget = target
+        commandBarSplitSide = side
         let bar = CommandBarController(query: query, error: error,
                                        provider: commandBarSearchProvider,
                                        pageIcon: { [weak self] in self?.pageIcons[$0] },
@@ -323,6 +380,7 @@ public final class NativeWorkspaceController: NSObject {
             self.commandBar = nil
             guard response == .OK else {
                 self.commandBarNavigationTarget = nil
+                self.commandBarSplitSide = nil
                 self.requestNativeFocus?()
                 return
             }
@@ -332,6 +390,7 @@ public final class NativeWorkspaceController: NSObject {
                 guard let self else { return }
                 guard let window, self.root.window === window else {
                     self.commandBarNavigationTarget = nil
+                    self.commandBarSplitSide = nil
                     self.pendingCommandBarAction = nil
                     self.pendingCommandBarWindow = nil
                     return
@@ -346,13 +405,16 @@ public final class NativeWorkspaceController: NSObject {
         let succeeded: Bool
         let navigationTarget = commandBarNavigationTarget
         commandBarNavigationTarget = nil
+        let splitSide = commandBarSplitSide
+        commandBarSplitSide = nil
         var retryTarget: LivePage?
         switch pending.action {
         case .open(let url):
             // An engine failure may follow a successful save: do not create a
             // duplicate entry if the new page is already in organization.
             let before = runtime.state
-            let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
+            let opened = splitSide.map { runtime.addSplitTab(url: url, title: url.host ?? "New tab", side: $0) }
+                ?? runtime.addTab(url: url, title: url.host ?? "New tab")
             succeeded = opened || runtime.state != before
         case .navigateCurrent(let url):
             retryTarget = navigationTarget
@@ -360,7 +422,12 @@ public final class NativeWorkspaceController: NSObject {
         case .peek(let url):
             succeeded = runtime.openPeek(url: url)
         case .activate(let result):
-            succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
+            if let splitSide, result.workspaceID == runtime.state.activeWorkspaceID,
+               runtime.state.canCreateSplit(with: result.entryID) {
+                succeeded = runtime.createSplit(with: result.entryID, side: splitSide)
+            } else {
+                succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
+            }
         case .command(let command):
             switch command {
             case .findPage: findPage()
@@ -379,7 +446,7 @@ public final class NativeWorkspaceController: NSObject {
             let message = runtime.lastError == .saveFailed
                 ? "Changes couldn’t be saved. Reopen Bato to reload organization."
                 : "This page is unavailable or is closing. Choose another result."
-            showCommandBar(query: pending.query, error: message, navigating: retryTarget)
+            showCommandBar(query: pending.query, error: message, navigating: retryTarget, splittingTo: splitSide)
         }
     }
 
@@ -731,7 +798,10 @@ public final class NativeWorkspaceController: NSObject {
         for frame in cardFrames.allObjects {
             frame.accent = accent
             frame.showsEmptyState = state.showsEmptySpace
+            frame.canAddSplit = runtime.supportsSplits && state.canSplitSelection
+            frame.focusedPane = focusedPaneIndex
         }
+        paneOverlays.allObjects.forEach { $0.refresh() }
         let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
         switcherButton.title = workspace.name
         switcherButton.image = colorDot(workspaceColor(workspace.color))
@@ -854,14 +924,22 @@ public final class NativeWorkspaceController: NSObject {
         sides.orientation = .horizontal
         sides.distribution = .fillEqually
         sides.spacing = 4
-        for (position, entryID) in [("left", split.leftEntryID), ("right", split.rightEntryID)] {
+        for (position, entryID) in (split.orientation == .horizontal ? [("left", split.leftEntryID), ("right", split.rightEntryID)]
+                                                     : [("top", split.leftEntryID), ("bottom", split.rightEntryID)]) {
             guard let page = pages.first(where: { $0.id == entryID }) else { continue }
             let button = ActionButton(title: pageTitle(page)) { [weak self] in
                 guard let self, self.canRunSplitAction(in: workspaceID),
                       self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
                 self.perform { self.runtime.activateSplit(split.id, focusedEntryID: entryID) }
             }
-            configureTextAction(button, symbol: position == "left" ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
+            configureTextAction(button, symbol: "rectangle.split.2x1")
+            let iconSize = SidebarStyle.rowIconSize
+            if let icon = pageIcons[page.id]?.copy() as? NSImage {
+                icon.size = NSSize(width: iconSize, height: iconSize)
+                button.image = icon
+            } else {
+                button.image = SidebarStyle.letterIcon(for: pageTitle(page), url: page.lastURL, size: iconSize)
+            }
             button.contentTintColor = runtime.state.currentWorkspace.activeEntryID == entryID ? accent : .secondaryLabelColor
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
@@ -923,7 +1001,9 @@ public final class NativeWorkspaceController: NSObject {
               !runtime.pendingClose.contains(where: { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }) else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        for (title, adjustment) in [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)] {
+        for (title, adjustment) in (split.orientation == .horizontal
+            ? [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)]
+            : [("Enlarge Top Page", 0.1), ("Equal Size", 0.0), ("Enlarge Bottom Page", -0.1)]) {
             let item = ActionMenuItem(title: title) { [weak self] in
                 guard let self, self.canRunSplitAction(in: workspaceID),
                       let current = self.runtime.state.currentSplit, current.id == splitID,
@@ -1146,14 +1226,25 @@ public final class NativeWorkspaceController: NSObject {
             if runtime.supportsSplits, page.kind != .favorite {
                 let workspaceID = runtime.state.activeWorkspaceID
                 let sourceID = runtime.state.currentWorkspace.activeEntryID
-                let split = ActionMenuItem(title: "Split with Current Page") { [weak self] in
-                    guard let self, self.canRunSplitAction(in: workspaceID),
-                          self.runtime.state.currentWorkspace.activeEntryID == sourceID,
-                          self.runtime.state.canCreateSplit(with: page.id) else { return }
-                    self.perform { self.runtime.createSplit(with: page.id) }
-                }
-                split.isEnabled = runtime.state.canCreateSplit(with: page.id) &&
+                let canSplit = runtime.state.canCreateSplit(with: page.id) &&
                     !runtime.pendingClose.contains(where: { $0.entryID == page.id || $0.entryID == sourceID })
+                let split = NSMenuItem(title: "Open in Split View", action: nil, keyEquivalent: "")
+                split.image = sidebarSymbol("rectangle.split.2x1", size: 13)
+                let sides = NSMenu()
+                sides.autoenablesItems = false
+                for side in [SplitSide.right, .left, .top, .bottom] {
+                    let item = ActionMenuItem(title: side.title.replacingOccurrences(of: "Add ", with: "").replacingOccurrences(of: " Split", with: "")) { [weak self] in
+                        guard let self, self.canRunSplitAction(in: workspaceID),
+                              self.runtime.state.currentWorkspace.activeEntryID == sourceID,
+                              self.runtime.state.canCreateSplit(with: page.id) else { return }
+                        self.perform { self.runtime.createSplit(with: page.id, side: side) }
+                    }
+                    item.image = sidebarSymbol(side.symbolName, size: 13)
+                    item.isEnabled = canSplit
+                    sides.addItem(item)
+                }
+                split.submenu = sides
+                split.isEnabled = canSplit
                 menu.addItem(.separator())
                 menu.addItem(split)
             }
@@ -1994,7 +2085,7 @@ enum SidebarMetrics {
 }
 
 @MainActor
-func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regular) -> NSImage {
+public func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regular) -> NSImage {
     let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) ?? NSImage(size: NSSize(width: size, height: size))
     return image.withSymbolConfiguration(.init(pointSize: size, weight: weight)) ?? image
 }
@@ -2173,7 +2264,7 @@ private final class ActionButton: NSButton {
 }
 
 @MainActor
-private final class ActionMenuItem: NSMenuItem {
+final class ActionMenuItem: NSMenuItem {
     private let invoke: () -> Void
     init(title: String, invoke: @escaping () -> Void) {
         self.invoke = invoke
@@ -2721,6 +2812,16 @@ public final class ContentCardFrameView: NSView {
     /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
     public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
     public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
+    /// Displayed split panes in this view's flipped coordinates; each is its own rounded card with the tint between.
+    public var paneCards: [NSRect] = [] {
+        didSet { guard paneCards != oldValue else { return }; needsDisplay = true; updateSplitButton() }
+    }
+    /// Pane that holds focus, outlined in the workspace accent.
+    public var focusedPane: Int? { didSet { needsDisplay = true } }
+    /// The toolbar's split button, shown only while no pair is displayed.
+    var onAddSplit: ((SplitSide) -> Void)?
+    var canAddSplit = false { didSet { updateSplitButton() } }
+    private let splitToolbarButton = NSButton(frame: .zero)
     /// A workspace without a selected tab shows a blank card instead of the engine's placeholder page.
     public var showsEmptyState = false {
         didSet {
@@ -2745,6 +2846,7 @@ public final class ContentCardFrameView: NSView {
         wantsLayer = true
         layer?.zPosition = 1000
         configureShowSidebarButton()
+        configureSplitButton()
         AppearanceWatcher.start()
         NotificationCenter.default.addObserver(self, selector: #selector(redraw),
                                                name: AppearanceWatcher.didChange, object: nil)
@@ -2783,6 +2885,30 @@ public final class ContentCardFrameView: NSView {
 
     @objc private func showSidebar() { onShowSidebar?() }
 
+    private func configureSplitButton() {
+        splitToolbarButton.image = sidebarSymbol("rectangle.split.2x1", size: 13)
+        splitToolbarButton.imagePosition = .imageOnly
+        splitToolbarButton.isBordered = false
+        splitToolbarButton.bezelStyle = .recessed
+        splitToolbarButton.contentTintColor = .secondaryLabelColor
+        splitToolbarButton.setAccessibilityLabel("Split view")
+        splitToolbarButton.setAccessibilityIdentifier("bato-toolbar-split")
+        splitToolbarButton.toolTip = "Split view"
+        splitToolbarButton.target = self
+        splitToolbarButton.action = #selector(showSplitMenu)
+        updateSplitButton()
+    }
+
+    @objc private func showSplitMenu() {
+        let menu = makeSplitMenu(isEnabled: canAddSplit) { [weak self] side in self?.onAddSplit?(side) }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: splitToolbarButton.bounds.height + 4), in: splitToolbarButton)
+    }
+
+    private func updateSplitButton() {
+        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState
+        needsLayout = true
+    }
+
     private func updateShowSidebarButton() {
         showSidebarButton.isHidden = !isCardShown || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
         needsLayout = true
@@ -2790,7 +2916,7 @@ public final class ContentCardFrameView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { showSidebarButton.removeFromSuperview() }
+        if window == nil { showSidebarButton.removeFromSuperview(); splitToolbarButton.removeFromSuperview() }
         needsLayout = true
     }
 
@@ -2803,6 +2929,10 @@ public final class ContentCardFrameView: NSView {
         if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
         showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
                                          width: side, height: side)
+        if splitToolbarButton.superview !== container { container.addSubview(splitToolbarButton) }
+        // The engine keeps Chrome's toolbar clear of this slot (kNativeSplitButtonSlot).
+        splitToolbarButton.frame = NSRect(x: container.bounds.width - Self.margin - 6 - side, y: zoom.frame.midY - side / 2,
+                                          width: side, height: side)
     }
 
     /// The page card in screen coordinates (y up), for anchoring panels to it.
@@ -2818,8 +2948,17 @@ public final class ContentCardFrameView: NSView {
                       height: max(0, bounds.height - 2 * margin))
     }
 
+    /// One card normally; one per pane while a pair is displayed.
+    private var cardPaths: [NSBezierPath] {
+        (paneCards.isEmpty ? [cardRect] : paneCards).map {
+            NSBezierPath(roundedRect: $0, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
+        }
+    }
+
     public override func draw(_ dirtyRect: NSRect) {
-        let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
+        let paths = cardPaths
+        let card = NSBezierPath()
+        paths.forEach { card.append($0) }
         let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
         let ring = NSBezierPath(rect: bounds)
         ring.append(card)
@@ -2840,7 +2979,15 @@ public final class ContentCardFrameView: NSView {
         card.lineWidth = 1
         card.stroke()
         NSGraphicsContext.restoreGraphicsState()
-        if showsEmptyState { drawEmptyState(in: card) }
+        if let focusedPane, paneCards.indices.contains(focusedPane) {
+            let width = SplitPaneChrome.focusOutlineWidth
+            let outline = NSBezierPath(roundedRect: paneCards[focusedPane].insetBy(dx: width / 2, dy: width / 2),
+                                       xRadius: Self.cornerRadius - width / 2, yRadius: Self.cornerRadius - width / 2)
+            outline.lineWidth = width
+            SidebarStyle.vivid(accent).setStroke()
+            outline.stroke()
+        }
+        if showsEmptyState { drawEmptyState(in: paths[0]) }
     }
 
     private func drawEmptyState(in card: NSBezierPath) {
