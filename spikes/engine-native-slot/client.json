@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "2b7ff0b64e29bdb0003e9029c4d3f33b9ded71d69e23cc14f92c817c2dbf2462",
+  "patch_sha256": "8e3205c84e6e9f11e6f317f1075d2eedde3ea05d82f944b72f83a2bc8aad1a3b",
   "files": [
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "1f44aebe3f0ff1bb99bdcee36545307729f618e3c20e6ae40d898edd7c5625eb"
+      "patched_sha256": "cb2c575039019c2f59b3f860d010f99744db8850f122580bc72095607226760d"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "656ead4c3f46042b434167ee6c024ee2fa31c3d54ff137515714f389144bef7c"
+      "patched_sha256": "253b71232aab2003b69ecc4dfebd67bc7ddac6e548cf63d9043508c111864582"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "f3b4e23c79930d6de31fab210d31aa5fae91d394f96eb84bf39800662c71338b"
+      "patched_sha256": "32eccdc1a082de3706e9fe899fdb00000d54fa0bbf6abe5d6c7ac82e98fe7feb"
     },
     {
       "root": "cef",
@@ -218,7 +218,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift",
       "original_sha256": null,
-      "patched_sha256": "94663529348e5800c75e4d27a6dd05ac7005619e4f345facbea4b4594a93f60b"
+      "patched_sha256": "e61ebfb0f967fc411738a5a2f742c1d526712b25e54b7f259e0a5002f31bd43d"
     },
     {
       "root": "cef",
@@ -296,7 +296,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/Archive.swift",
       "original_sha256": null,
-      "patched_sha256": "7cdb12d2bd59df79b5479640f16833010882acadf7f6b65e7a5c31d39d96cffb"
+      "patched_sha256": "45b212d913e885a12aa822e71fcc9701563c13f263d8d5503991a22f9a2f0216"
     },
     {
       "root": "cef",
@@ -368,7 +368,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
       "original_sha256": null,
-      "patched_sha256": "4aed416c6146f59ea1665629886538bd5d2599cdc5e198f96ac0bb9b00b50c21"
+      "patched_sha256": "d9a11ac3f5f502c398d65b35448b0af6bb23ebd7b69a31ddbec5c6b9c658878e"
     },
     {
       "root": "cef",
@@ -380,7 +380,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
       "original_sha256": null,
-      "patched_sha256": "999eb8af09dac254af3126bca4ccb0057924d0306069d07131dcb7f01828caf3"
+      "patched_sha256": "c501e968b2f2637d397626fbc92fe11534ad3fb07aed2b4c96e008e6f631b2df"
     },
     {
       "root": "cef",
@@ -392,7 +392,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/TabSwitcherPanel.swift",
       "original_sha256": null,
-      "patched_sha256": "7d691305ff3e029050de16c311903ccf3f0246ba277b670f52276cca02f1846e"
+      "patched_sha256": "0ff9fe234d6706bc1e040cd1c7300dc7812b3e782a38cbab4fa4082eef31fbf9"
     }
   ],
   "source_mirrors": {

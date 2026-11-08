@@ -128,12 +128,15 @@ private final class TabSwitcherCard: NSView {
         }
         let labelColor = dark ? NSColor.white : NSColor.black
         if isPair {
-            let size: CGFloat = 16
-            let width = CGFloat(content.count) * size + CGFloat(content.count - 1) * 8
-            var iconX = (bounds.width - width) / 2
-            for page in content {
-                page.icon.draw(in: NSRect(x: iconX, y: 20 - size / 2 + 4, width: size, height: size))
-                iconX += size + 8
+            // Both titles, one row each, under the two plates.
+            for (row, page) in content.enumerated() {
+                let rowY = 26 - CGFloat(row) * 20
+                page.icon.draw(in: NSRect(x: 16, y: rowY + 2, width: 14, height: 14))
+                let style = NSMutableParagraphStyle()
+                style.lineBreakMode = .byTruncatingTail
+                NSAttributedString(string: page.title, attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: labelColor,
+                    .paragraphStyle: style]).draw(in: NSRect(x: 36, y: rowY, width: bounds.width - 36 - 14, height: 18))
             }
         } else if let page = content.first {
             page.icon.draw(in: NSRect(x: 16, y: 20 - 8 + 4, width: 16, height: 16))

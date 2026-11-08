@@ -42,6 +42,10 @@ public final class NativeWorkspaceController: NSObject {
     private let peekLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var hasStarted = false
+    /// Set by the Space header just before it changes the model, so the next render can animate the change.
+    private var pendingPinsAnimation: PinsAnimation?
+    private var pointerInSidebar = false
+    private weak var tidyClearRow: TidyClearRow?
     private var tabSwitcher: TabSwitcherSession?
     private var tabSwitcherPanel: TabSwitcherPanel?
     private var tabSwitcherTimer: Timer?
@@ -653,6 +657,7 @@ public final class NativeWorkspaceController: NSObject {
             view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
             view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
             view.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
+            view.pointerChanged = { [weak self] in self?.setPointerInSidebar($0) }
         }
 
         workspaceActions.target = self
@@ -919,10 +924,23 @@ public final class NativeWorkspaceController: NSObject {
             view.removeFromSuperview()
         }
         let rows = state.sidebarRows()
+        let pinsAnimation = pendingPinsAnimation
+        pendingPinsAnimation = nil
         addSection("Favorites", rows: rows[.favorites] ?? [])
-        addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
-        for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
+        let spaceHeader = makeSpaceHeader(workspace, animatingFromCollapsed: pinsAnimation.map { !$0.expanding })
+        entries.addArrangedSubview(spaceHeader)
+        spaceHeader.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        if workspace.pinsCollapsed { entries.setCustomSpacing(14, after: spaceHeader) }
+        let pinnedStart = entries.arrangedSubviews.count
+        if !workspace.pinsCollapsed {
+            addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
+            for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
+        }
+        let belowStart = entries.arrangedSubviews.count
         addSection("Tabs", rows: rows[.tabs] ?? [])
+        if let pinsAnimation {
+            animatePinnedSection(pinsAnimation, pinned: pinnedStart..<belowStart, below: belowStart..<entries.arrangedSubviews.count)
+        }
         entries.restoreFavoritesZone()
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
@@ -1000,6 +1018,9 @@ public final class NativeWorkspaceController: NSObject {
             divider.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
         }
         if title == "Tabs" {
+            let tidyClear = makeTidyClearRow()
+            entries.addArrangedSubview(tidyClear)
+            tidyClear.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
             entries.addArrangedSubview(newTabRow)
             dropSlotViews.append((newTabRow, .newTabRow))
             newTabRow.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
@@ -1726,6 +1747,114 @@ public final class NativeWorkspaceController: NSObject {
         render()
     }
 
+    private struct PinsAnimation {
+        let expanding: Bool
+        /// Where the New Tab row sat before the change; how far it moved is how far the content below slides.
+        let newTabY: CGFloat
+    }
+
+    private func makeSpaceHeader(_ workspace: Workspace, animatingFromCollapsed: Bool?) -> SpaceHeaderRow {
+        let workspaceID = workspace.id
+        let header = SpaceHeaderRow(name: workspace.name, color: workspaceColor(workspace.color),
+                                    collapsed: animatingFromCollapsed ?? workspace.pinsCollapsed)
+        header.toggle = { [weak self] in self?.togglePins(inWorkspace: workspaceID) }
+        header.showActions = { [weak self, weak header] in
+            guard let self, let header else { return }
+            self.showSpaceActions(workspaceID, anchor: header.actionsAnchor)
+        }
+        header.hoverChanged = { [weak self] _ in self?.hoverCard.dismiss() }
+        if animatingFromCollapsed != nil {
+            DispatchQueue.main.async { header.setCollapsed(workspace.pinsCollapsed, animated: !Self.reducesMotion) }
+        }
+        return header
+    }
+
+    private static var reducesMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    private func togglePins(inWorkspace id: UUID) {
+        guard hasStarted, runtime.state.activeWorkspaceID == id, root.window?.attachedSheet == nil else { return }
+        let collapsed = runtime.state.currentWorkspace.pinsCollapsed
+        pendingPinsAnimation = PinsAnimation(expanding: collapsed, newTabY: newTabRow.frame.minY)
+        perform { runtime.setPinsCollapsed(!collapsed, inWorkspace: id) }
+        pendingPinsAnimation = nil
+    }
+
+    /// Pinned rows fade in while everything below slides into place; collapsing only slides, since the rows are gone.
+    private func animatePinnedSection(_ animation: PinsAnimation, pinned: Range<Int>, below: Range<Int>) {
+        guard !Self.reducesMotion else { return }
+        entries.layoutSubtreeIfNeeded()
+        let delta = newTabRow.frame.minY - animation.newTabY
+        guard abs(delta) > 1 else { return }
+        let duration = SidebarMetrics.pinsAnimationDuration
+        let views = entries.arrangedSubviews
+        if animation.expanding {
+            for view in views[pinned] {
+                view.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = duration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    view.animator().alphaValue = 1
+                }
+            }
+        }
+        for view in views[below] {
+            view.wantsLayer = true
+            let slide = CABasicAnimation(keyPath: "transform.translation.y")
+            slide.fromValue = -delta
+            slide.toValue = 0
+            slide.duration = duration
+            slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            view.layer?.add(slide, forKey: "pins-slide")
+        }
+    }
+
+    private func showSpaceActions(_ id: UUID, anchor: NSView) {
+        guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil, runtime.state.activeWorkspaceID == id else { return }
+        requestNativeFocus?()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(ActionMenuItem(title: "Rename Space…") { [weak self] in self?.editWorkspace() })
+        menu.addItem(ActionMenuItem(title: "Change Colour…") { [weak self] in self?.editWorkspace() })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
+            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
+            self.editFolder()
+        })
+        let collapsed = runtime.state.currentWorkspace.pinsCollapsed
+        menu.addItem(ActionMenuItem(title: collapsed ? "Show Pinned" : "Hide Pinned") { [weak self] in self?.togglePins(inWorkspace: id) })
+        menu.addItem(.separator())
+        let delete = ActionMenuItem(title: "Delete Space…") { [weak self] in self?.confirmDeleteWorkspace(id) }
+        delete.isEnabled = runtime.state.canDeleteWorkspace(id)
+        menu.addItem(delete)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.maxY + 2), in: anchor)
+    }
+
+    private func makeTidyClearRow() -> TidyClearRow {
+        let state = runtime.state
+        let row = TidyClearRow(canTidy: !state.duplicateTabIDs().isEmpty, canClear: !state.clearableTabIDs().isEmpty)
+        row.alphaValue = pointerInSidebar ? 1 : 0
+        row.tidy = { [weak self] in
+            guard let self, self.hasStarted else { return }
+            self.perform { self.runtime.archiveTabs(self.runtime.state.duplicateTabIDs()) > 0 }
+        }
+        row.clear = { [weak self] in
+            guard let self, self.hasStarted else { return }
+            self.perform { self.runtime.archiveTabs(self.runtime.state.clearableTabIDs()) > 0 }
+        }
+        tidyClearRow = row
+        return row
+    }
+
+    private func setPointerInSidebar(_ inside: Bool) {
+        pointerInSidebar = inside
+        guard let row = tidyClearRow else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            row.animator().alphaValue = inside ? 1 : 0
+        }
+    }
+
     @objc private func showWorkspaceActions() {
         guard hasStarted, workspaceEditor == nil, folderEditor == nil, let window = root.window,
               window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
@@ -2351,6 +2480,8 @@ enum SidebarMetrics {
     /// The show-sidebar button's side. With the traffic light gap and 4pt of trailing air it must equal
     /// kNativeSidebarToggleSlot (38) in the engine overlay, which is where Chromium's toolbar starts after the lights.
     static let revealButtonSide: CGFloat = 28
+    /// Arc fades the pinned rows in over roughly this long while the content below slides.
+    static let pinsAnimationDuration: TimeInterval = 0.22
 }
 
 @MainActor
@@ -2386,6 +2517,17 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
         NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
     }
     var keyEquivalentsEnabled = true
+    var pointerChanged: ((Bool) -> Void)?
+    private var pointerTracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        pointerTracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { pointerChanged?(true) }
+    override func mouseExited(with event: NSEvent) { pointerChanged?(false) }
     var windowChanged: (() -> Void)?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -3312,8 +3454,9 @@ public final class ContentCardFrameView: NSView {
 
     /// One card normally; one per pane while a pair is displayed.
     private var cardPaths: [NSBezierPath] {
-        (paneCards.isEmpty ? [cardRect] : paneCards).map {
-            NSBezierPath(roundedRect: $0, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
+        let radius = paneCards.isEmpty ? Self.cornerRadius : SplitPaneChrome.paneCornerRadius
+        return (paneCards.isEmpty ? [cardRect] : paneCards).map {
+            NSBezierPath(roundedRect: $0, xRadius: radius, yRadius: radius)
         }
     }
 
@@ -3341,14 +3484,7 @@ public final class ContentCardFrameView: NSView {
         card.lineWidth = 1
         card.stroke()
         NSGraphicsContext.restoreGraphicsState()
-        if let focusedPane, paneCards.indices.contains(focusedPane) {
-            let width = SplitPaneChrome.focusOutlineWidth
-            let outline = NSBezierPath(roundedRect: paneCards[focusedPane].insetBy(dx: width / 2, dy: width / 2),
-                                       xRadius: Self.cornerRadius - width / 2, yRadius: Self.cornerRadius - width / 2)
-            outline.lineWidth = width
-            SidebarStyle.vivid(accent).setStroke()
-            outline.stroke()
-        }
+        if let focusedPane, paneCards.indices.contains(focusedPane) { drawFocus(of: paneCards[focusedPane], outside: ring) }
         if let pill = grabberPillRect {
             let active = grabberHovered || grabberDragging
             let dark = effectiveAppearance.isDark
@@ -3358,6 +3494,31 @@ public final class ContentCardFrameView: NSView {
         }
         if showsEmptyState { drawEmptyState(in: paths[0]) }
     }
+
+    /// Arc's focused pane: a 2pt outline inside the pane's bounds and a soft glow that only shows between panes.
+    private func drawFocus(of pane: NSRect, outside ring: NSBezierPath) {
+        let radius = SplitPaneChrome.paneCornerRadius
+        let width = SplitPaneChrome.focusOutlineWidth
+        NSGraphicsContext.saveGraphicsState()
+        ring.addClip()
+        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
+        let glow = NSShadow()
+        glow.shadowColor = Self.focusColor.withAlphaComponent(0.55)
+        glow.shadowBlurRadius = SplitPaneChrome.focusGlowBlur
+        glow.shadowOffset = .zero
+        glow.set()
+        Self.focusColor.setFill()
+        NSBezierPath(roundedRect: pane, xRadius: radius, yRadius: radius).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        let outline = NSBezierPath(roundedRect: pane.insetBy(dx: width / 2, dy: width / 2),
+                                   xRadius: radius - width / 2, yRadius: radius - width / 2)
+        outline.lineWidth = width
+        Self.focusColor.setStroke()
+        outline.stroke()
+    }
+
+    /// Arc's focus violet, fixed rather than following the Space colour.
+    static let focusColor = NSColor(srgbRed: 0x4f / 255, green: 0x40 / 255, blue: 0xf9 / 255, alpha: 1)
 
     private func drawEmptyState(in card: NSBezierPath) {
         let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
@@ -3374,4 +3535,226 @@ public final class ContentCardFrameView: NSView {
         let rect = cardRect
         text.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
     }
+}
+
+/// Arc's Space header above the pinned section. Idle it shows the Space icon; on hover (and always while the
+/// section is collapsed) the icon becomes a chevron, and a trailing ⋯ appears. Clicking toggles the section.
+@MainActor
+private final class SpaceHeaderRow: AdaptiveSidebarView {
+    static let height: CGFloat = 36
+    private static let labelX: CGFloat = 36
+    private let color: NSColor
+    private let name: String
+    private lazy var nameButton = ActionButton(title: name) { [weak self] in self?.toggle?() }
+    private lazy var actions = ActionButton(title: "") { [weak self] in self?.showActions?() }
+    private var hovered = false {
+        didSet {
+            guard hovered != oldValue else { return }
+            actions.alphaValue = hovered ? 1 : 0
+            needsDisplay = true
+            hoverChanged?(hovered)
+        }
+    }
+    private var tracking: NSTrackingArea?
+    var toggle: (() -> Void)?
+    var showActions: (() -> Void)?
+    var hoverChanged: ((Bool) -> Void)?
+    var actionsAnchor: NSView { actions }
+
+    /// 0 points the chevron down (expanded), 1 points it right (collapsed). Animatable through `animator()`.
+    @objc dynamic var chevronTurn: CGFloat = 0 { didSet { needsDisplay = true } }
+    private var isCollapsed: Bool
+
+    override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
+        key == "chevronTurn" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
+    }
+
+    init(name: String, color: NSColor, collapsed: Bool) {
+        self.name = name
+        self.color = color
+        isCollapsed = collapsed
+        super.init(frame: .zero)
+        chevronTurn = collapsed ? 1 : 0
+        nameButton.isBordered = false
+        nameButton.bezelStyle = .recessed
+        nameButton.focusRingType = .none
+        nameButton.alignment = .left
+        nameButton.font = .systemFont(ofSize: 13, weight: .semibold)
+        nameButton.contentTintColor = .labelColor
+        (nameButton.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+        nameButton.setAccessibilityIdentifier("bato-space-header")
+        nameButton.setAccessibilityLabel("Pinned tabs of \(name)")
+        nameButton.setAccessibilityValue(collapsed ? "collapsed" : "expanded")
+        nameButton.setAccessibilityHelp("Shows or hides the pinned tabs and folders of this Space.")
+        actions.image = sidebarSymbol("ellipsis", size: 13, weight: .semibold)
+        actions.imagePosition = .imageOnly
+        actions.isBordered = false
+        actions.bezelStyle = .recessed
+        actions.focusRingType = .none
+        actions.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
+        actions.alphaValue = 0
+        actions.setAccessibilityLabel("Space actions")
+        actions.setAccessibilityIdentifier("bato-space-header-actions")
+        actions.toolTip = "Rename, recolour or add a folder to this Space"
+        for view in [nameButton, actions] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Self.height),
+            nameButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.labelX),
+            nameButton.trailingAnchor.constraint(equalTo: actions.leadingAnchor, constant: -2),
+            nameButton.topAnchor.constraint(equalTo: topAnchor),
+            nameButton.bottomAnchor.constraint(equalTo: bottomAnchor),
+            actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actions.widthAnchor.constraint(equalToConstant: 24),
+            actions.heightAnchor.constraint(equalToConstant: 24)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func setCollapsed(_ collapsed: Bool, animated: Bool) {
+        isCollapsed = collapsed
+        nameButton.setAccessibilityValue(collapsed ? "collapsed" : "expanded")
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = SidebarMetrics.pinsAnimationDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                animator().chevronTurn = collapsed ? 1 : 0
+            }
+        } else {
+            chevronTurn = collapsed ? 1 : 0
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // A header rebuilt under a resting pointer never gets a mouseEntered.
+        guard let window else { return }
+        hovered = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { toggle?() }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if hovered {
+            SidebarStyle.headerHoverFill.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius,
+                         yRadius: SidebarMetrics.cornerRadius).fill()
+        }
+        let slot = NSPoint(x: 18, y: bounds.midY)
+        if hovered || isCollapsed || chevronTurn != 0 {
+            drawChevron(at: slot)
+        } else {
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: slot.x - 6, y: slot.y - 6, width: 12, height: 12)).fill()
+        }
+    }
+
+    /// A 10pt wide chevron, stroke 1.5, turned about its centre by `chevronTurn` quarter-turns.
+    private func drawChevron(at centre: NSPoint) {
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: -5, y: 2.5))
+        path.line(to: NSPoint(x: 0, y: -2.5))
+        path.line(to: NSPoint(x: 5, y: 2.5))
+        var transform = AffineTransform(translationByX: centre.x, byY: centre.y)
+        transform.rotate(byRadians: .pi / 2 * chevronTurn)
+        path.transform(using: transform)
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        NSColor.labelColor.withAlphaComponent(0.85).setStroke()
+        path.stroke()
+    }
+}
+
+/// The "Tidy | Clear" row above New Tab. Labels are dim until the pointer rests on one.
+@MainActor
+private final class TidyClearRow: NSView {
+    private lazy var tidyButton = ActionButton(title: "Tidy") { [weak self] in self?.tidy?() }
+    private lazy var clearButton = ActionButton(title: "Clear") { [weak self] in self?.clear?() }
+    private let separator = NSView()
+    private var hoveredLabel: NSButton? { didSet { if hoveredLabel !== oldValue { styleLabels() } } }
+    private var tracking: NSTrackingArea?
+    var tidy: (() -> Void)?
+    var clear: (() -> Void)?
+    private let canTidy: Bool
+    private let canClear: Bool
+
+    init(canTidy: Bool, canClear: Bool) {
+        self.canTidy = canTidy
+        self.canClear = canClear
+        super.init(frame: .zero)
+        tidyButton.image = sidebarSymbol("paintbrush.pointed", size: 11, weight: .semibold)
+        tidyButton.imagePosition = .imageLeading
+        tidyButton.toolTip = "Archive duplicate Today tabs"
+        tidyButton.setAccessibilityIdentifier("bato-tidy")
+        tidyButton.setAccessibilityLabel("Tidy")
+        tidyButton.setAccessibilityHelp("Archives Today tabs that repeat another tab's address. Archived tabs can be restored.")
+        clearButton.toolTip = "Clear unselected Today tabs"
+        clearButton.setAccessibilityIdentifier("bato-clear")
+        clearButton.setAccessibilityLabel("Clear")
+        clearButton.setAccessibilityHelp("Archives every Today tab except the selected one. Archived tabs can be restored.")
+        tidyButton.isEnabled = canTidy
+        clearButton.isEnabled = canClear
+        for button in [tidyButton, clearButton] {
+            button.isBordered = false
+            button.bezelStyle = .recessed
+            button.focusRingType = .none
+        }
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.25).cgColor
+        let stack = NSStackView(views: [tidyButton, separator, clearButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 28),
+            separator.widthAnchor.constraint(equalToConstant: 1),
+            separator.heightAnchor.constraint(equalToConstant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+        styleLabels()
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    private func styleLabels() {
+        for button in [tidyButton, clearButton] {
+            let alpha: CGFloat = button === hoveredLabel ? 0.95 : (hoveredLabel == nil ? 0.35 : 0.25)
+            let color = NSColor.labelColor.withAlphaComponent(button.isEnabled ? alpha : 0.2)
+            button.attributedTitle = NSAttributedString(string: button.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: color])
+            button.contentTintColor = color
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        hoveredLabel = [tidyButton, clearButton].first { $0.isEnabled && $0.frame.insetBy(dx: -4, dy: -6).contains(convert(point, to: $0.superview)) }
+    }
+    override func mouseExited(with event: NSEvent) { hoveredLabel = nil }
 }

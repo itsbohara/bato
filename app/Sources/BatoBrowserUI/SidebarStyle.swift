@@ -38,6 +38,8 @@ enum SidebarStyle {
     }
     private static let selectedRowFill = wash(dark: 0.13, light: 0.07)
     private static let hoveredRowFill = wash(dark: 0.07, light: 0.04)
+    /// Space header hover, a little stronger than a row's hover.
+    static let headerHoverFill = wash(dark: 0.10, light: 0.06)
     private static let tileRestFill = wash(dark: 0.08, light: 0.06)
 
     static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
