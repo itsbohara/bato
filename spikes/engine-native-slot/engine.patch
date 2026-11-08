@@ -1817,7 +1817,7 @@
  }
 
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5062,21 @@
+@@ -4992,6 +5062,24 @@
    }
 
    LayoutSuperclass<views::View>(this);
@@ -1827,8 +1827,11 @@
 +      browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
 +    // Use Chromium's existing propagation to native contents/DevTools/overlays.
 +    // Split containers keep Chromium's own independent corner treatment.
++    // The toolbar above the page is square-joined: only the card's bottom
++    // corners are rounded.
++    const float lower_radius = IsFullscreen() ? 0.0f : 12.0f;
 +    multi_contents_view_->SetBackgroundRadii(
-+        gfx::RoundedCornersF(IsFullscreen() ? 0.0f : 12.0f));
++        gfx::RoundedCornersF(0.0f, 0.0f, lower_radius, lower_radius));
 +  }
 +#endif
 +#if BUILDFLAG(ENABLE_CEF) && BUILDFLAG(IS_MAC)
@@ -1839,7 +1842,7 @@
 
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5694,13 @@
+@@ -5609,6 +5697,13 @@
  }
 
  void BrowserView::PrepareFullscreen(bool fullscreen) {
