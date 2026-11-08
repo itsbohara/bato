@@ -7133,7 +7133,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2464 @@
+@@ -0,0 +1,2499 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7167,6 +7167,7 @@
 +    private var downloadsProfileKey: (UUID) -> String = { $0.uuidString }
 +    private let switcherButton = NSButton(frame: .zero)
 +    private lazy var newTabButton = ActionButton(title: "New tab") { [weak self] in self?.newTab() }
++    private lazy var newTabRow = SidebarActionRow(button: newTabButton)
 +    private var pageControls: [UUID: (select: NSButton, close: NSButton)] = [:]
 +    private var folderControls: [UUID: (disclosure: NSButton, title: NSButton, actions: NSButton)] = [:]
 +    private var pageIcons: [UUID: NSImage] = [:]
@@ -7641,7 +7642,14 @@
 +        heading.heightAnchor.constraint(equalToConstant: SidebarMetrics.topRowHeight + SidebarMetrics.headingDrop).isActive = true
 +
 +        newTabButton.title = "New Tab"
-+        newTabButton.image = sidebarSymbol("plus", size: 14)
++        let plus = sidebarSymbol("plus", size: 13, weight: .medium)
++        let iconSize = NSSize(width: SidebarStyle.rowIconSize, height: SidebarStyle.rowIconSize)
++        newTabButton.image = NSImage(size: iconSize, flipped: false) { rect in
++            plus.draw(in: NSRect(x: rect.midX - plus.size.width / 2, y: rect.midY - plus.size.height / 2,
++                                 width: plus.size.width, height: plus.size.height))
++            return true
++        }
++        newTabButton.image?.isTemplate = true
 +        newTabButton.imagePosition = .imageLeading
 +        newTabButton.font = SidebarStyle.rowFont
 +        newTabButton.bezelStyle = .recessed
@@ -7651,7 +7659,6 @@
 +        newTabButton.focusRingType = .none
 +        newTabButton.setAccessibilityLabel("New Tab")
 +        newTabButton.setAccessibilityIdentifier("bato-focus-new-tab")
-+        newTabButton.heightAnchor.constraint(equalToConstant: SidebarStyle.rowHeight).isActive = true
 +        peekLabel.font = .systemFont(ofSize: 11, weight: .medium)
 +        peekLabel.textColor = .secondaryLabelColor
 +        peekLabel.lineBreakMode = .byTruncatingTail
@@ -8065,8 +8072,8 @@
 +            divider.widthAnchor.constraint(equalTo: entries.widthAnchor, constant: -8).isActive = true
 +        }
 +        if title == "Tabs" {
-+            entries.addArrangedSubview(newTabButton)
-+            newTabButton.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
++            entries.addArrangedSubview(newTabRow)
++            newTabRow.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
 +        }
 +        if pages.isEmpty && title == "Tabs" {
 +            let empty = NSTextField(wrappingLabelWithString: "No tabs yet.\nOpen a website to start browsing.")
@@ -8110,17 +8117,16 @@
 +        select.focusRingType = .none
 +        select.alignment = tile ? .center : .left
 +        select.font = SidebarStyle.rowFont
++        let iconSize = tile ? SidebarStyle.tileIconSize : SidebarStyle.rowIconSize
 +        if let icon = pageIcons[page.id]?.copy() as? NSImage {
-+            icon.size = NSSize(width: tile ? 26 : 18, height: tile ? 26 : 18)
++            icon.size = NSSize(width: iconSize, height: iconSize)
 +            select.image = icon
 +            select.imageScaling = .scaleProportionallyDown
 +        } else {
-+            select.image = tile ? SidebarStyle.letterIcon(for: title, url: page.lastURL, size: 26)
-+                : sidebarSymbol(page.kind == .pinned ? "pin.fill" : "globe", size: 14)
++            select.image = SidebarStyle.letterIcon(for: title, url: page.lastURL, size: iconSize)
 +        }
 +        select.imagePosition = tile ? .imageOnly : .imageLeading
 +        select.imageHugsTitle = true
-+        select.contentTintColor = pageIcons[page.id] == nil && !tile ? .labelColor : nil
 +        select.setButtonType(.momentaryPushIn)
 +        select.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +        select.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -8344,7 +8350,7 @@
 +        disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
 +        disclosure.heightAnchor.constraint(equalToConstant: 24).isActive = true
 +        let title = ActionButton(title: folder.name, invoke: toggle)
-+        title.image = sidebarSymbol(folder.isCollapsed ? "folder" : "folder.fill", size: 12)
++        title.image = folderGlyph(collapsed: folder.isCollapsed)
 +        title.imagePosition = .imageLeading
 +        title.imageHugsTitle = true
 +        title.isBordered = false
@@ -8387,6 +8393,14 @@
 +            }
 +        }
 +        if depth == 1, let last = entries.arrangedSubviews.last { entries.setCustomSpacing(9, after: last) }
++    }
++
++    /// Palette-rendered so only the glyph takes the workspace colour; the button tint would also recolour the name.
++    private func folderGlyph(collapsed: Bool) -> NSImage {
++        let symbol = sidebarSymbol(collapsed ? "folder.fill" : "folder", size: 13)
++        let tinted = symbol.withSymbolConfiguration(.init(paletteColors: [SidebarStyle.vivid(accent)])) ?? symbol
++        tinted.isTemplate = false
++        return tinted
 +    }
 +
 +    private func folderMenu(_ folderID: UUID, workspaceID: UUID) -> NSMenu {
@@ -8823,7 +8837,7 @@
 +    private let selected: Bool
 +    private let accent: NSColor
 +    private let tile: Bool
-+    private var hovered = false { didSet { close.alphaValue = tile && !hovered ? 0 : 1 } }
++    private var hovered = false { didSet { close.alphaValue = hovered ? 1 : 0 } }
 +    private let close: NSButton
 +    private var tracking: NSTrackingArea?
 +    init(select: NSButton, close: NSButton, tile: Bool, selected: Bool, accent: NSColor) {
@@ -8832,8 +8846,8 @@
 +        self.tile = tile
 +        self.close = close
 +        super.init(frame: .zero)
-+        // Hidden tile close stays in the accessibility tree and still takes clicks; hover only reveals it.
-+        close.alphaValue = tile ? 0 : 1
++        // The hidden close stays in the accessibility tree and still takes clicks; hover only reveals it.
++        close.alphaValue = 0
 +        select.translatesAutoresizingMaskIntoConstraints = false
 +        close.translatesAutoresizingMaskIntoConstraints = false
 +        addSubview(select)
@@ -8843,10 +8857,10 @@
 +        close.heightAnchor.constraint(equalToConstant: 24).isActive = true
 +        if tile {
 +            NSLayoutConstraint.activate([
-+                select.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-+                select.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-+                select.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-+                select.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
++                select.leadingAnchor.constraint(equalTo: leadingAnchor),
++                select.trailingAnchor.constraint(equalTo: trailingAnchor),
++                select.topAnchor.constraint(equalTo: topAnchor),
++                select.bottomAnchor.constraint(equalTo: bottomAnchor),
 +                close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
 +                close.topAnchor.constraint(equalTo: topAnchor, constant: 1)
 +            ])
@@ -8874,33 +8888,54 @@
 +    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 +    override func draw(_ dirtyRect: NSRect) {
 +        let contrast = AppearanceWatcher.increaseContrast
-+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: tile ? 1.5 : 0.5), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
++        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius)
 +        if let fill = SidebarStyle.rowFill(selected: selected, hovered: hovered, tile: tile) {
 +            fill.setFill()
 +        } else {
 +            NSColor.clear.setFill()
 +        }
-+        if tile {
-+            NSGraphicsContext.saveGraphicsState()
-+            let shadow = NSShadow()
-+            shadow.shadowColor = SidebarStyle.tileShadow
-+            shadow.shadowOffset = NSSize(width: 0, height: -1)
-+            shadow.shadowBlurRadius = 3
-+            shadow.set()
-+            path.fill()
-+            NSGraphicsContext.restoreGraphicsState()
-+        }
 +        path.fill()
-+        if tile {
-+            SidebarStyle.tileHairline.setStroke()
-+            path.lineWidth = 0.5
-+            path.stroke()
-+        }
 +        if contrast && (selected || tile) {
 +            (selected ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).setStroke()
-+            path.lineWidth = 1.5
++            path.lineWidth = 1
 +            path.stroke()
 +        }
++    }
++}
++
++/// A non-page sidebar row (New Tab) with the same metrics and hover wash as a page row.
++@MainActor
++private final class SidebarActionRow: AdaptiveSidebarView {
++    private var hovered = false
++    private var tracking: NSTrackingArea?
++    init(button: NSButton) {
++        super.init(frame: .zero)
++        button.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(button)
++        NSLayoutConstraint.activate([
++            heightAnchor.constraint(equalToConstant: SidebarStyle.rowHeight),
++            button.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
++            button.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
++            button.topAnchor.constraint(equalTo: topAnchor),
++            button.bottomAnchor.constraint(equalTo: bottomAnchor)
++        ])
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    override func updateTrackingAreas() {
++        super.updateTrackingAreas()
++        if let tracking { removeTrackingArea(tracking) }
++        let area = NSTrackingArea(rect: .zero,
++            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
++        addTrackingArea(area)
++        tracking = area
++    }
++    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
++    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
++    override func draw(_ dirtyRect: NSRect) {
++        guard let fill = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false) else { return }
++        fill.setFill()
++        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 1), xRadius: SidebarMetrics.cornerRadius,
++                     yRadius: SidebarMetrics.cornerRadius).fill()
 +    }
 +}
 +
@@ -13111,17 +13146,19 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,125 @@
 +import AppKit
 +import BatoCore
 +
 +/// Visual constants and fills for sidebar rows and sheets. Fills are translucent label colors so
 +/// they read as a lift on any workspace tint, in light and dark, rather than a second palette.
 +enum SidebarStyle {
-+    static let rowHeight: CGFloat = 36
-+    static let tileHeight: CGFloat = 58
++    static let rowHeight: CGFloat = 38
++    static let tileHeight: CGFloat = 44
++    static let tileIconSize: CGFloat = 20
++    static let rowIconSize: CGFloat = 16
 +    static let tilesPerRow = 3
-+    static var rowFont: NSFont { NSFont.systemFont(ofSize: 14) }
++    static var rowFont: NSFont { NSFont.systemFont(ofSize: 13.5, weight: .medium) }
 +    static var actionFont: NSFont { NSFont.systemFont(ofSize: 13) }
 +    static let commandBarRadius: CGFloat = 12
 +    static let commandBarRowHeight: CGFloat = 50
@@ -13132,16 +13169,21 @@
 +    static let downloadsPopoverWidth: CGFloat = 320
 +    static let downloadsPopoverMaxListHeight: CGFloat = 360
 +
-+    /// Dia's selected row sinks into the tint (dark pill); on light it is a white lift, as in Arc.
-+    private static let selectedRowFill = NSColor(name: nil) {
-+        $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.white.withAlphaComponent(0.55)
++    /// Arc's rows are soft fills of the foreground colour: white over dark, black over light. No stroke;
++    /// Increase Contrast adds a hairline in the row view instead.
++    private static func wash(dark: CGFloat, light: CGFloat) -> NSColor {
++        NSColor(name: nil) {
++            $0.isDark ? NSColor.white.withAlphaComponent(dark) : NSColor.black.withAlphaComponent(light)
++        }
 +    }
++    private static let selectedRowFill = wash(dark: 0.13, light: 0.07)
++    private static let hoveredRowFill = wash(dark: 0.07, light: 0.04)
++    private static let tileRestFill = wash(dark: 0.08, light: 0.06)
 +
 +    static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
 +        if selected { return selectedRowFill }
-+        if hovered { return NSColor.labelColor.withAlphaComponent(0.07) }
-+        if tile { return NSColor.labelColor.withAlphaComponent(0.12) }
-+        return nil
++        if hovered { return hoveredRowFill }
++        return tile ? tileRestFill : nil
 +    }
 +
 +    /// Lifts a stored workspace colour to a hue that survives blending: muted picks like slate blue or
@@ -13186,8 +13228,6 @@
 +        return result ?? (.windowBackgroundColor, .windowBackgroundColor)
 +    }
 +
-+    /// Soft lift under favorite tiles: a heavy black shadow reads as dirt on a pale light-mode tint.
-+    static let tileShadow = NSColor(name: nil) { $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.black.withAlphaComponent(0.14) }
 +    /// Tile edge: white only shows on dark; light mode needs a dark hairline.
 +    static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
 +    /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.

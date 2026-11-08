@@ -4,10 +4,12 @@ import BatoCore
 /// Visual constants and fills for sidebar rows and sheets. Fills are translucent label colors so
 /// they read as a lift on any workspace tint, in light and dark, rather than a second palette.
 enum SidebarStyle {
-    static let rowHeight: CGFloat = 36
-    static let tileHeight: CGFloat = 58
+    static let rowHeight: CGFloat = 38
+    static let tileHeight: CGFloat = 44
+    static let tileIconSize: CGFloat = 20
+    static let rowIconSize: CGFloat = 16
     static let tilesPerRow = 3
-    static var rowFont: NSFont { NSFont.systemFont(ofSize: 14) }
+    static var rowFont: NSFont { NSFont.systemFont(ofSize: 13.5, weight: .medium) }
     static var actionFont: NSFont { NSFont.systemFont(ofSize: 13) }
     static let commandBarRadius: CGFloat = 12
     static let commandBarRowHeight: CGFloat = 50
@@ -18,16 +20,21 @@ enum SidebarStyle {
     static let downloadsPopoverWidth: CGFloat = 320
     static let downloadsPopoverMaxListHeight: CGFloat = 360
 
-    /// Dia's selected row sinks into the tint (dark pill); on light it is a white lift, as in Arc.
-    private static let selectedRowFill = NSColor(name: nil) {
-        $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.white.withAlphaComponent(0.55)
+    /// Arc's rows are soft fills of the foreground colour: white over dark, black over light. No stroke;
+    /// Increase Contrast adds a hairline in the row view instead.
+    private static func wash(dark: CGFloat, light: CGFloat) -> NSColor {
+        NSColor(name: nil) {
+            $0.isDark ? NSColor.white.withAlphaComponent(dark) : NSColor.black.withAlphaComponent(light)
+        }
     }
+    private static let selectedRowFill = wash(dark: 0.13, light: 0.07)
+    private static let hoveredRowFill = wash(dark: 0.07, light: 0.04)
+    private static let tileRestFill = wash(dark: 0.08, light: 0.06)
 
     static func rowFill(selected: Bool, hovered: Bool, tile: Bool) -> NSColor? {
         if selected { return selectedRowFill }
-        if hovered { return NSColor.labelColor.withAlphaComponent(0.07) }
-        if tile { return NSColor.labelColor.withAlphaComponent(0.12) }
-        return nil
+        if hovered { return hoveredRowFill }
+        return tile ? tileRestFill : nil
     }
 
     /// Lifts a stored workspace colour to a hue that survives blending: muted picks like slate blue or
@@ -72,8 +79,6 @@ enum SidebarStyle {
         return result ?? (.windowBackgroundColor, .windowBackgroundColor)
     }
 
-    /// Soft lift under favorite tiles: a heavy black shadow reads as dirt on a pale light-mode tint.
-    static let tileShadow = NSColor(name: nil) { $0.isDark ? NSColor.black.withAlphaComponent(0.28) : NSColor.black.withAlphaComponent(0.14) }
     /// Tile edge: white only shows on dark; light mode needs a dark hairline.
     static let tileHairline = NSColor(name: nil) { $0.isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.08) }
     /// Card fill in Settings. Increase Contrast adds a stroke (`cardStroke`) instead of relying on the fill.

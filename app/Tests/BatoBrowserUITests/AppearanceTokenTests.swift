@@ -83,4 +83,35 @@ final class AppearanceTokenTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(contrast(.white, over: fill), 3, "hue \(hue)")
         }
     }
+
+    private func alpha(_ fill: NSColor?, in appearance: NSAppearance) -> CGFloat {
+        guard let fill else { return 0 }
+        return resolved(fill, in: appearance).alphaComponent
+    }
+
+    func testRowFillOrdersSelectedOverHoverOverRest() {
+        for appearance in [light, dark] {
+            let selected = alpha(SidebarStyle.rowFill(selected: true, hovered: true, tile: false), in: appearance)
+            let hovered = alpha(SidebarStyle.rowFill(selected: false, hovered: true, tile: false), in: appearance)
+            XCTAssertGreaterThan(selected, hovered)
+            XCTAssertGreaterThan(hovered, 0)
+            XCTAssertNil(SidebarStyle.rowFill(selected: false, hovered: false, tile: false))
+        }
+    }
+
+    func testTilesRestFilledAndHoverBrightensThem() {
+        for appearance in [light, dark] {
+            let rest = alpha(SidebarStyle.rowFill(selected: false, hovered: false, tile: true), in: appearance)
+            XCTAssertGreaterThan(rest, 0)
+        }
+    }
+
+    func testRowWashIsWhiteOnDarkAndBlackOnLight() {
+        let darkFill = resolved(SidebarStyle.rowFill(selected: true, hovered: false, tile: false)!, in: dark)
+        let lightFill = resolved(SidebarStyle.rowFill(selected: true, hovered: false, tile: false)!, in: light)
+        XCTAssertEqual(darkFill.redComponent, 1, accuracy: 0.01)
+        XCTAssertEqual(lightFill.redComponent, 0, accuracy: 0.01)
+        XCTAssertEqual(alpha(darkFill, in: dark), 0.13, accuracy: 0.01)
+        XCTAssertEqual(alpha(lightFill, in: light), 0.07, accuracy: 0.01)
+    }
 }
