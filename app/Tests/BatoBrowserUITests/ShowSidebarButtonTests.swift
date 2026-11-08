@@ -13,3 +13,18 @@ final class ShowSidebarButtonTests: XCTestCase {
         XCTAssertEqual(gap + side + 4, 38)
     }
 }
+
+@MainActor
+final class EmptyCardStateTests: XCTestCase {
+    func testEmptyCardTakesHitsOnlyInsideTheCard() {
+        let card = ContentCardFrameView(accent: .systemBlue)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        host.addSubview(card)
+        card.frame = host.bounds
+        XCTAssertNil(card.hitTest(NSPoint(x: 400, y: 300)))
+        card.showsEmptyState = true
+        XCTAssertTrue(card.hitTest(NSPoint(x: 400, y: 300)) === card)
+        XCTAssertNil(card.hitTest(NSPoint(x: 2, y: 2)))
+        XCTAssertEqual(card.accessibilityLabel(), ContentCardFrameView.emptyHint)
+    }
+}

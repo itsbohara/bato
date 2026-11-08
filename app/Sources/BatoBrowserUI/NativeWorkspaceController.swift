@@ -72,6 +72,7 @@ public final class NativeWorkspaceController: NSObject {
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
     public func makeCardFrame() -> ContentCardFrameView {
         let frame = ContentCardFrameView(accent: accent)
+        frame.showsEmptyState = runtime.state.showsEmptySpace
         frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
         cardFrames.add(frame)
         return frame
@@ -194,6 +195,7 @@ public final class NativeWorkspaceController: NSObject {
     public func duplicateSelection() { performWhenIdle({ runtime.duplicateSelectedEntry() }) }
     public func togglePinSelection() { performWhenIdle({ runtime.togglePinSelectedEntry() }) }
     public func closeOtherTemporaryTabs() { performWhenIdle({ runtime.closeOtherTemporaryTabs() }) }
+    public var canCloseTemporaryTabsBelowSelection: Bool { runtime.canCloseTemporaryTabsBelowSelection }
     public func closeTemporaryTabsBelowSelection() { performWhenIdle({ runtime.closeTemporaryTabsBelowSelection() }) }
 
     private func performWhenIdle(_ command: () -> Bool) {
@@ -715,7 +717,10 @@ public final class NativeWorkspaceController: NSObject {
         let state = runtime.state
         let workspace = state.currentWorkspace
         (root as? WorkspaceRoot)?.accent = accent
-        for frame in cardFrames.allObjects { frame.accent = accent }
+        for frame in cardFrames.allObjects {
+            frame.accent = accent
+            frame.showsEmptyState = state.showsEmptySpace
+        }
         let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
         switcherButton.title = workspace.name
         switcherButton.image = colorDot(workspaceColor(workspace.color))
@@ -1581,7 +1586,7 @@ public final class NativeWorkspaceController: NSObject {
             guard let self else { return "Bato is no longer available." }
             guard self.runtime.state.currentWorkspace.profileID == profileID else { return "The Profile is no longer active." }
             let before = self.runtime.state.workspaces.count
-            // An empty new Space has no page to show, so addWorkspace reports false even though it was saved.
+            // The engine rejects the selection change while this sheet is attached; the sheet's completion retries it.
             _ = self.runtime.addWorkspace(name: name, color: color)
             guard self.runtime.state.workspaces.count > before else {
                 return self.runtime.lastError == .saveFailed
@@ -1593,7 +1598,12 @@ public final class NativeWorkspaceController: NSObject {
         }
         workspaceEditor = editor
         guard let sheet = editor.window else { workspaceEditor = nil; return }
-        window.beginSheet(sheet) { [weak self] _ in self?.workspaceEditor = nil }
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.workspaceEditor = nil
+            // The engine refuses to change its selection while the sheet is attached, so the new Space's
+            // empty selection is presented only now; otherwise the previous Space's page stays visible.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.resumeCommittedSelection() } }
+        }
         editor.focusName()
     }
 
@@ -2700,6 +2710,15 @@ public final class ContentCardFrameView: NSView {
     /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
     public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
     public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
+    /// A workspace without a selected tab shows a blank card instead of the engine's placeholder page.
+    public var showsEmptyState = false {
+        didSet {
+            guard showsEmptyState != oldValue else { return }
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+    public static let emptyHint = "Press ⌘T to open a tab"
     var onShowSidebar: (() -> Void)?
     private let showSidebarButton = NSButton(frame: .zero)
 
@@ -2727,8 +2746,15 @@ public final class ContentCardFrameView: NSView {
     }
 
     public override var isFlipped: Bool { true }
-    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    public override func isAccessibilityElement() -> Bool { false }
+    /// The empty card covers Chrome's toolbar and blank page, so it must swallow their clicks too.
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        guard showsEmptyState, !isHidden, cardRect.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+    public override func isAccessibilityElement() -> Bool { showsEmptyState }
+    public override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    public override func accessibilityLabel() -> String? { Self.emptyHint }
+    public override func accessibilityIdentifier() -> String { "bato-empty-space" }
 
     private func configureShowSidebarButton() {
         showSidebarButton.image = sidebarSymbol("sidebar.left", size: 13)
@@ -2797,5 +2823,22 @@ public final class ContentCardFrameView: NSView {
         card.lineWidth = 1
         card.stroke()
         NSGraphicsContext.restoreGraphicsState()
+        if showsEmptyState { drawEmptyState(in: card) }
+    }
+
+    private func drawEmptyState(in card: NSBezierPath) {
+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
+        let lift = effectiveAppearance.isDark ? NSColor.white : NSColor.black
+        NSGraphicsContext.saveGraphicsState()
+        card.addClip()
+        NSGradient(starting: top.blended(withFraction: 0.08, of: lift) ?? top,
+                   ending: bottom.blended(withFraction: 0.08, of: lift) ?? bottom)?.draw(in: cardRect, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+        let text = NSAttributedString(string: Self.emptyHint, attributes: [
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.55)])
+        let size = text.size()
+        let rect = cardRect
+        text.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
     }
 }
