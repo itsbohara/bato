@@ -37,7 +37,7 @@ extension BrowserState {
     }
 
     /// Rows the sidebar shows per section, in the order it draws them: Favorites, unfiled pins, folders
-    /// (a collapsed folder lists nothing, nor do its subfolders), Tabs. A pair takes the first of its members
+    /// (a collapsed folder lists nothing, nor do its subfolders; a collapsed pinned section lists no pins or folders), Tabs. A pair takes the first of its members
     /// to be drawn; its other member never gets a row. Shared by drawing and drop placement so both agree.
     public func sidebarRows() -> [SidebarSection: [SidebarRow]] {
         let workspace = currentWorkspace
@@ -56,8 +56,14 @@ extension BrowserState {
             }
         }
         rows(.favorites)
-        rows(.pinned(folder: nil))
+        if workspace.pinsCollapsed {
+            result[.pinned(folder: nil)] = []
+            for folder in workspace.folders { result[.pinned(folder: folder.id)] = [] }
+        } else {
+            rows(.pinned(folder: nil))
+        }
         func visit(_ parent: UUID?) {
+            guard !workspace.pinsCollapsed else { return }
             for folder in workspace.subfolders(of: parent) {
                 result[.pinned(folder: folder.id)] = []
                 guard !folder.isCollapsed else { continue }

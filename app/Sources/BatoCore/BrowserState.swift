@@ -238,8 +238,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var activeSplitID: UUID?
     /// Overrides the global archive period for this workspace.
     public var archivePeriod: ArchivePeriod?
+    /// Hides every pinned page and folder under the Space header. Pinned pages stay loaded and selectable by other means.
+    public var pinsCollapsed: Bool
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil) {
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil, pinsCollapsed: Bool = false) {
         self.id = id
         self.profileID = profileID
         self.name = name
@@ -251,6 +253,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.splits = splits
         self.activeSplitID = activeSplitID
         self.archivePeriod = archivePeriod
+        self.pinsCollapsed = pinsCollapsed
     }
 
     public func folder(containingPin id: UUID) -> PageFolder? {
@@ -303,7 +306,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod
+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod, pinsCollapsed
     }
 
     public init(from decoder: any Decoder) throws {
@@ -319,6 +322,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         activeSplitID = try values.decodeIfPresent(UUID.self, forKey: .activeSplitID)
         activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
         archivePeriod = try values.decodeIfPresent(ArchivePeriod.self, forKey: .archivePeriod)
+        pinsCollapsed = try values.decodeIfPresent(Bool.self, forKey: .pinsCollapsed) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -335,6 +339,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         try values.encodeIfPresent(activeSplitID, forKey: .activeSplitID)
         try values.encodeIfPresent(activeEntryID, forKey: .activeEntryID)
         try values.encodeIfPresent(archivePeriod, forKey: .archivePeriod)
+        // Documents that never collapsed the pinned section keep their bytes.
+        if pinsCollapsed { try values.encode(true, forKey: .pinsCollapsed) }
     }
 }
 
@@ -843,6 +849,15 @@ public struct BrowserState: Codable, Equatable, Sendable {
             try Self.validateFolderName(name)
             let index = try draft.currentFolderIndex(id)
             draft.workspaces[draft.currentWorkspaceIndex].folders[index].name = name
+        }
+    }
+
+    public mutating func setPinsCollapsed(_ collapsed: Bool, inWorkspace id: UUID) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            draft.workspaces[index].pinsCollapsed = collapsed
         }
     }
 

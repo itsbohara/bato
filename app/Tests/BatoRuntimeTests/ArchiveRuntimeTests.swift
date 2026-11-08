@@ -30,6 +30,28 @@ struct ArchiveRuntimeTests {
         return (runtime, engine)
     }
 
+    @Test func clearArchivesEveryUnselectedTodayTabAndKeepsThemRestorable() throws {
+        var state = BrowserState.initial()
+        let first = try state.addTab(url: url("a"), title: "A")
+        let second = try state.addTab(url: url("b"), title: "B")
+        let selected = try state.addTab(url: url("c"), title: "C")
+        let (runtime, _) = try makeRuntime(state, clock: Clock())
+        #expect(runtime.archiveTabs(runtime.state.clearableTabIDs()) == 2)
+        #expect(runtime.state.currentWorkspace.tabs.map(\.id) == [selected])
+        #expect(Set(runtime.state.archive.records.map(\.id)) == [first, second])
+        #expect(runtime.restoreArchivedTab(first))
+        #expect(runtime.state.currentWorkspace.tabs.contains { $0.id == first })
+    }
+
+    @Test func collapsingPinsPersistsThroughTheRuntime() throws {
+        let state = BrowserState.initial()
+        let (runtime, _) = try makeRuntime(state, clock: Clock())
+        let id = runtime.state.activeWorkspaceID
+        #expect(runtime.setPinsCollapsed(true, inWorkspace: id))
+        #expect(runtime.state.currentWorkspace.pinsCollapsed)
+        #expect(!runtime.setPinsCollapsed(false, inWorkspace: UUID()))
+    }
+
     @Test func idleTabsArchiveOnlyAfterThePeriodAsTheClockAdvances() throws {
         var state = BrowserState.initial()
         let idle = try state.addTab(url: url("idle"), title: "Idle")

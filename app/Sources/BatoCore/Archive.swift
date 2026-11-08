@@ -140,6 +140,43 @@ extension BrowserState {
         }
     }
 
+    /// What "Clear" archives: every Today tab of the current workspace except the selected one and, when the
+    /// selection is half of a pair, its partner.
+    public func clearableTabIDs() -> [UUID] {
+        let workspace = currentWorkspace
+        let kept = keptTabIDs(in: workspace)
+        return workspace.tabs.map(\.id).filter { !kept.contains($0) }
+    }
+
+    /// What "Tidy" archives: Today tabs repeating the address of another Today tab. The selected tab (and its
+    /// pair partner) wins its group, else the first one; tabs in any pair are left alone.
+    public func duplicateTabIDs() -> [UUID] {
+        let workspace = currentWorkspace
+        let kept = keptTabIDs(in: workspace)
+        let paired = Set(workspace.splits.flatMap { [$0.leftEntryID, $0.rightEntryID] })
+        var winners: [String: UUID] = [:]
+        for tab in workspace.tabs where kept.contains(tab.id) { winners[tab.lastURL.absoluteString] = tab.id }
+        var duplicates: [UUID] = []
+        for tab in workspace.tabs where !paired.contains(tab.id) {
+            let key = tab.lastURL.absoluteString
+            if let winner = winners[key] {
+                if winner != tab.id { duplicates.append(tab.id) }
+            } else {
+                winners[key] = tab.id
+            }
+        }
+        return duplicates
+    }
+
+    private func keptTabIDs(in workspace: Workspace) -> Set<UUID> {
+        guard let active = workspace.activeEntryID else { return [] }
+        var kept: Set<UUID> = [active]
+        if let split = workspace.splits.first(where: { $0.contains(active) }) {
+            kept.formUnion([split.leftEntryID, split.rightEntryID])
+        }
+        return kept
+    }
+
     /// True when any workspace archives idle tabs, so activity tracking is worth writing.
     public var archivesIdleTabs: Bool {
         workspaces.contains { archivePeriod(of: $0).interval != nil }

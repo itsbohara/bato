@@ -31,6 +31,11 @@ public enum SplitPaneChrome {
     /// Height of each pane's toolbar row; must equal `kNativePaneToolbarHeight` in the engine layout.
     public static let toolbarHeight: CGFloat = 40
     public static let focusOutlineWidth: CGFloat = 2
+    /// Space between two panes; must equal `kNativePaneGap` in the engine layout.
+    public static let paneGap: CGFloat = 10
+    public static let paneCornerRadius: CGFloat = 10
+    /// Blur of the soft glow around the focused pane's outline.
+    public static let focusGlowBlur: CGFloat = 11
     public static let hoverFadeDuration: TimeInterval = 0.12
 
     /// The sidebar toggle belongs to the leading pane (left or top) while the sidebar is hidden.

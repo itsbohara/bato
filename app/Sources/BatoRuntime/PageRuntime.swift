@@ -649,6 +649,18 @@ public final class PageRuntime {
         return true
     }
 
+    /// Archives the given Today tabs through the normal archive path, so each can be restored. Returns how many
+    /// were archived or are closing to be archived.
+    @discardableResult
+    public func archiveTabs(_ ids: [UUID]) -> Int {
+        ids.filter { archiveTab($0) }.count
+    }
+
+    @discardableResult
+    public func setPinsCollapsed(_ collapsed: Bool, inWorkspace id: UUID) -> Bool {
+        change(reconcileSelection: false) { try $0.setPinsCollapsed(collapsed, inWorkspace: id) }
+    }
+
     /// Archives every temporary tab idle for its workspace's period. Returns how many were archived or
     /// are closing to be archived.
     @discardableResult
