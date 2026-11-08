@@ -45,6 +45,11 @@ public final class NativeWorkspaceController: NSObject {
     /// Set by the Space header just before it changes the model, so the next render can animate the change.
     private var pendingPinsAnimation: PinsAnimation?
     private var pointerInSidebar = false
+    private var pinsAnimating = false
+    private var renderDeferred = false
+    private weak var spaceHeaderRow: SpaceHeaderRow?
+    /// The pinned rows and folders as last drawn, so a collapse can fade out a picture of them.
+    private var pinnedViews: [NSView] = []
     private weak var tidyClearRow: TidyClearRow?
     private var tabSwitcher: TabSwitcherSession?
     private var tabSwitcherPanel: TabSwitcherPanel?
@@ -591,7 +596,11 @@ public final class NativeWorkspaceController: NSObject {
 
     public func closeSelection() {
         guard let id = runtime.state.currentWorkspace.activeEntryID else { return }
-        perform { runtime.closeEntry(id) }
+        if let pair = runtime.state.currentSplit, pair.isPinned {
+            perform { runtime.closePinnedPair(pair.id) }
+        } else {
+            perform { runtime.closeEntry(id) }
+        }
     }
 
     /// Escape and the Close control both land here; Chromium may confirm before closing.
@@ -884,6 +893,8 @@ public final class NativeWorkspaceController: NSObject {
 
     private func render() {
         defer { onSpacesChanged?() }
+        // A rebuild would drop the clipped picture mid-animation; the latest state is drawn when it ends.
+        guard !pinsAnimating else { renderDeferred = true; return }
         fitTrafficLightClearance()
         commandBar?.refresh()
         settingsWindow?.reload()
@@ -929,13 +940,16 @@ public final class NativeWorkspaceController: NSObject {
         addSection("Favorites", rows: rows[.favorites] ?? [])
         let spaceHeader = makeSpaceHeader(workspace, animatingFromCollapsed: pinsAnimation.map { !$0.expanding })
         entries.addArrangedSubview(spaceHeader)
+        spaceHeaderRow = spaceHeader
         spaceHeader.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
-        if workspace.pinsCollapsed { entries.setCustomSpacing(14, after: spaceHeader) }
+        if workspace.pinsCollapsed { entries.setCustomSpacing(SidebarMetrics.collapsedPinsGap, after: spaceHeader) }
         let pinnedStart = entries.arrangedSubviews.count
+        pinnedViews = []
         if !workspace.pinsCollapsed {
             addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
             for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
         }
+        pinnedViews = Array(entries.arrangedSubviews[pinnedStart...])
         let belowStart = entries.arrangedSubviews.count
         addSection("Tabs", rows: rows[.tabs] ?? [])
         if let pinsAnimation {
@@ -1305,6 +1319,7 @@ public final class NativeWorkspaceController: NSObject {
         menu.addItem(.separator())
         menu.addItem(item("Close Both Tabs") { [weak self] in
             guard let self else { return false }
+            if split.isPinned { return self.runtime.closePinnedPair(split.id) }
             let closedLeft = self.runtime.closeEntry(split.leftEntryID)
             let closedRight = self.runtime.closeEntry(split.rightEntryID)
             return closedLeft || closedRight
@@ -1749,8 +1764,16 @@ public final class NativeWorkspaceController: NSObject {
 
     private struct PinsAnimation {
         let expanding: Bool
-        /// Where the New Tab row sat before the change; how far it moved is how far the content below slides.
-        let newTabY: CGFloat
+        /// What the pinned section looked like before it collapsed.
+        let snapshot: PinsSnapshot?
+    }
+
+    /// A picture of the pinned section. `fullHeight` is the space it takes between the Space header and the next row.
+    private struct PinsSnapshot {
+        let image: NSImage
+        let offsetY: CGFloat
+        let fullHeight: CGFloat
+        let size: NSSize
     }
 
     private func makeSpaceHeader(_ workspace: Workspace, animatingFromCollapsed: Bool?) -> SpaceHeaderRow {
@@ -1774,38 +1797,88 @@ public final class NativeWorkspaceController: NSObject {
     private func togglePins(inWorkspace id: UUID) {
         guard hasStarted, runtime.state.activeWorkspaceID == id, root.window?.attachedSheet == nil else { return }
         let collapsed = runtime.state.currentWorkspace.pinsCollapsed
-        pendingPinsAnimation = PinsAnimation(expanding: collapsed, newTabY: newTabRow.frame.minY)
+        pendingPinsAnimation = PinsAnimation(expanding: collapsed, snapshot: collapsed ? nil : snapshotOfPinnedSection())
         perform { runtime.setPinsCollapsed(!collapsed, inWorkspace: id) }
         pendingPinsAnimation = nil
     }
 
-    /// Pinned rows fade in while everything below slides into place; collapsing only slides, since the rows are gone.
+    private func snapshotOfPinnedSection() -> PinsSnapshot? {
+        let views = pinnedViews.filter { $0.superview === entries }
+        guard let last = views.last, let next = entries.arrangedSubviews.firstIndex(of: last).map({ $0 + 1 }),
+              next < entries.arrangedSubviews.count else { return nil }
+        return snapshot(of: views, next: entries.arrangedSubviews[next])
+    }
+
+    private func snapshot(of views: [NSView], next: NSView) -> PinsSnapshot? {
+        guard let header = spaceHeaderRow, let first = views.first else { return nil }
+        let frame = views.dropFirst().reduce(first.frame) { $0.union($1.frame) }
+        guard let rep = entries.bitmapImageRepForCachingDisplay(in: frame) else { return nil }
+        entries.cacheDisplay(in: frame, to: rep)
+        let image = NSImage(size: frame.size)
+        image.addRepresentation(rep)
+        return PinsSnapshot(image: image, offsetY: frame.minY - header.frame.maxY,
+                            fullHeight: next.frame.minY - header.frame.maxY, size: frame.size)
+    }
+
+    /// Between the header and the content below sits a clipped picture of the pinned rows whose height animates, so the
+    /// content follows it in lockstep and the rows never overlap it: collapsing wipes the picture out, expanding wipes it in.
     private func animatePinnedSection(_ animation: PinsAnimation, pinned: Range<Int>, below: Range<Int>) {
-        guard !Self.reducesMotion else { return }
+        guard !Self.reducesMotion, let header = spaceHeaderRow else { return }
         entries.layoutSubtreeIfNeeded()
-        let delta = newTabRow.frame.minY - animation.newTabY
-        guard abs(delta) > 1 else { return }
-        let duration = SidebarMetrics.pinsAnimationDuration
         let views = entries.arrangedSubviews
+        let hidden = animation.expanding ? Array(views[pinned]) : []
+        let picture: PinsSnapshot?
         if animation.expanding {
-            for view in views[pinned] {
-                view.alphaValue = 0
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = duration
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    view.animator().alphaValue = 1
+            picture = views.indices.contains(below.lowerBound) ? snapshot(of: hidden, next: views[below.lowerBound]) : nil
+        } else {
+            picture = animation.snapshot
+        }
+        guard let picture else { return }
+        let collapsedHeight = SidebarMetrics.collapsedPinsGap
+        let box = PinnedClipView(image: picture.image, offsetY: picture.offsetY, size: picture.size)
+        let height = box.heightAnchor.constraint(equalToConstant: animation.expanding ? collapsedHeight : picture.fullHeight)
+        height.isActive = true
+        entries.insertArrangedSubview(box, at: pinned.lowerBound)
+        box.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        entries.setCustomSpacing(0, after: header)
+        entries.setCustomSpacing(0, after: box)
+        hidden.forEach { $0.isHidden = true }
+        box.picture.alphaValue = animation.expanding ? 0 : 1
+        let collapsing = !animation.expanding
+        pinsAnimating = true
+        let startHeight = height.constant
+        let endHeight = collapsing ? collapsedHeight : picture.fullHeight
+        let started = CACurrentMediaTime()
+        let finish: () -> Void = { [weak self, weak header, weak box] in
+            guard let self else { return }
+            self.pinsAnimating = false
+            box?.removeFromSuperview()
+            hidden.forEach { $0.isHidden = false }
+            if let header, header.superview === self.entries {
+                if collapsing { self.entries.setCustomSpacing(collapsedHeight, after: header) } else { self.entries.setCustomSpacing(NSStackView.useDefaultSpacing, after: header) }
+            }
+            self.newTabRow.refreshHover()
+            if self.renderDeferred {
+                self.renderDeferred = false
+                self.render()
+            }
+        }
+        // Stepped by hand: the stack must relayout every frame so the rows below follow the box exactly.
+        nonisolated(unsafe) var ticker: Timer?
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let progress = min(1, (CACurrentMediaTime() - started) / SidebarMetrics.pinsAnimationDuration)
+                let eased = 1 - pow(1 - progress, 3)
+                height.constant = startHeight + (endHeight - startHeight) * eased
+                box.picture.alphaValue = collapsing ? 1 - eased : eased
+                if progress >= 1 {
+                    ticker?.invalidate()
+                    finish()
                 }
             }
         }
-        for view in views[below] {
-            view.wantsLayer = true
-            let slide = CABasicAnimation(keyPath: "transform.translation.y")
-            slide.fromValue = -delta
-            slide.toValue = 0
-            slide.duration = duration
-            slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            view.layer?.add(slide, forKey: "pins-slide")
-        }
+        ticker = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func showSpaceActions(_ id: UUID, anchor: NSView) {
@@ -2456,6 +2529,13 @@ private final class SidebarActionRow: AdaptiveSidebarView {
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    /// A slide moves the row without telling its tracking area, so hover is re-read from the pointer.
+    func refreshHover() {
+        guard let window else { return }
+        hovered = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        needsDisplay = true
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refreshHover() }
     override func draw(_ dirtyRect: NSRect) {
         guard let fill = SidebarStyle.rowFill(selected: false, hovered: hovered, tile: false) else { return }
         fill.setFill()
@@ -2482,6 +2562,8 @@ enum SidebarMetrics {
     static let revealButtonSide: CGFloat = 28
     /// Arc fades the pinned rows in over roughly this long while the content below slides.
     static let pinsAnimationDuration: TimeInterval = 0.22
+    /// Space under a collapsed Space header, before the divider.
+    static let collapsedPinsGap: CGFloat = 18
 }
 
 @MainActor
@@ -3757,4 +3839,21 @@ private final class TidyClearRow: NSView {
         hoveredLabel = [tidyButton, clearButton].first { $0.isEnabled && $0.frame.insetBy(dx: -4, dy: -6).contains(convert(point, to: $0.superview)) }
     }
     override func mouseExited(with event: NSEvent) { hoveredLabel = nil }
+}
+
+/// A box that clips a picture of the pinned section to its own height, picture pinned to the top.
+@MainActor
+private final class PinnedClipView: NSView {
+    let picture: NSImageView
+    override var isFlipped: Bool { true }
+    init(image: NSImage, offsetY: CGFloat, size: NSSize) {
+        picture = NSImageView(frame: NSRect(x: 0, y: offsetY, width: size.width, height: size.height))
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        picture.image = image
+        picture.imageScaling = .scaleNone
+        addSubview(picture)
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
 }
