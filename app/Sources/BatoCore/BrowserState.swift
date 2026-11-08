@@ -1271,6 +1271,25 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Cmd-W on a pinned pair: both members unload back to their saved addresses and the pair stays saved. When the
+    /// pair or one of its members was selected nothing is selected afterwards, so the content area is empty until
+    /// a half of the row is chosen again.
+    public mutating func unloadPinnedPair(_ splitID: UUID) throws {
+        try transact { draft in
+            let index = draft.currentWorkspaceIndex
+            guard let pair = draft.workspaces[index].splits.first(where: { $0.id == splitID }), pair.isPinned else {
+                throw BrowserStateError.missingEntry
+            }
+            for id in [pair.leftEntryID, pair.rightEntryID] {
+                draft.updateEntry(id) { $0.lastURL = $0.savedURL ?? $0.lastURL }
+            }
+            if draft.workspaces[index].activeSplitID == pair.id { draft.workspaces[index].activeSplitID = nil }
+            if let active = draft.workspaces[index].activeEntryID, pair.contains(active) {
+                draft.workspaces[index].activeEntryID = nil
+            }
+        }
+    }
+
     /// Engine callbacks may update an entry in an inactive workspace without changing selection.
     /// Only temporary tabs follow the page title; a Favorite or pin keeps the title it was saved with.
     public mutating func recordNavigation(entryID: UUID, url: URL, title: String) throws {

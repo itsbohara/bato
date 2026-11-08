@@ -1588,6 +1588,47 @@ extension PageRuntimeTests {
 }
 
 extension PageRuntimeTests {
+    @Test func closingPinnedPairUnloadsBothKeepsPairAndClearsSelection() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        #expect(runtime.activateSplit(pair, focusedEntryID: left))
+        #expect(runtime.state.currentSplit?.id == pair)
+        let leftPage = try #require(runtime.livePages[left])
+        let rightPage = try #require(runtime.livePages[right])
+        #expect(runtime.closePinnedPair(pair))
+        #expect(Set(engine.closes) == [leftPage, rightPage])
+        runtime.receive(.closed(leftPage))
+        runtime.receive(.closed(rightPage))
+        #expect(runtime.state.currentWorkspace.splits.map(\.id) == [pair])
+        #expect(runtime.state.currentSplit == nil)
+        #expect(runtime.state.currentWorkspace.activeEntryID == nil)
+        #expect(runtime.livePages[left] == nil && runtime.livePages[right] == nil)
+        #expect(runtime.state.currentWorkspace.pins.map(\.id).contains(left))
+        #expect(runtime.activateSplit(pair, focusedEntryID: left))
+        #expect(runtime.state.currentSplit?.id == pair)
+        #expect(runtime.livePages[left] != nil && runtime.livePages[right] != nil)
+    }
+
+    @Test func closingUnpinnedPairStillClosesOnlyTheFocusedPane() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: start, title: "Left")
+        let right = try state.addTab(url: next, title: "Right")
+        let pair = try state.createSplit(with: left)
+        let engine = FakeEngine(state.currentWorkspace.profileID)
+        engine.supportsSplits = true
+        let runtime = try PageRuntime(state: state, engine: engine, commit: { _ in })
+        #expect(runtime.start())
+        #expect(!runtime.closePinnedPair(pair))
+        #expect(runtime.closeEntry(right))
+    }
+
     @Test func splitCreationFailureLeavesSurvivorAndShutdownPreservesSavedPair() throws {
         var state = BrowserState.initial()
         let left = try state.addTab(url: start, title: "Left")

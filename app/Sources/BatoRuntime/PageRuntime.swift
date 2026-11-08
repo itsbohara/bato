@@ -117,6 +117,8 @@ public final class PageRuntime {
     }
     public private(set) var livePages: [UUID: LivePage] = [:]
     public private(set) var pendingClose: Set<LivePage> = []
+    /// Members closing as part of a pinned pair's Cmd-W, with their pair.
+    private var pairUnloads: [UUID: UUID] = [:]
     public private(set) var lastError: PageRuntimeError?
     private var closedTabs: [UUID: ClosedTabStack] = [:] {
         didSet { closedTabsDidChange?(closedTabs) }
@@ -609,6 +611,27 @@ public final class PageRuntime {
         return true
     }
 
+    /// Closes both members of a pinned pair (Cmd-W on the displayed pair). The pair stays in the sidebar, unloaded and
+    /// unselected. Each loaded member is unloaded through the engine; the model changes as their close events arrive.
+    @discardableResult
+    public func closePinnedPair(_ splitID: UUID) -> Bool {
+        guard let pair = state.currentWorkspace.splits.first(where: { $0.id == splitID }), pair.isPinned,
+              !pendingClose.contains(where: { pair.contains($0.entryID) }) else {
+            lastError = .invalidCommand
+            return false
+        }
+        let loaded = [pair.leftEntryID, pair.rightEntryID].compactMap { livePages[$0] }
+        guard !loaded.isEmpty else {
+            return change { try $0.unloadPinnedPair(splitID) }
+        }
+        for page in loaded {
+            pairUnloads[page.entryID] = splitID
+            pendingClose.insert(page)
+            engine.requestClose(page)
+        }
+        return true
+    }
+
     /// Loads persisted closed-tab history, keeping only tabs of existing Profiles with a reopenable URL.
     public func restoreClosedTabs(_ stacks: [UUID: ClosedTabStack]) {
         let profileIDs = Set(state.workspaces.map(\.profileID))
@@ -960,6 +983,7 @@ public final class PageRuntime {
             guard livePages[page.entryID] == page else { return }
             pendingClose.remove(page)
             pendingArchive.removeValue(forKey: page.entryID)
+            pairUnloads.removeValue(forKey: page.entryID)
         case let .closed(page):
             guard livePages[page.entryID] == page else { return }
             livePages.removeValue(forKey: page.entryID)
@@ -970,8 +994,9 @@ public final class PageRuntime {
             var candidate = state
             let closedTab = candidate.closedTab(for: page.entryID)
             let archivedAt = pendingArchive.removeValue(forKey: page.entryID)
+            let pairUnload = pairUnloads.removeValue(forKey: page.entryID)
             let active = candidate.activeWorkspaceID
-            let successor = state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
+            let successor = pairUnload == nil && state.currentSplit == nil && state.currentWorkspace.activeEntryID == page.entryID
                 ? state.entryID(afterClosing: page.entryID, skipping: { [pendingClose] id in
                     pendingClose.contains { $0.entryID == id } })
                 : nil
@@ -984,6 +1009,7 @@ public final class PageRuntime {
             }
             do {
                 if let archivedAt { try candidate.archiveTab(page.entryID, at: archivedAt) }
+                else if let pairUnload { try candidate.unloadPinnedPair(pairUnload) }
                 else { try candidate.closeEntry(page.entryID) }
                 try candidate.activateWorkspace(active)
                 if let successor { try? candidate.selectEntry(successor) }

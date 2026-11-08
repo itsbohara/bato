@@ -107,4 +107,29 @@ final class PinnedCollapseTests: XCTestCase {
         XCTAssertEqual(SplitPaneChrome.focusOutlineWidth, 2)
         XCTAssertEqual(SplitPaneChrome.toolbarHeight, 40)
     }
+
+    func testUnloadPinnedPairKeepsPairAndClearsSelection() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: url("l"), title: "L")
+        let right = try state.addTab(url: url("r"), title: "R")
+        let pair = try state.createSplit(with: left)
+        try state.pinSplit(pair)
+        try state.selectEntry(left)
+        XCTAssertEqual(state.currentSplit?.id, pair)
+        try state.unloadPinnedPair(pair)
+        XCTAssertEqual(state.currentWorkspace.splits.map(\.id), [pair])
+        XCTAssertNil(state.currentSplit)
+        XCTAssertNil(state.currentWorkspace.activeEntryID)
+        XCTAssertEqual(Set(state.currentWorkspace.pins.map(\.id)), [left, right])
+        try state.selectEntry(right)
+        XCTAssertEqual(state.currentSplit?.id, pair)
+    }
+
+    func testUnloadPinnedPairRefusesUnpinnedPairsAndKeepsOtherSelection() throws {
+        var state = BrowserState.initial()
+        let left = try state.addTab(url: url("l"), title: "L")
+        _ = try state.addTab(url: url("r"), title: "R")
+        let pair = try state.createSplit(with: left)
+        XCTAssertThrowsError(try state.unloadPinnedPair(pair))
+    }
 }
