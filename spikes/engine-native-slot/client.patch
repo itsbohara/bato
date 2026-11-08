@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,78 @@
+@@ -2313,6 +2317,80 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -299,6 +299,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/DownloadsSidebar.swift",
 +      "tests/cefsimple/bato/BatoCore/Archive.swift",
 +      "tests/cefsimple/bato/BatoCore/SidebarPeekDismissal.swift",
++      "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
 +      "tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
@@ -309,6 +310,7 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/TabAudio.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -327,7 +329,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2412,19 @@
+@@ -2336,12 +2414,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -350,7 +352,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1608 @@
+@@ -0,0 +1,1669 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -387,7 +389,7 @@
 +    void (*schedule_selection)(uint64_t),
 +    int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 +extern "C" void BatoSwiftWorkspaceConfigureSplits(
-+    int (*present)(uint64_t, int, int, int, double), int (*separate)(uint64_t));
++    int (*present)(uint64_t, int, int, int, double, int), int (*separate)(uint64_t));
 +// Peek hooks are optional Swift exports, resolved with dlsym at registration.
 +using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
 +using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
@@ -400,6 +402,11 @@
 +using SwiftPeekLinkEligible = int (*)(uint64_t, int, const char*);
 +using SwiftPeekLinkRequested = void (*)(uint64_t, int, const char*);
 +extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
++// Pane frames and per-pane navigation are optional Swift exports, resolved with dlsym.
++using SwiftSplitLayout = void (*)(uint64_t, int, int, double, double, double, double,
++                                  double, double, double, double);
++using SwiftConfigurePaneNavigation = void (*)(int (*)(uint64_t, int, int), int (*)(uint64_t, int));
++SwiftSplitLayout g_swift_split_layout = nullptr;
 +extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 +extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
 +    int kind, const char* url, const char* title);
@@ -438,7 +445,7 @@
 +ActiveBrowserId g_active_browser_id = nullptr;
 +NewTab g_new_tab = nullptr;
 +RequestClose g_request_close = nullptr;
-+using PresentSplit = decltype(&bato_native_slot_present_split_v1);
++using PresentSplit = decltype(&bato_native_slot_present_split_v2);
 +using SeparateSplit = decltype(&bato_native_slot_separate_split_v1);
 +PresentSplit g_present_split = nullptr;
 +SeparateSplit g_separate_split = nullptr;
@@ -1093,7 +1100,7 @@
 +  return accepted ? 1 : 0;
 +}
 +
-+int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, double ratio) {
++int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, double ratio, int stacked) {
 +  auto* slot = AvailableSlot(token);
 +  if (!slot || !g_present_split || left == right ||
 +      (focused != left && focused != right) || !std::isfinite(ratio) ||
@@ -1107,7 +1114,7 @@
 +  if (!SameWindow(a, b) || !slot->context ||
 +      !a->GetHost()->GetRequestContext()->IsSame(slot->context) ||
 +      !b->GetHost()->GetRequestContext()->IsSame(slot->context)) return 0;
-+  if (g_present_split(token, left, right, focused, ratio) != 1) return 0;
++  if ((stacked != 0 && stacked != 1) || g_present_split(token, left, right, focused, ratio, stacked) != 1) return 0;
 +  auto current = WorkspaceSlots().find(token);
 +  if (current == WorkspaceSlots().end() || !current->second.pages.contains(left) ||
 +      !current->second.pages.contains(right) ||
@@ -1154,6 +1161,44 @@
 +        }
 +        BatoSwiftWorkspaceSplitChanged(token, a, b, ratio, removed ? 1 : 0);
 +      }, token, a, b, ratio, removed, revision, observation, first, second), removed ? 0 : 200);
++}
++
++void SplitLayoutChanged(void*, uint64_t token, int in_split, int stacked, double x0, double y0,
++                        double w0, double h0, double x1, double y1, double w1, double h1) {
++  // Runs inside a Views layout pass: AppKit work waits for the stack to unwind.
++  CefPostTask(TID_UI, base::BindOnce(
++      [](uint64_t token, int in_split, int stacked, double x0, double y0, double w0, double h0,
++         double x1, double y1, double w1, double h1) {
++        if (g_swift_split_layout && WorkspaceSlots().contains(token))
++          g_swift_split_layout(token, in_split, stacked, x0, y0, w0, h0, x1, y1, w1, h1);
++      }, token, in_split, stacked, x0, y0, w0, h0, x1, y1, w1, h1));
++}
++
++// Per-pane toolbar actions: 0 back, 1 forward, 2 reload, 3 stop. Any page of the slot, not only
++// the active one, so an unfocused split pane can navigate without taking focus.
++int PaneNavigate(uint64_t token, int identifier, int action) {
++  auto* slot = AvailableSlot(token);
++  if (!slot || slot->pending_close.contains(identifier)) return 0;
++  auto found = slot->pages.find(identifier);
++  if (found == slot->pages.end() || !found->second.browser->IsValid()) return 0;
++  auto browser = found->second.browser;
++  switch (action) {
++    case 0: if (!browser->CanGoBack()) return 0; browser->GoBack(); return 1;
++    case 1: if (!browser->CanGoForward()) return 0; browser->GoForward(); return 1;
++    case 2: browser->Reload(); return 1;
++    case 3: browser->StopLoad(); return 1;
++  }
++  return 0;
++}
++// Bit 0 can go back, bit 1 can go forward, bit 2 loading; -1 for an unknown page.
++int PaneNavigationState(uint64_t token, int identifier) {
++  auto* slot = AvailableSlot(token);
++  if (!slot) return -1;
++  auto found = slot->pages.find(identifier);
++  if (found == slot->pages.end() || !found->second.browser->IsValid()) return -1;
++  auto browser = found->second.browser;
++  return (browser->CanGoBack() ? 1 : 0) | (browser->CanGoForward() ? 2 : 0) |
++         (browser->IsLoading() ? 4 : 0);
 +}
 +
 +void PostLifecycleEvent(uint64_t token, int identifier, int kind) {
@@ -1788,10 +1833,16 @@
 +      dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
 +  auto sidebar_geometry = reinterpret_cast<decltype(&bato_native_slot_set_sidebar_v1)>(
 +      dlsym(loaded, "bato_native_slot_set_sidebar_v1"));
-+  auto present_split = reinterpret_cast<PresentSplit>(dlsym(loaded, "bato_native_slot_present_split_v1"));
++  auto present_split = reinterpret_cast<PresentSplit>(dlsym(loaded, "bato_native_slot_present_split_v2"));
 +  auto separate_split = reinterpret_cast<SeparateSplit>(dlsym(loaded, "bato_native_slot_separate_split_v1"));
 +  auto register_splits = reinterpret_cast<decltype(&bato_native_slot_register_split_callbacks_v1)>(
 +      dlsym(loaded, "bato_native_slot_register_split_callbacks_v1"));
++  auto register_split_layout = reinterpret_cast<decltype(&bato_native_slot_register_split_layout_callbacks_v1)>(
++      dlsym(loaded, "bato_native_slot_register_split_layout_callbacks_v1"));
++  auto swift_split_layout = reinterpret_cast<SwiftSplitLayout>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceSplitLayout"));
++  auto swift_configure_pane_navigation = reinterpret_cast<SwiftConfigurePaneNavigation>(
++      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePaneNavigation"));
 +  auto register_peeks = reinterpret_cast<decltype(&bato_native_slot_register_peek_callbacks_v1)>(
 +      dlsym(loaded, "bato_native_slot_register_peek_callbacks_v1"));
 +  auto peek_present = reinterpret_cast<PeekPresent>(dlsym(loaded, "bato_native_slot_peek_present_v1"));
@@ -1864,6 +1915,18 @@
 +    g_present_split = present_split;
 +    g_separate_split = separate_split;
 +    BatoSwiftWorkspaceConfigureSplits(PresentWorkspaceSplit, SeparateWorkspaceSplit);
++    // Native pane toolbars are additive: without them the pair keeps Chrome's own toolbar.
++    if (register_split_layout && swift_split_layout) {
++      BatoSplitLayoutCallbacksV1 layout_callbacks = {};
++      layout_callbacks.size = sizeof(layout_callbacks);
++      layout_callbacks.version = 1;
++      layout_callbacks.changed = SplitLayoutChanged;
++      if (register_split_layout(&layout_callbacks) == 1) {
++        g_swift_split_layout = swift_split_layout;
++        if (swift_configure_pane_navigation)
++          swift_configure_pane_navigation(PaneNavigate, PaneNavigationState);
++      }
++    }
 +    // Peek is additive: a framework or Swift library without it keeps working.
 +    if (register_peeks && peek_present && peek_end && swift_configure_peek && swift_peek_ended) {
 +      BatoPeekCallbacksV1 peek_callbacks = {};
@@ -2033,7 +2096,7 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-+                                        'SidebarPeekDismissal.swift']),
++                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -2046,7 +2109,7 @@
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
-+                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift'])]:
++                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -2224,7 +2287,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1347 @@
+@@ -0,0 +1,1422 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2235,7 +2298,9 @@
 +private typealias CommandID = @convention(c) (Int32) -> Int32
 +private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 +private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
-+private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32
++private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double, Int32) -> Int32
++private typealias PaneNavigate = @convention(c) (UInt64, Int32, Int32) -> Int32
++private typealias PaneNavigationBits = @convention(c) (UInt64, Int32) -> Int32
 +private typealias ActivePage = @convention(c) (UInt64) -> Int32
 +private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 +private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
@@ -2257,6 +2322,8 @@
 +@MainActor private var pageFocus: ActivePage?
 +@MainActor private var presentSplitPages: PresentSplit?
 +@MainActor private var separateSplitPages: ActivePage?
++@MainActor private var paneNavigateHook: PaneNavigate?
++@MainActor private var paneNavigationBitsHook: PaneNavigationBits?
 +@MainActor private var presentPeekPages: PresentPeek?
 +@MainActor private var endPeekPages: EndPeek?
 +@MainActor private var navigatePage: NavigatePage?
@@ -2412,14 +2479,25 @@
 +        } else { id = 0 }
 +        _ = selectPage?(token, id)
 +    }
++    func paneNavigate(_ page: LivePage, _ action: PaneNavigationAction) -> Bool {
++        guard let token = windows[page.profileID], let id = pages.first(where: { $0.value == page })?.key,
++              let hook = paneNavigateHook else { return false }
++        return hook(token, id, action.rawValue) == 1
++    }
++    func paneNavigationState(_ page: LivePage) -> PaneNavigationState {
++        guard let token = windows[page.profileID], let id = pages.first(where: { $0.value == page })?.key,
++              let bits = paneNavigationBitsHook?(token, id), bits >= 0 else { return PaneNavigationState() }
++        return PaneNavigationState(bits: bits)
++    }
 +    var supportsSplits: Bool { presentSplitPages != nil && separateSplitPages != nil }
-+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
++    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
++                      orientation: SplitOrientation) -> Bool {
 +        guard left.profileID == right.profileID, let token = windows[left.profileID],
 +              let a = pages.first(where: { $0.value == left })?.key,
 +              let b = pages.first(where: { $0.value == right })?.key,
 +              let f = pages.first(where: { $0.value == focused })?.key else { return false }
 +        onShow?(token)
-+        return presentSplitPages?(token, a, b, f, ratio) == 1
++        return presentSplitPages?(token, a, b, f, ratio, orientation == .vertical ? 1 : 0) == 1
 +    }
 +    func separateSplit() -> Bool {
 +        guard let token = windows[currentProfileID] else { return true }
@@ -2621,6 +2699,8 @@
 +    var engine: WorkspaceEngine? { workspaceHost.engine }
 +    private var blockingControls: BlockingControls?
 +    private var cardFrame: ContentCardFrameView?
++    private var paneOverlay: SplitPaneOverlayView?
++    private var paneFrames: [NSRect] = []
 +    private var width: Int32 = 260
 +    private var mode: Int32 = 1
 +    private var pointerMonitor: Any?
@@ -2664,6 +2744,8 @@
 +                downloadsController = downloads
 +                controller.attachDownloads(downloads)
 +            }
++            controller.paneNavigator = { page, action in workspaceHost.engine?.paneNavigate(page, action) ?? false }
++            controller.paneNavigationState = { page in workspaceHost.engine?.paneNavigationState(page) ?? PaneNavigationState() }
 +            controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
 +            controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
 +            controller.requestPagePresentation = {
@@ -2714,6 +2796,25 @@
 +        card.isCardShown = !isFullscreen
 +        card.sidebarCoverWidth = mode == 0 ? 0 : CGFloat(width)
 +        card.sidebarWidth = mode == 1 ? CGFloat(min(width, Int32(max(0, content.bounds.width - 320)))) : 0
++        updatePaneOverlay(in: content, card: card)
++    }
++    /// Rows go just below the card so its rounded cut-outs clip their corners.
++    private func updatePaneOverlay(in content: NSView, card: ContentCardFrameView) {
++        guard let overlay = paneOverlay ?? controller?.makeSplitPaneOverlay() else { return }
++        paneOverlay = overlay
++        if overlay.superview !== content {
++            overlay.frame = content.bounds
++            content.addSubview(overlay, positioned: .below, relativeTo: card)
++        }
++        overlay.sidebarHidden = mode == 0
++        let shown = isFullscreen ? [] : paneFrames
++        card.paneCards = shown
++        card.focusedPane = controller?.focusedPaneIndex
++        overlay.apply(frames: shown)
++    }
++    func applySplitLayout(_ frames: [NSRect]) {
++        paneFrames = frames
++        updateCard()
 +    }
 +    private func attached() {
 +        installPointerMonitor()
@@ -3195,6 +3296,11 @@
 +        ownedWindow = root.window
 +    }
 +    @objc private func toggleFromMenu() { _ = toggle() }
++    @objc private func addSplitFromMenu(_ sender: NSMenuItem) {
++        if let raw = sender.representedObject as? String, let side = SplitSide(rawValue: raw) {
++            workspaceHost.controller?.addSplit(side)
++        }
++    }
 +    @objc private func promotePeekFromMenu() { _ = promotePeek() }
 +    @objc private func copyLinkFromMenu() { _ = copyLink() }
 +    @objc private func copyMarkdownFromMenu() { _ = workspaceHost.controller?.copyCurrentLink(as: .markdown) }
@@ -3270,6 +3376,18 @@
 +            let item = NSMenuItem(title: "Page", action: nil, keyEquivalent: "")
 +            let menu = NSMenu(title: "Page")
 +            pageItems().forEach(menu.addItem)
++            if !menu.items.isEmpty { menu.addItem(.separator()) }
++            let split = NSMenuItem(title: "Split View", action: nil, keyEquivalent: "")
++            let sides = NSMenu(title: "Split View")
++            for side in [SplitSide.right, .left, .top, .bottom] {
++                let entry = NSMenuItem(title: side.title, action: #selector(addSplitFromMenu(_:)), keyEquivalent: "")
++                entry.image = sidebarSymbol(side.symbolName, size: 13)
++                entry.target = self
++                entry.representedObject = side.rawValue
++                sides.addItem(entry)
++            }
++            split.submenu = sides
++            menu.addItem(split)
 +            item.submenu = menu
 +            mainMenu.addItem(item)
 +            pageMenuItem = item
@@ -3413,11 +3531,31 @@
 +
 +@_cdecl("BatoSwiftWorkspaceConfigureSplits")
 +@MainActor public func configureWorkspaceSplits(
-+    _ present: @escaping @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32,
++    _ present: @escaping @convention(c) (UInt64, Int32, Int32, Int32, Double, Int32) -> Int32,
 +    _ separate: @escaping @convention(c) (UInt64) -> Int32) {
 +    precondition(Thread.isMainThread)
 +    presentSplitPages = present
 +    separateSplitPages = separate
++}
++
++@_cdecl("BatoSwiftWorkspaceConfigurePaneNavigation")
++@MainActor public func configurePaneNavigation(
++    _ navigate: @escaping @convention(c) (UInt64, Int32, Int32) -> Int32,
++    _ state: @escaping @convention(c) (UInt64, Int32) -> Int32) {
++    precondition(Thread.isMainThread)
++    paneNavigateHook = navigate
++    paneNavigationBitsHook = state
++}
++
++/// Pane frames of the pair a window displays, in the content view's flipped points; `inSplit` 0 clears them.
++@_cdecl("BatoSwiftWorkspaceSplitLayout")
++@MainActor public func workspaceSplitLayout(_ token: UInt64, _ inSplit: Int32, _ stacked: Int32,
++                                            _ x0: Double, _ y0: Double, _ w0: Double, _ h0: Double,
++                                            _ x1: Double, _ y1: Double, _ w1: Double, _ h1: Double) {
++    precondition(Thread.isMainThread)
++    guard let slot = workspaceSlots[token] else { return }
++    let frames = inSplit == 1 ? [NSRect(x: x0, y: y0, width: w0, height: h0), NSRect(x: x1, y: y1, width: w1, height: h1)] : []
++    slot.applySplitLayout(frames)
 +}
 +
 +@_cdecl("BatoSwiftWorkspaceSplitChanged")
@@ -4547,7 +4685,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1430 @@
+@@ -0,0 +1,1520 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4697,21 +4835,79 @@
 +    }
 +}
 +
++/// How a pair's two panes are arranged. The first member is the left or top pane.
++public enum SplitOrientation: String, Codable, Equatable, Sendable {
++    case horizontal, vertical
++}
++
++/// Where a new pane opens relative to the page it splits from.
++public enum SplitSide: String, CaseIterable, Sendable {
++    case right, left, top, bottom
++
++    public var orientation: SplitOrientation { self == .left || self == .right ? .horizontal : .vertical }
++    /// True when the new page becomes the left or top member.
++    public var newPageIsFirst: Bool { self == .left || self == .top }
++    public var title: String {
++        switch self {
++        case .right: "Add Right Split"
++        case .left: "Add Left Split"
++        case .top: "Add Top Split"
++        case .bottom: "Add Bottom Split"
++        }
++    }
++    public var symbolName: String {
++        switch self {
++        case .right: "rectangle.righthalf.inset.filled"
++        case .left: "rectangle.lefthalf.inset.filled"
++        case .top: "rectangle.tophalf.inset.filled"
++        case .bottom: "rectangle.bottomhalf.inset.filled"
++        }
++    }
++}
++
 +/// Stable organization references; Chromium split identifiers are never persisted.
++/// `leftEntryID` and `rightEntryID` are the first (left or top) and second (right or bottom) pane.
 +public struct PageSplit: Identifiable, Codable, Equatable, Sendable {
 +    public var id: UUID
 +    public var leftEntryID: UUID
 +    public var rightEntryID: UUID
 +    public var dividerRatio: Double
 +    public var isPinned: Bool
++    public var orientation: SplitOrientation
 +
 +    public init(id: UUID = UUID(), leftEntryID: UUID, rightEntryID: UUID,
-+                dividerRatio: Double = 0.5, isPinned: Bool = false) {
++                dividerRatio: Double = 0.5, isPinned: Bool = false,
++                orientation: SplitOrientation = .horizontal) {
 +        self.id = id
 +        self.leftEntryID = leftEntryID
 +        self.rightEntryID = rightEntryID
 +        self.dividerRatio = dividerRatio
 +        self.isPinned = isPinned
++        self.orientation = orientation
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case id, leftEntryID, rightEntryID, dividerRatio, isPinned, orientation
++    }
++
++    public init(from decoder: Decoder) throws {
++        let values = try decoder.container(keyedBy: CodingKeys.self)
++        id = try values.decode(UUID.self, forKey: .id)
++        leftEntryID = try values.decode(UUID.self, forKey: .leftEntryID)
++        rightEntryID = try values.decode(UUID.self, forKey: .rightEntryID)
++        dividerRatio = try values.decode(Double.self, forKey: .dividerRatio)
++        isPinned = try values.decode(Bool.self, forKey: .isPinned)
++        orientation = try values.decodeIfPresent(SplitOrientation.self, forKey: .orientation) ?? .horizontal
++    }
++
++    public func encode(to encoder: Encoder) throws {
++        var values = encoder.container(keyedBy: CodingKeys.self)
++        try values.encode(id, forKey: .id)
++        try values.encode(leftEntryID, forKey: .leftEntryID)
++        try values.encode(rightEntryID, forKey: .rightEntryID)
++        try values.encode(dividerRatio, forKey: .dividerRatio)
++        try values.encode(isPinned, forKey: .isPinned)
++        if orientation != .horizontal { try values.encode(orientation, forKey: .orientation) }
 +    }
 +
 +    public func contains(_ id: UUID) -> Bool { leftEntryID == id || rightEntryID == id }
@@ -4942,6 +5138,12 @@
 +
 +    public func split(containingEntry id: UUID) -> PageSplit? {
 +        currentWorkspace.splits.first { $0.contains(id) }
++    }
++
++    /// The selected page is a pin or tab; a page already in a pair re-pairs with the new tab.
++    public var canSplitSelection: Bool {
++        guard let focused = currentWorkspace.activeEntryID else { return false }
++        return (currentWorkspace.pins + currentWorkspace.tabs).contains { $0.id == focused }
 +    }
 +
 +    public func canCreateSplit(with id: UUID) -> Bool {
@@ -5781,16 +5983,42 @@
 +    }
 +
 +    @discardableResult
-+    public mutating func createSplit(with id: UUID) throws -> UUID {
++    public mutating func createSplit(with id: UUID, side: SplitSide = .right) throws -> UUID {
 +        try transact { draft in
 +            guard draft.canCreateSplit(with: id), let focused = draft.currentWorkspace.activeEntryID else {
 +                throw BrowserStateError.invalidSplit
 +            }
-+            let split = PageSplit(leftEntryID: focused, rightEntryID: id)
++            let split = PageSplit(leftEntryID: side.newPageIsFirst ? id : focused,
++                                  rightEntryID: side.newPageIsFirst ? focused : id,
++                                  orientation: side.orientation)
 +            let index = draft.currentWorkspaceIndex
 +            draft.workspaces[index].splits.append(split)
 +            draft.workspaces[index].activeSplitID = split.id
 +            return split.id
++        }
++    }
++
++    /// Opens a new temporary tab beside the selected page and focuses it. A page already in a pair
++    /// leaves it, so a pane's split menu replaces the other pane.
++    @discardableResult
++    public mutating func addSplitTab(url: URL, title: String, side: SplitSide) throws -> UUID {
++        try transact { draft in
++            guard draft.canSplitSelection, let source = draft.currentWorkspace.activeEntryID else {
++                throw BrowserStateError.invalidSplit
++            }
++            try Self.validateURL(url)
++            let entry = PageEntry(title: title, lastURL: url, kind: .temporary)
++            let index = draft.currentWorkspaceIndex
++            // The selected page leaves any pair it was in; its old partner stays as an ordinary page.
++            draft.workspaces[index].splits.removeAll { $0.contains(source) }
++            draft.workspaces[index].tabs.append(entry)
++            let split = PageSplit(leftEntryID: side.newPageIsFirst ? entry.id : source,
++                                  rightEntryID: side.newPageIsFirst ? source : entry.id,
++                                  orientation: side.orientation)
++            draft.workspaces[index].splits.append(split)
++            draft.workspaces[index].activeSplitID = split.id
++            draft.workspaces[index].activeEntryID = entry.id
++            return entry.id
 +        }
 +    }
 +
@@ -6273,7 +6501,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1065 @@
+@@ -0,0 +1,1079 @@
 +import Foundation
 +import BatoCore
 +
@@ -6334,7 +6562,8 @@
 +    /// Only explicit selections call this; an engine-side close must never reopen the window.
 +    func requestWindowIfMissing(for profileID: UUID) -> Bool
 +    var supportsSplits: Bool { get }
-+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool
++    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
++                      orientation: SplitOrientation) -> Bool
 +    func separateSplit() -> Bool
 +    func create(_ page: LivePage, url: URL) -> Bool
 +    /// nil hides any previously visible page. A token whose creation is pending
@@ -6363,7 +6592,8 @@
 +    func activateProfile(_ id: UUID) {}
 +    func requestWindowIfMissing(for profileID: UUID) -> Bool { false }
 +    var supportsSplits: Bool { false }
-+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool { false }
++    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
++                      orientation: SplitOrientation) -> Bool { false }
 +    func separateSplit() -> Bool { true }
 +    var supportsPeek: Bool { false }
 +    func presentPeek(parent: LivePage, preview: LivePage, url: URL) -> Bool { false }
@@ -6686,13 +6916,24 @@
 +    }
 +
 +    @discardableResult
-+    public func createSplit(with id: UUID) -> Bool {
++    public func createSplit(with id: UUID, side: SplitSide = .right) -> Bool {
 +        guard supportsSplits, state.canCreateSplit(with: id),
 +              !pendingClose.contains(where: { $0.entryID == id || $0.entryID == state.currentWorkspace.activeEntryID }) else {
 +            lastError = .invalidCommand
 +            return false
 +        }
-+        return change { _ = try $0.createSplit(with: id) }
++        return change { _ = try $0.createSplit(with: id, side: side) }
++    }
++
++    /// Opens a new tab beside the selected page, in the pane on `side`, and focuses it.
++    @discardableResult
++    public func addSplitTab(url: URL, title: String, side: SplitSide) -> Bool {
++        guard supportsSplits, state.canSplitSelection,
++              !pendingClose.contains(where: { $0.entryID == state.currentWorkspace.activeEntryID }) else {
++            lastError = .invalidCommand
++            return false
++        }
++        return change { _ = try $0.addSplitTab(url: url, title: title, side: side) }
 +    }
 +
 +    @discardableResult
@@ -7303,7 +7544,8 @@
 +                  livePages[left.entryID] == left, livePages[right.entryID] == right,
 +                  let focusedID = state.currentWorkspace.activeEntryID,
 +                  let focused = livePages[focusedID], focused == left || focused == right,
-+                  engine.presentSplit(left: left, right: right, focused: focused, ratio: current.dividerRatio) else {
++                  engine.presentSplit(left: left, right: right, focused: focused, ratio: current.dividerRatio,
++                                      orientation: current.orientation) else {
 +                lastError = .creationRejected
 +                return false
 +            }
@@ -7461,7 +7703,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,2861 @@
+@@ -0,0 +1,3008 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7531,6 +7773,7 @@
 +    private var pendingCommandBarAction: (action: CommandBarAction, query: String)?
 +    private weak var pendingCommandBarWindow: NSWindow?
 +    private var commandBarNavigationTarget: LivePage?
++    private var commandBarSplitSide: SplitSide?
 +    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
 +    private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
 +    /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
@@ -7538,8 +7781,62 @@
 +        let frame = ContentCardFrameView(accent: accent)
 +        frame.showsEmptyState = runtime.state.showsEmptySpace
 +        frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
++        frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
++        frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
 +        cardFrames.add(frame)
 +        return frame
++    }
++
++    /// Engine hooks for a pane's back, forward, reload and stop; set by the host that owns the pages.
++    public var paneNavigator: ((LivePage, PaneNavigationAction) -> Bool)?
++    public var paneNavigationState: ((LivePage) -> PaneNavigationState)?
++    private let paneOverlays = NSHashTable<SplitPaneOverlayView>.weakObjects()
++    /// One per window; shows a native toolbar row over each pane of a displayed pair.
++    public func makeSplitPaneOverlay() -> SplitPaneOverlayView {
++        let overlay = SplitPaneOverlayView(frame: .zero)
++        overlay.provider = { [weak self] in self?.splitPaneStates() ?? [] }
++        overlay.actions = SplitPaneActions(
++            focus: { [weak self] id in self?.focusPane(id) },
++            close: { [weak self] id in self?.perform { self?.runtime.closeEntry(id) ?? false } },
++            navigate: { [weak self] id, action in
++                guard let self, let page = self.runtime.livePages[id] else { return }
++                _ = self.paneNavigator?(page, action)
++            },
++            addSplit: { [weak self] side in self?.addSplit(side) },
++            toggleSidebar: { [weak self] in self?.requestSidebarToggle?() })
++        paneOverlays.add(overlay)
++        return overlay
++    }
++
++    private func splitPaneStates() -> [SplitPaneState] {
++        guard let split = runtime.state.currentSplit else { return [] }
++        let workspace = runtime.state.currentWorkspace
++        let pages = workspace.pins + workspace.tabs
++        return [split.leftEntryID, split.rightEntryID].compactMap { id in
++            guard let page = pages.first(where: { $0.id == id }) else { return nil }
++            let navigation = runtime.livePages[id].flatMap { paneNavigationState?($0) } ?? PaneNavigationState()
++            return SplitPaneState(entryID: id, title: pageTitle(page), url: page.lastURL,
++                                  isFocused: workspace.activeEntryID == id, navigation: navigation)
++        }
++    }
++
++    /// The pane that is focused, by index, for the card's outline.
++    public var focusedPaneIndex: Int? {
++        guard let split = runtime.state.currentSplit,
++              let focused = runtime.state.currentWorkspace.activeEntryID else { return nil }
++        return SplitPaneChrome.paneIndex(of: focused, in: split)
++    }
++
++    private func focusPane(_ id: UUID) {
++        guard let split = runtime.state.currentSplit, split.contains(id),
++              runtime.state.currentWorkspace.activeEntryID != id, canRunSplitAction(in: runtime.state.activeWorkspaceID) else { return }
++        perform { runtime.activateSplit(split.id, focusedEntryID: id) }
++    }
++
++    /// Opens the command bar to choose what the new pane on `side` shows (Add Right Split and friends).
++    public func addSplit(_ side: SplitSide) {
++        guard hasStarted, runtime.supportsSplits, runtime.state.canSplitSelection else { return }
++        showCommandBar(splittingTo: side)
 +    }
 +
 +    /// Load failures throw without replacing the existing document. The factory
@@ -7750,12 +8047,14 @@
 +        action(self)
 +    }
 +
-+    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil) {
++    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil,
++                                splittingTo side: SplitSide? = nil) {
 +        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        runtime.endPeek()
 +        requestNativeFocus?()
 +        commandBarNavigationTarget = target
++        commandBarSplitSide = side
 +        let bar = CommandBarController(query: query, error: error,
 +                                       provider: commandBarSearchProvider,
 +                                       pageIcon: { [weak self] in self?.pageIcons[$0] },
@@ -7787,6 +8086,7 @@
 +            self.commandBar = nil
 +            guard response == .OK else {
 +                self.commandBarNavigationTarget = nil
++                self.commandBarSplitSide = nil
 +                self.requestNativeFocus?()
 +                return
 +            }
@@ -7796,6 +8096,7 @@
 +                guard let self else { return }
 +                guard let window, self.root.window === window else {
 +                    self.commandBarNavigationTarget = nil
++                    self.commandBarSplitSide = nil
 +                    self.pendingCommandBarAction = nil
 +                    self.pendingCommandBarWindow = nil
 +                    return
@@ -7810,13 +8111,16 @@
 +        let succeeded: Bool
 +        let navigationTarget = commandBarNavigationTarget
 +        commandBarNavigationTarget = nil
++        let splitSide = commandBarSplitSide
++        commandBarSplitSide = nil
 +        var retryTarget: LivePage?
 +        switch pending.action {
 +        case .open(let url):
 +            // An engine failure may follow a successful save: do not create a
 +            // duplicate entry if the new page is already in organization.
 +            let before = runtime.state
-+            let opened = runtime.addTab(url: url, title: url.host ?? "New tab")
++            let opened = splitSide.map { runtime.addSplitTab(url: url, title: url.host ?? "New tab", side: $0) }
++                ?? runtime.addTab(url: url, title: url.host ?? "New tab")
 +            succeeded = opened || runtime.state != before
 +        case .navigateCurrent(let url):
 +            retryTarget = navigationTarget
@@ -7824,7 +8128,12 @@
 +        case .peek(let url):
 +            succeeded = runtime.openPeek(url: url)
 +        case .activate(let result):
-+            succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
++            if let splitSide, result.workspaceID == runtime.state.activeWorkspaceID,
++               runtime.state.canCreateSplit(with: result.entryID) {
++                succeeded = runtime.createSplit(with: result.entryID, side: splitSide)
++            } else {
++                succeeded = runtime.activateEntry(result.entryID, inWorkspace: result.workspaceID)
++            }
 +        case .command(let command):
 +            switch command {
 +            case .findPage: findPage()
@@ -7843,7 +8152,7 @@
 +            let message = runtime.lastError == .saveFailed
 +                ? "Changes couldn’t be saved. Reopen Bato to reload organization."
 +                : "This page is unavailable or is closing. Choose another result."
-+            showCommandBar(query: pending.query, error: message, navigating: retryTarget)
++            showCommandBar(query: pending.query, error: message, navigating: retryTarget, splittingTo: splitSide)
 +        }
 +    }
 +
@@ -8195,7 +8504,10 @@
 +        for frame in cardFrames.allObjects {
 +            frame.accent = accent
 +            frame.showsEmptyState = state.showsEmptySpace
++            frame.canAddSplit = runtime.supportsSplits && state.canSplitSelection
++            frame.focusedPane = focusedPaneIndex
 +        }
++        paneOverlays.allObjects.forEach { $0.refresh() }
 +        let currentProfile = state.profiles.first(where: { $0.id == workspace.profileID })
 +        switcherButton.title = workspace.name
 +        switcherButton.image = colorDot(workspaceColor(workspace.color))
@@ -8318,14 +8630,22 @@
 +        sides.orientation = .horizontal
 +        sides.distribution = .fillEqually
 +        sides.spacing = 4
-+        for (position, entryID) in [("left", split.leftEntryID), ("right", split.rightEntryID)] {
++        for (position, entryID) in (split.orientation == .horizontal ? [("left", split.leftEntryID), ("right", split.rightEntryID)]
++                                                     : [("top", split.leftEntryID), ("bottom", split.rightEntryID)]) {
 +            guard let page = pages.first(where: { $0.id == entryID }) else { continue }
 +            let button = ActionButton(title: pageTitle(page)) { [weak self] in
 +                guard let self, self.canRunSplitAction(in: workspaceID),
 +                      self.runtime.state.currentWorkspace.splits.contains(where: { $0.id == split.id }) else { return }
 +                self.perform { self.runtime.activateSplit(split.id, focusedEntryID: entryID) }
 +            }
-+            configureTextAction(button, symbol: position == "left" ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
++            configureTextAction(button, symbol: "rectangle.split.2x1")
++            let iconSize = SidebarStyle.rowIconSize
++            if let icon = pageIcons[page.id]?.copy() as? NSImage {
++                icon.size = NSSize(width: iconSize, height: iconSize)
++                button.image = icon
++            } else {
++                button.image = SidebarStyle.letterIcon(for: pageTitle(page), url: page.lastURL, size: iconSize)
++            }
 +            button.contentTintColor = runtime.state.currentWorkspace.activeEntryID == entryID ? accent : .secondaryLabelColor
 +            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 +            (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
@@ -8387,7 +8707,9 @@
 +              !runtime.pendingClose.contains(where: { $0.entryID == split.leftEntryID || $0.entryID == split.rightEntryID }) else { return }
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
-+        for (title, adjustment) in [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)] {
++        for (title, adjustment) in (split.orientation == .horizontal
++            ? [("Widen Left Page", 0.1), ("Equal Width", 0.0), ("Widen Right Page", -0.1)]
++            : [("Enlarge Top Page", 0.1), ("Equal Size", 0.0), ("Enlarge Bottom Page", -0.1)]) {
 +            let item = ActionMenuItem(title: title) { [weak self] in
 +                guard let self, self.canRunSplitAction(in: workspaceID),
 +                      let current = self.runtime.state.currentSplit, current.id == splitID,
@@ -8610,14 +8932,25 @@
 +            if runtime.supportsSplits, page.kind != .favorite {
 +                let workspaceID = runtime.state.activeWorkspaceID
 +                let sourceID = runtime.state.currentWorkspace.activeEntryID
-+                let split = ActionMenuItem(title: "Split with Current Page") { [weak self] in
-+                    guard let self, self.canRunSplitAction(in: workspaceID),
-+                          self.runtime.state.currentWorkspace.activeEntryID == sourceID,
-+                          self.runtime.state.canCreateSplit(with: page.id) else { return }
-+                    self.perform { self.runtime.createSplit(with: page.id) }
-+                }
-+                split.isEnabled = runtime.state.canCreateSplit(with: page.id) &&
++                let canSplit = runtime.state.canCreateSplit(with: page.id) &&
 +                    !runtime.pendingClose.contains(where: { $0.entryID == page.id || $0.entryID == sourceID })
++                let split = NSMenuItem(title: "Open in Split View", action: nil, keyEquivalent: "")
++                split.image = sidebarSymbol("rectangle.split.2x1", size: 13)
++                let sides = NSMenu()
++                sides.autoenablesItems = false
++                for side in [SplitSide.right, .left, .top, .bottom] {
++                    let item = ActionMenuItem(title: side.title.replacingOccurrences(of: "Add ", with: "").replacingOccurrences(of: " Split", with: "")) { [weak self] in
++                        guard let self, self.canRunSplitAction(in: workspaceID),
++                              self.runtime.state.currentWorkspace.activeEntryID == sourceID,
++                              self.runtime.state.canCreateSplit(with: page.id) else { return }
++                        self.perform { self.runtime.createSplit(with: page.id, side: side) }
++                    }
++                    item.image = sidebarSymbol(side.symbolName, size: 13)
++                    item.isEnabled = canSplit
++                    sides.addItem(item)
++                }
++                split.submenu = sides
++                split.isEnabled = canSplit
 +                menu.addItem(.separator())
 +                menu.addItem(split)
 +            }
@@ -9458,7 +9791,7 @@
 +}
 +
 +@MainActor
-+func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regular) -> NSImage {
++public func sidebarSymbol(_ name: String, size: CGFloat, weight: NSFont.Weight = .regular) -> NSImage {
 +    let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) ?? NSImage(size: NSSize(width: size, height: size))
 +    return image.withSymbolConfiguration(.init(pointSize: size, weight: weight)) ?? image
 +}
@@ -9637,7 +9970,7 @@
 +}
 +
 +@MainActor
-+private final class ActionMenuItem: NSMenuItem {
++final class ActionMenuItem: NSMenuItem {
 +    private let invoke: () -> Void
 +    init(title: String, invoke: @escaping () -> Void) {
 +        self.invoke = invoke
@@ -10185,6 +10518,16 @@
 +    /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
 +    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
 +    public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
++    /// Displayed split panes in this view's flipped coordinates; each is its own rounded card with the tint between.
++    public var paneCards: [NSRect] = [] {
++        didSet { guard paneCards != oldValue else { return }; needsDisplay = true; updateSplitButton() }
++    }
++    /// Pane that holds focus, outlined in the workspace accent.
++    public var focusedPane: Int? { didSet { needsDisplay = true } }
++    /// The toolbar's split button, shown only while no pair is displayed.
++    var onAddSplit: ((SplitSide) -> Void)?
++    var canAddSplit = false { didSet { updateSplitButton() } }
++    private let splitToolbarButton = NSButton(frame: .zero)
 +    /// A workspace without a selected tab shows a blank card instead of the engine's placeholder page.
 +    public var showsEmptyState = false {
 +        didSet {
@@ -10209,6 +10552,7 @@
 +        wantsLayer = true
 +        layer?.zPosition = 1000
 +        configureShowSidebarButton()
++        configureSplitButton()
 +        AppearanceWatcher.start()
 +        NotificationCenter.default.addObserver(self, selector: #selector(redraw),
 +                                               name: AppearanceWatcher.didChange, object: nil)
@@ -10247,6 +10591,30 @@
 +
 +    @objc private func showSidebar() { onShowSidebar?() }
 +
++    private func configureSplitButton() {
++        splitToolbarButton.image = sidebarSymbol("rectangle.split.2x1", size: 13)
++        splitToolbarButton.imagePosition = .imageOnly
++        splitToolbarButton.isBordered = false
++        splitToolbarButton.bezelStyle = .recessed
++        splitToolbarButton.contentTintColor = .secondaryLabelColor
++        splitToolbarButton.setAccessibilityLabel("Split view")
++        splitToolbarButton.setAccessibilityIdentifier("bato-toolbar-split")
++        splitToolbarButton.toolTip = "Split view"
++        splitToolbarButton.target = self
++        splitToolbarButton.action = #selector(showSplitMenu)
++        updateSplitButton()
++    }
++
++    @objc private func showSplitMenu() {
++        let menu = makeSplitMenu(isEnabled: canAddSplit) { [weak self] side in self?.onAddSplit?(side) }
++        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: splitToolbarButton.bounds.height + 4), in: splitToolbarButton)
++    }
++
++    private func updateSplitButton() {
++        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState
++        needsLayout = true
++    }
++
 +    private func updateShowSidebarButton() {
 +        showSidebarButton.isHidden = !isCardShown || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
 +        needsLayout = true
@@ -10254,7 +10622,7 @@
 +
 +    public override func viewDidMoveToWindow() {
 +        super.viewDidMoveToWindow()
-+        if window == nil { showSidebarButton.removeFromSuperview() }
++        if window == nil { showSidebarButton.removeFromSuperview(); splitToolbarButton.removeFromSuperview() }
 +        needsLayout = true
 +    }
 +
@@ -10267,6 +10635,10 @@
 +        if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
 +        showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
 +                                         width: side, height: side)
++        if splitToolbarButton.superview !== container { container.addSubview(splitToolbarButton) }
++        // The engine keeps Chrome's toolbar clear of this slot (kNativeSplitButtonSlot).
++        splitToolbarButton.frame = NSRect(x: container.bounds.width - Self.margin - 6 - side, y: zoom.frame.midY - side / 2,
++                                          width: side, height: side)
 +    }
 +
 +    /// The page card in screen coordinates (y up), for anchoring panels to it.
@@ -10282,8 +10654,17 @@
 +                      height: max(0, bounds.height - 2 * margin))
 +    }
 +
++    /// One card normally; one per pane while a pair is displayed.
++    private var cardPaths: [NSBezierPath] {
++        (paneCards.isEmpty ? [cardRect] : paneCards).map {
++            NSBezierPath(roundedRect: $0, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
++        }
++    }
++
 +    public override func draw(_ dirtyRect: NSRect) {
-+        let card = NSBezierPath(roundedRect: cardRect, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
++        let paths = cardPaths
++        let card = NSBezierPath()
++        paths.forEach { card.append($0) }
 +        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
 +        let ring = NSBezierPath(rect: bounds)
 +        ring.append(card)
@@ -10304,7 +10685,15 @@
 +        card.lineWidth = 1
 +        card.stroke()
 +        NSGraphicsContext.restoreGraphicsState()
-+        if showsEmptyState { drawEmptyState(in: card) }
++        if let focusedPane, paneCards.indices.contains(focusedPane) {
++            let width = SplitPaneChrome.focusOutlineWidth
++            let outline = NSBezierPath(roundedRect: paneCards[focusedPane].insetBy(dx: width / 2, dy: width / 2),
++                                       xRadius: Self.cornerRadius - width / 2, yRadius: Self.cornerRadius - width / 2)
++            outline.lineWidth = width
++            SidebarStyle.vivid(accent).setStroke()
++            outline.stroke()
++        }
++        if showsEmptyState { drawEmptyState(in: paths[0]) }
 +    }
 +
 +    private func drawEmptyState(in card: NSBezierPath) {
@@ -17425,4 +17814,416 @@
 +
 +private extension SidebarPeekDismissal.Context {
 +    var holdsFocus: Bool { sidebarFocused && !focusIsIncidental }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift
+@@ -0,0 +1,50 @@
++import CoreGraphics
++import Foundation
++
++/// Which controls a split pane's toolbar row shows.
++public struct SplitPaneControls: OptionSet, Sendable {
++    public let rawValue: Int
++    public init(rawValue: Int) { self.rawValue = rawValue }
++
++    public static let sidebarToggle = SplitPaneControls(rawValue: 1)
++    public static let back = SplitPaneControls(rawValue: 2)
++    public static let forward = SplitPaneControls(rawValue: 4)
++    public static let reload = SplitPaneControls(rawValue: 8)
++    public static let host = SplitPaneControls(rawValue: 16)
++    public static let extensions = SplitPaneControls(rawValue: 32)
++    public static let splitMenu = SplitPaneControls(rawValue: 64)
++    public static let close = SplitPaneControls(rawValue: 128)
++
++    /// A focused pane shows everything; an unfocused one stays minimal until the pointer rests on its row.
++    public static func visible(focused: Bool, hovered: Bool) -> SplitPaneControls {
++        let minimal: SplitPaneControls = [.back, .forward, .host, .close]
++        return focused || hovered ? minimal.union([.reload, .extensions, .splitMenu]) : minimal
++    }
++
++    /// Controls that dim instead of disappearing while their pane is unfocused.
++    public static func dimmed(focused: Bool) -> SplitPaneControls {
++        focused ? [] : [.back, .forward]
++    }
++}
++
++public enum SplitPaneChrome {
++    /// Height of each pane's toolbar row; must equal `kNativePaneToolbarHeight` in the engine layout.
++    public static let toolbarHeight: CGFloat = 40
++    public static let focusOutlineWidth: CGFloat = 2
++    public static let hoverFadeDuration: TimeInterval = 0.12
++
++    /// The sidebar toggle belongs to the leading pane (left or top) while the sidebar is hidden.
++    public static func showsSidebarToggle(paneIndex: Int, sidebarHidden: Bool) -> Bool {
++        paneIndex == 0 && sidebarHidden
++    }
++
++    /// Where a pane's page ends and the toolbar row above it begins, for a pane frame in the engine's coordinates.
++    public static func toolbarFrame(ofPane pane: CGRect) -> CGRect {
++        CGRect(x: pane.minX, y: pane.minY, width: pane.width, height: min(toolbarHeight, pane.height))
++    }
++
++    /// Which pane index a rect belongs to, by the divider side of the pair: first = left/top.
++    public static func paneIndex(of entryID: UUID, in split: PageSplit) -> Int? {
++        entryID == split.leftEntryID ? 0 : entryID == split.rightEntryID ? 1 : nil
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift
+@@ -0,0 +1,356 @@
++import AppKit
++import BatoCore
++
++public enum PaneNavigationAction: Int32, Sendable {
++    case back = 0, forward, reload, stop
++}
++
++public struct PaneNavigationState: Equatable, Sendable {
++    public var canGoBack = false
++    public var canGoForward = false
++    public var isLoading = false
++    public init(canGoBack: Bool = false, canGoForward: Bool = false, isLoading: Bool = false) {
++        self.canGoBack = canGoBack
++        self.canGoForward = canGoForward
++        self.isLoading = isLoading
++    }
++    /// Decodes the client's bit set: 1 back, 2 forward, 4 loading.
++    public init(bits: Int32) {
++        self.init(canGoBack: bits & 1 != 0, canGoForward: bits & 2 != 0, isLoading: bits & 4 != 0)
++    }
++}
++
++public struct SplitPaneState {
++    public var entryID: UUID
++    public var title: String
++    public var url: URL?
++    public var isFocused: Bool
++    public var navigation: PaneNavigationState
++}
++
++public struct SplitPaneActions {
++    public var focus: (UUID) -> Void
++    public var close: (UUID) -> Void
++    public var navigate: (UUID, PaneNavigationAction) -> Void
++    public var addSplit: (SplitSide) -> Void
++    public var toggleSidebar: () -> Void
++}
++
++/// The menu behind every split button: one item per side, each with its own glyph.
++@MainActor func makeSplitMenu(isEnabled: Bool, handler: @escaping (SplitSide) -> Void) -> NSMenu {
++    let menu = NSMenu()
++    menu.autoenablesItems = false
++    for side in [SplitSide.right, .left, .top, .bottom] {
++        let item = ActionMenuItem(title: side.title) { handler(side) }
++        item.image = sidebarSymbol(side.symbolName, size: 13)
++        item.isEnabled = isEnabled
++        item.setAccessibilityIdentifier("bato-add-split-\(side.rawValue)")
++        menu.addItem(item)
++    }
++    return menu
++}
++
++/// One compact toolbar row above a split pane. A focused pane shows every control; an unfocused
++/// one shows only dimmed back/forward, its host and close until the pointer rests on the row.
++@MainActor final class SplitPaneToolbarView: NSView {
++    private let back = NSButton(frame: .zero)
++    private let forward = NSButton(frame: .zero)
++    private let reload = NSButton(frame: .zero)
++    private let splitButton = NSButton(frame: .zero)
++    private let close = NSButton(frame: .zero)
++    private let linkGlyph = NSImageView(frame: .zero)
++    private let host = NSTextField(labelWithString: "")
++    private var trackingArea: NSTrackingArea?
++    private var isHovered = false
++    private(set) var state: SplitPaneState?
++    private var actions: SplitPaneActions?
++    private var splitMenuEnabled = true
++    /// Space taken by the traffic lights and the show-sidebar button when this row starts at the window's corner.
++    var leadingInset: CGFloat = 0 { didSet { needsLayout = true } }
++    let paneIndex: Int
++
++    init(paneIndex: Int) {
++        self.paneIndex = paneIndex
++        super.init(frame: .zero)
++        wantsLayer = true
++        for (button, symbol, label, identifier) in [
++            (back, "chevron.left", "Back", "back"), (forward, "chevron.right", "Forward", "forward"),
++            (reload, "arrow.clockwise", "Reload", "reload"), (splitButton, "rectangle.split.2x1", "Split view", "split"),
++            (close, "xmark", "Close pane", "close")] {
++            button.image = sidebarSymbol(symbol, size: 12, weight: .medium)
++            button.imagePosition = .imageOnly
++            button.isBordered = false
++            button.bezelStyle = .recessed
++            button.contentTintColor = .secondaryLabelColor
++            button.toolTip = label
++            button.setAccessibilityLabel(label)
++            button.setAccessibilityIdentifier("bato-pane-\(paneIndex)-\(identifier)")
++            button.target = self
++            addSubview(button)
++        }
++        back.action = #selector(goBack)
++        forward.action = #selector(goForward)
++        reload.action = #selector(reloadOrStop)
++        splitButton.action = #selector(showSplitMenu)
++        close.action = #selector(closePane)
++        linkGlyph.image = sidebarSymbol("link", size: 10, weight: .medium)
++        linkGlyph.contentTintColor = .tertiaryLabelColor
++        host.font = .systemFont(ofSize: 12, weight: .medium)
++        host.textColor = .labelColor
++        host.lineBreakMode = .byTruncatingTail
++        host.alignment = .center
++        host.setAccessibilityIdentifier("bato-pane-\(paneIndex)-host")
++        addSubview(linkGlyph)
++        addSubview(host)
++        setAccessibilityIdentifier("bato-pane-\(paneIndex)-toolbar")
++        AppearanceWatcher.start()
++        NotificationCenter.default.addObserver(self, selector: #selector(restyle),
++                                               name: AppearanceWatcher.didChange, object: nil)
++        restyle()
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override var isFlipped: Bool { true }
++    override var mouseDownCanMoveWindow: Bool { false }
++    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); restyle() }
++
++    @objc private func restyle() {
++        let dark = effectiveAppearance.isDark
++        layer?.backgroundColor = (dark ? NSColor(white: 0.145, alpha: 1) : NSColor(white: 0.985, alpha: 1)).cgColor
++    }
++
++    override func updateTrackingAreas() {
++        super.updateTrackingAreas()
++        if let trackingArea { removeTrackingArea(trackingArea) }
++        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
++        addTrackingArea(area)
++        trackingArea = area
++    }
++    override func mouseEntered(with event: NSEvent) { setHovered(true) }
++    override func mouseExited(with event: NSEvent) { setHovered(false) }
++    /// A click on empty toolbar space moves focus into the pane, like a click on its page.
++    override func mouseDown(with event: NSEvent) {
++        if let id = state?.entryID { actions?.focus(id) }
++    }
++
++    /// Chromium's content view takes mouse events over its own area before subviews see them, so the overlay
++    /// forwards a click here: a visible enabled control acts, empty space focuses the pane.
++    func handleClick(at point: NSPoint) {
++        for control in [back, forward, reload, splitButton, close] where !control.isHidden && control.isEnabled &&
++            control.alphaValue > 0.05 && control.frame.contains(point) {
++            // Deferred: a menu or close started inside the event monitor would run its own tracking loop there.
++            DispatchQueue.main.async { [weak control] in
++                guard let control, let action = control.action else { return }
++                NSApp.sendAction(action, to: control.target, from: control)
++            }
++            return
++        }
++        if let id = state?.entryID { actions?.focus(id) }
++    }
++
++    func setHovered(_ hovered: Bool, animated: Bool = true) {
++        guard hovered != isHovered else { return }
++        isHovered = hovered
++        applyControls(animated: animated)
++    }
++
++    func update(_ state: SplitPaneState, actions: SplitPaneActions, splitMenuEnabled: Bool) {
++        self.state = state
++        self.actions = actions
++        self.splitMenuEnabled = splitMenuEnabled
++        host.stringValue = Self.displayHost(url: state.url, title: state.title)
++        back.isEnabled = state.navigation.canGoBack
++        forward.isEnabled = state.navigation.canGoForward
++        reload.image = sidebarSymbol(state.navigation.isLoading ? "xmark" : "arrow.clockwise", size: 12, weight: .medium)
++        reload.toolTip = state.navigation.isLoading ? "Stop" : "Reload"
++        applyControls(animated: false)
++        needsLayout = true
++    }
++
++    static func displayHost(url: URL?, title: String) -> String {
++        guard let host = url?.host, !host.isEmpty else { return title }
++        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
++    }
++
++    /// Controls that fade with focus and hover share one opacity so a hover reads as the row "waking up".
++    private func applyControls(animated: Bool) {
++        guard let state else { return }
++        let visible = SplitPaneControls.visible(focused: state.isFocused, hovered: isHovered)
++        let dimmed = SplitPaneControls.dimmed(focused: state.isFocused)
++        let toggles: [(NSView, SplitPaneControls)] = [(reload, .reload), (splitButton, .splitMenu)]
++        let dimTargets: [(NSButton, SplitPaneControls)] = [(back, .back), (forward, .forward)]
++        let apply = {
++            for (view, control) in toggles {
++                let shown = visible.contains(control)
++                view.animator().alphaValue = shown ? 1 : 0
++            }
++            for (button, control) in dimTargets {
++                button.animator().alphaValue = dimmed.contains(control) ? 0.4 : 1
++            }
++        }
++        for (view, control) in toggles {
++            if visible.contains(control) { view.isHidden = false }
++        }
++        if animated {
++            NSAnimationContext.runAnimationGroup({ context in
++                context.duration = SplitPaneChrome.hoverFadeDuration
++                apply()
++            }, completionHandler: { [weak self] in
++                MainActor.assumeIsolated {
++                    guard let self, let state = self.state else { return }
++                    let current = SplitPaneControls.visible(focused: state.isFocused, hovered: self.isHovered)
++                    for (view, control) in toggles { view.isHidden = !current.contains(control) }
++                }
++            })
++        } else {
++            for (view, control) in toggles {
++                view.alphaValue = visible.contains(control) ? 1 : 0
++                view.isHidden = !visible.contains(control)
++            }
++            for (button, control) in dimTargets { button.alphaValue = dimmed.contains(control) ? 0.4 : 1 }
++        }
++        splitButton.isEnabled = splitMenuEnabled
++    }
++
++    override func layout() {
++        super.layout()
++        let side: CGFloat = 26
++        let y = (bounds.height - side) / 2
++        var x = 8 + leadingInset
++        for button in [back, forward, reload] {
++            button.frame = NSRect(x: x, y: y, width: side, height: side)
++            x += side + 2
++        }
++        var trailing = bounds.width - 8
++        close.frame = NSRect(x: trailing - side, y: y, width: side, height: side)
++        trailing -= side + 2
++        splitButton.frame = NSRect(x: trailing - side, y: y, width: side, height: side)
++        trailing -= side + 2
++        let available = max(0, trailing - x)
++        let natural = (host.stringValue as NSString).size(withAttributes: [.font: host.font ?? .systemFont(ofSize: 12)]).width
++        let textWidth = min(ceil(natural) + 10, max(0, available - 20))
++        let groupWidth = 16 + textWidth
++        // Centre on the pane, then keep clear of the controls on either side.
++        var groupX = (bounds.width - groupWidth) / 2
++        groupX = min(max(groupX, x), max(x, trailing - groupWidth))
++        linkGlyph.frame = NSRect(x: groupX, y: (bounds.height - 12) / 2, width: 12, height: 12)
++        host.frame = NSRect(x: groupX + 16, y: (bounds.height - 16) / 2, width: textWidth, height: 16)
++    }
++
++    @objc private func goBack() { act(.back) }
++    @objc private func goForward() { act(.forward) }
++    @objc private func reloadOrStop() { act(state?.navigation.isLoading == true ? .stop : .reload) }
++    private func act(_ action: PaneNavigationAction) {
++        if let id = state?.entryID { actions?.navigate(id, action) }
++    }
++    @objc private func closePane() {
++        if let id = state?.entryID { actions?.close(id) }
++    }
++    @objc private func showSplitMenu() {
++        guard let actions, let id = state?.entryID else { return }
++        // Focus first so the chosen split is added beside this pane's page.
++        actions.focus(id)
++        let menu = makeSplitMenu(isEnabled: splitMenuEnabled) { side in actions.addSplit(side) }
++        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: splitButton.bounds.height + 4), in: splitButton)
++    }
++}
++
++/// Native toolbar rows over a displayed split pair. It is transparent except for the rows, so Chromium's
++/// pages and the card's rounded cut-outs show through; the card view draws the outline around the focused pane.
++@MainActor public final class SplitPaneOverlayView: NSView {
++    public var provider: () -> [SplitPaneState] = { [] }
++    public var actions = SplitPaneActions(focus: { _ in }, close: { _ in }, navigate: { _, _ in },
++                                          addSplit: { _ in }, toggleSidebar: {})
++    /// The sidebar is hidden, so the first pane's row also clears the traffic lights and show-sidebar button.
++    public var sidebarHidden = false { didSet { needsLayout = true } }
++    public private(set) var paneFrames: [NSRect] = []
++    private var toolbars: [SplitPaneToolbarView] = []
++    private var poll: Timer?
++    private var clickMonitor: Any?
++
++    public override init(frame: NSRect) {
++        super.init(frame: frame)
++        autoresizingMask = [.width, .height]
++        wantsLayer = true
++        // Below the card's gutter (zPosition 1000) so its rounded cut-outs clip the rows' corners.
++        layer?.zPosition = 999
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++    deinit { MainActor.assumeIsolated { poll?.invalidate() } }
++
++    public override var isFlipped: Bool { true }
++    public override func hitTest(_ point: NSPoint) -> NSView? {
++        let hit = super.hitTest(point)
++        return hit === self ? nil : hit
++    }
++
++    /// Pane frames in this view's flipped coordinates, including each pane's toolbar band; empty hides the rows.
++    public func apply(frames: [NSRect]) {
++        paneFrames = frames
++        isHidden = frames.isEmpty
++        poll?.invalidate()
++        poll = nil
++        if frames.isEmpty, let clickMonitor {
++            NSEvent.removeMonitor(clickMonitor)
++            self.clickMonitor = nil
++        }
++        if !frames.isEmpty, clickMonitor == nil {
++            // AppKit delivers local monitors on the main thread.
++            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
++                nonisolated(unsafe) let unsafeEvent = event
++                let handled = MainActor.assumeIsolated { self?.route(unsafeEvent) == true }
++                return handled ? nil : event
++            }
++        }
++        if frames.isEmpty {
++            toolbars.forEach { $0.removeFromSuperview() }
++            toolbars.removeAll()
++            return
++        }
++        poll = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
++            MainActor.assumeIsolated { self?.refresh() }
++        }
++        refresh()
++    }
++
++    public func refresh() {
++        let panes = provider()
++        guard !paneFrames.isEmpty, panes.count == paneFrames.count else {
++            if panes.count != paneFrames.count, !paneFrames.isEmpty { toolbars.forEach { $0.isHidden = true } }
++            return
++        }
++        while toolbars.count < panes.count {
++            let bar = SplitPaneToolbarView(paneIndex: toolbars.count)
++            toolbars.append(bar)
++            addSubview(bar)
++        }
++        for (index, pane) in panes.enumerated() {
++            let bar = toolbars[index]
++            bar.isHidden = false
++            let frame = SplitPaneChrome.toolbarFrame(ofPane: paneFrames[index])
++            if bar.frame != frame { bar.frame = frame }
++            bar.leadingInset = leadingInset(forPane: index, frame: frame)
++            bar.update(pane, actions: actions, splitMenuEnabled: true)
++        }
++    }
++
++    /// True when the click landed on a pane toolbar and was handled here.
++    private func route(_ event: NSEvent) -> Bool {
++        guard !isHidden, event.window === window, window?.attachedSheet == nil else { return false }
++        let point = convert(event.locationInWindow, from: nil)
++        guard let bar = toolbars.first(where: { !$0.isHidden && $0.frame.contains(point) }) else { return false }
++        bar.handleClick(at: bar.convert(point, from: self))
++        return true
++    }
++
++    private func leadingInset(forPane index: Int, frame: NSRect) -> CGFloat {
++        guard SplitPaneChrome.showsSidebarToggle(paneIndex: index, sidebarHidden: sidebarHidden),
++              let window, let zoom = window.standardWindowButton(.zoomButton) else { return 0 }
++        let lightsEnd = convert(zoom.convert(zoom.bounds, to: nil), from: nil).maxX
++        let slot = SidebarMetrics.trafficLightGap + SidebarMetrics.revealButtonSide + 4
++        return max(0, lightsEnd + slot - frame.minX - 8)
++    }
++
++    /// Test hook: the rows currently shown, in pane order.
++    var toolbarViews: [SplitPaneToolbarView] { toolbars }
 +}

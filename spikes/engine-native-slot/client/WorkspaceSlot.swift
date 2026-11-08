@@ -8,7 +8,9 @@ private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?, Un
 private typealias CommandID = @convention(c) (Int32) -> Int32
 private typealias ScheduleSelection = @convention(c) (UInt64) -> Void
 private typealias SidebarGeometry = @convention(c) (UInt64, Int32, Int32) -> Int32
-private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32
+private typealias PresentSplit = @convention(c) (UInt64, Int32, Int32, Int32, Double, Int32) -> Int32
+private typealias PaneNavigate = @convention(c) (UInt64, Int32, Int32) -> Int32
+private typealias PaneNavigationBits = @convention(c) (UInt64, Int32) -> Int32
 private typealias ActivePage = @convention(c) (UInt64) -> Int32
 private typealias PageAction = @convention(c) (UInt64, Int32) -> Int32
 private typealias PresentPeek = @convention(c) (UInt64, Int32, Int32) -> UInt64
@@ -30,6 +32,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 @MainActor private var pageFocus: ActivePage?
 @MainActor private var presentSplitPages: PresentSplit?
 @MainActor private var separateSplitPages: ActivePage?
+@MainActor private var paneNavigateHook: PaneNavigate?
+@MainActor private var paneNavigationBitsHook: PaneNavigationBits?
 @MainActor private var presentPeekPages: PresentPeek?
 @MainActor private var endPeekPages: EndPeek?
 @MainActor private var navigatePage: NavigatePage?
@@ -185,14 +189,25 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         } else { id = 0 }
         _ = selectPage?(token, id)
     }
+    func paneNavigate(_ page: LivePage, _ action: PaneNavigationAction) -> Bool {
+        guard let token = windows[page.profileID], let id = pages.first(where: { $0.value == page })?.key,
+              let hook = paneNavigateHook else { return false }
+        return hook(token, id, action.rawValue) == 1
+    }
+    func paneNavigationState(_ page: LivePage) -> PaneNavigationState {
+        guard let token = windows[page.profileID], let id = pages.first(where: { $0.value == page })?.key,
+              let bits = paneNavigationBitsHook?(token, id), bits >= 0 else { return PaneNavigationState() }
+        return PaneNavigationState(bits: bits)
+    }
     var supportsSplits: Bool { presentSplitPages != nil && separateSplitPages != nil }
-    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double) -> Bool {
+    func presentSplit(left: LivePage, right: LivePage, focused: LivePage, ratio: Double,
+                      orientation: SplitOrientation) -> Bool {
         guard left.profileID == right.profileID, let token = windows[left.profileID],
               let a = pages.first(where: { $0.value == left })?.key,
               let b = pages.first(where: { $0.value == right })?.key,
               let f = pages.first(where: { $0.value == focused })?.key else { return false }
         onShow?(token)
-        return presentSplitPages?(token, a, b, f, ratio) == 1
+        return presentSplitPages?(token, a, b, f, ratio, orientation == .vertical ? 1 : 0) == 1
     }
     func separateSplit() -> Bool {
         guard let token = windows[currentProfileID] else { return true }
@@ -394,6 +409,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     var engine: WorkspaceEngine? { workspaceHost.engine }
     private var blockingControls: BlockingControls?
     private var cardFrame: ContentCardFrameView?
+    private var paneOverlay: SplitPaneOverlayView?
+    private var paneFrames: [NSRect] = []
     private var width: Int32 = 260
     private var mode: Int32 = 1
     private var pointerMonitor: Any?
@@ -437,6 +454,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
                 downloadsController = downloads
                 controller.attachDownloads(downloads)
             }
+            controller.paneNavigator = { page, action in workspaceHost.engine?.paneNavigate(page, action) ?? false }
+            controller.paneNavigationState = { page in workspaceHost.engine?.paneNavigationState(page) ?? PaneNavigationState() }
             controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
             controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
             controller.requestPagePresentation = {
@@ -487,6 +506,25 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         card.isCardShown = !isFullscreen
         card.sidebarCoverWidth = mode == 0 ? 0 : CGFloat(width)
         card.sidebarWidth = mode == 1 ? CGFloat(min(width, Int32(max(0, content.bounds.width - 320)))) : 0
+        updatePaneOverlay(in: content, card: card)
+    }
+    /// Rows go just below the card so its rounded cut-outs clip their corners.
+    private func updatePaneOverlay(in content: NSView, card: ContentCardFrameView) {
+        guard let overlay = paneOverlay ?? controller?.makeSplitPaneOverlay() else { return }
+        paneOverlay = overlay
+        if overlay.superview !== content {
+            overlay.frame = content.bounds
+            content.addSubview(overlay, positioned: .below, relativeTo: card)
+        }
+        overlay.sidebarHidden = mode == 0
+        let shown = isFullscreen ? [] : paneFrames
+        card.paneCards = shown
+        card.focusedPane = controller?.focusedPaneIndex
+        overlay.apply(frames: shown)
+    }
+    func applySplitLayout(_ frames: [NSRect]) {
+        paneFrames = frames
+        updateCard()
     }
     private func attached() {
         installPointerMonitor()
@@ -968,6 +1006,11 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         ownedWindow = root.window
     }
     @objc private func toggleFromMenu() { _ = toggle() }
+    @objc private func addSplitFromMenu(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let side = SplitSide(rawValue: raw) {
+            workspaceHost.controller?.addSplit(side)
+        }
+    }
     @objc private func promotePeekFromMenu() { _ = promotePeek() }
     @objc private func copyLinkFromMenu() { _ = copyLink() }
     @objc private func copyMarkdownFromMenu() { _ = workspaceHost.controller?.copyCurrentLink(as: .markdown) }
@@ -1043,6 +1086,18 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             let item = NSMenuItem(title: "Page", action: nil, keyEquivalent: "")
             let menu = NSMenu(title: "Page")
             pageItems().forEach(menu.addItem)
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            let split = NSMenuItem(title: "Split View", action: nil, keyEquivalent: "")
+            let sides = NSMenu(title: "Split View")
+            for side in [SplitSide.right, .left, .top, .bottom] {
+                let entry = NSMenuItem(title: side.title, action: #selector(addSplitFromMenu(_:)), keyEquivalent: "")
+                entry.image = sidebarSymbol(side.symbolName, size: 13)
+                entry.target = self
+                entry.representedObject = side.rawValue
+                sides.addItem(entry)
+            }
+            split.submenu = sides
+            menu.addItem(split)
             item.submenu = menu
             mainMenu.addItem(item)
             pageMenuItem = item
@@ -1186,11 +1241,31 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 
 @_cdecl("BatoSwiftWorkspaceConfigureSplits")
 @MainActor public func configureWorkspaceSplits(
-    _ present: @escaping @convention(c) (UInt64, Int32, Int32, Int32, Double) -> Int32,
+    _ present: @escaping @convention(c) (UInt64, Int32, Int32, Int32, Double, Int32) -> Int32,
     _ separate: @escaping @convention(c) (UInt64) -> Int32) {
     precondition(Thread.isMainThread)
     presentSplitPages = present
     separateSplitPages = separate
+}
+
+@_cdecl("BatoSwiftWorkspaceConfigurePaneNavigation")
+@MainActor public func configurePaneNavigation(
+    _ navigate: @escaping @convention(c) (UInt64, Int32, Int32) -> Int32,
+    _ state: @escaping @convention(c) (UInt64, Int32) -> Int32) {
+    precondition(Thread.isMainThread)
+    paneNavigateHook = navigate
+    paneNavigationBitsHook = state
+}
+
+/// Pane frames of the pair a window displays, in the content view's flipped points; `inSplit` 0 clears them.
+@_cdecl("BatoSwiftWorkspaceSplitLayout")
+@MainActor public func workspaceSplitLayout(_ token: UInt64, _ inSplit: Int32, _ stacked: Int32,
+                                            _ x0: Double, _ y0: Double, _ w0: Double, _ h0: Double,
+                                            _ x1: Double, _ y1: Double, _ w1: Double, _ h1: Double) {
+    precondition(Thread.isMainThread)
+    guard let slot = workspaceSlots[token] else { return }
+    let frames = inSplit == 1 ? [NSRect(x: x0, y: y0, width: w0, height: h0), NSRect(x: x1, y: y1, width: w1, height: h1)] : []
+    slot.applySplitLayout(frames)
 }
 
 @_cdecl("BatoSwiftWorkspaceSplitChanged")

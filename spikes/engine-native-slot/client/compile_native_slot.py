@@ -22,7 +22,7 @@ def main():
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
                                         'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-                                        'SidebarPeekDismissal.swift']),
+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -35,7 +35,7 @@ def main():
                                               'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
                                               'AppearanceWatcher.swift', 'SwitcherPopover.swift',
                                               'WorkspaceSwipe.swift', 'TabAudio.swift',
-                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift'])]:
+                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',

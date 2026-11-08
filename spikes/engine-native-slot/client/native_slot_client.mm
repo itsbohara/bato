@@ -34,7 +34,7 @@ extern "C" void BatoSwiftWorkspaceConfigure(const char* state_directory,
     void (*schedule_selection)(uint64_t),
     int (*sidebar_geometry)(uint64_t, int, int), int (*page_focus)(uint64_t));
 extern "C" void BatoSwiftWorkspaceConfigureSplits(
-    int (*present)(uint64_t, int, int, int, double), int (*separate)(uint64_t));
+    int (*present)(uint64_t, int, int, int, double, int), int (*separate)(uint64_t));
 // Peek hooks are optional Swift exports, resolved with dlsym at registration.
 using SwiftConfigurePeek = void (*)(uint64_t (*)(uint64_t, int, int), int (*)(uint64_t, uint64_t, int));
 using SwiftPeekEnded = void (*)(uint64_t, uint64_t, int, int, int);
@@ -47,6 +47,11 @@ using SwiftPeekScrimClicked = void (*)(uint64_t, uint64_t, int, int);
 using SwiftPeekLinkEligible = int (*)(uint64_t, int, const char*);
 using SwiftPeekLinkRequested = void (*)(uint64_t, int, const char*);
 extern "C" void BatoSwiftWorkspaceSplitChanged(uint64_t token, int left, int right, double ratio, int removed);
+// Pane frames and per-pane navigation are optional Swift exports, resolved with dlsym.
+using SwiftSplitLayout = void (*)(uint64_t, int, int, double, double, double, double,
+                                  double, double, double, double);
+using SwiftConfigurePaneNavigation = void (*)(int (*)(uint64_t, int, int), int (*)(uint64_t, int));
+SwiftSplitLayout g_swift_split_layout = nullptr;
 extern "C" void BatoSwiftWorkspaceCommand(uint64_t token, int command, int browser_id);
 extern "C" void BatoSwiftWorkspacePageEvent(uint64_t token, int browser_id,
     int kind, const char* url, const char* title);
@@ -85,7 +90,7 @@ using RequestClose = decltype(&bato_native_slot_request_close_v1);
 ActiveBrowserId g_active_browser_id = nullptr;
 NewTab g_new_tab = nullptr;
 RequestClose g_request_close = nullptr;
-using PresentSplit = decltype(&bato_native_slot_present_split_v1);
+using PresentSplit = decltype(&bato_native_slot_present_split_v2);
 using SeparateSplit = decltype(&bato_native_slot_separate_split_v1);
 PresentSplit g_present_split = nullptr;
 SeparateSplit g_separate_split = nullptr;
@@ -740,7 +745,7 @@ int CloseWorkspacePage(uint64_t token, int identifier) {
   return accepted ? 1 : 0;
 }
 
-int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, double ratio) {
+int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, double ratio, int stacked) {
   auto* slot = AvailableSlot(token);
   if (!slot || !g_present_split || left == right ||
       (focused != left && focused != right) || !std::isfinite(ratio) ||
@@ -754,7 +759,7 @@ int PresentWorkspaceSplit(uint64_t token, int left, int right, int focused, doub
   if (!SameWindow(a, b) || !slot->context ||
       !a->GetHost()->GetRequestContext()->IsSame(slot->context) ||
       !b->GetHost()->GetRequestContext()->IsSame(slot->context)) return 0;
-  if (g_present_split(token, left, right, focused, ratio) != 1) return 0;
+  if ((stacked != 0 && stacked != 1) || g_present_split(token, left, right, focused, ratio, stacked) != 1) return 0;
   auto current = WorkspaceSlots().find(token);
   if (current == WorkspaceSlots().end() || !current->second.pages.contains(left) ||
       !current->second.pages.contains(right) ||
@@ -801,6 +806,44 @@ void SplitChanged(void*, uint64_t token, int left, int right, double ratio) {
         }
         BatoSwiftWorkspaceSplitChanged(token, a, b, ratio, removed ? 1 : 0);
       }, token, a, b, ratio, removed, revision, observation, first, second), removed ? 0 : 200);
+}
+
+void SplitLayoutChanged(void*, uint64_t token, int in_split, int stacked, double x0, double y0,
+                        double w0, double h0, double x1, double y1, double w1, double h1) {
+  // Runs inside a Views layout pass: AppKit work waits for the stack to unwind.
+  CefPostTask(TID_UI, base::BindOnce(
+      [](uint64_t token, int in_split, int stacked, double x0, double y0, double w0, double h0,
+         double x1, double y1, double w1, double h1) {
+        if (g_swift_split_layout && WorkspaceSlots().contains(token))
+          g_swift_split_layout(token, in_split, stacked, x0, y0, w0, h0, x1, y1, w1, h1);
+      }, token, in_split, stacked, x0, y0, w0, h0, x1, y1, w1, h1));
+}
+
+// Per-pane toolbar actions: 0 back, 1 forward, 2 reload, 3 stop. Any page of the slot, not only
+// the active one, so an unfocused split pane can navigate without taking focus.
+int PaneNavigate(uint64_t token, int identifier, int action) {
+  auto* slot = AvailableSlot(token);
+  if (!slot || slot->pending_close.contains(identifier)) return 0;
+  auto found = slot->pages.find(identifier);
+  if (found == slot->pages.end() || !found->second.browser->IsValid()) return 0;
+  auto browser = found->second.browser;
+  switch (action) {
+    case 0: if (!browser->CanGoBack()) return 0; browser->GoBack(); return 1;
+    case 1: if (!browser->CanGoForward()) return 0; browser->GoForward(); return 1;
+    case 2: browser->Reload(); return 1;
+    case 3: browser->StopLoad(); return 1;
+  }
+  return 0;
+}
+// Bit 0 can go back, bit 1 can go forward, bit 2 loading; -1 for an unknown page.
+int PaneNavigationState(uint64_t token, int identifier) {
+  auto* slot = AvailableSlot(token);
+  if (!slot) return -1;
+  auto found = slot->pages.find(identifier);
+  if (found == slot->pages.end() || !found->second.browser->IsValid()) return -1;
+  auto browser = found->second.browser;
+  return (browser->CanGoBack() ? 1 : 0) | (browser->CanGoForward() ? 2 : 0) |
+         (browser->IsLoading() ? 4 : 0);
 }
 
 void PostLifecycleEvent(uint64_t token, int identifier, int kind) {
@@ -1435,10 +1478,16 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
       dlsym(loaded, "bato_native_slot_register_page_callbacks_v1"));
   auto sidebar_geometry = reinterpret_cast<decltype(&bato_native_slot_set_sidebar_v1)>(
       dlsym(loaded, "bato_native_slot_set_sidebar_v1"));
-  auto present_split = reinterpret_cast<PresentSplit>(dlsym(loaded, "bato_native_slot_present_split_v1"));
+  auto present_split = reinterpret_cast<PresentSplit>(dlsym(loaded, "bato_native_slot_present_split_v2"));
   auto separate_split = reinterpret_cast<SeparateSplit>(dlsym(loaded, "bato_native_slot_separate_split_v1"));
   auto register_splits = reinterpret_cast<decltype(&bato_native_slot_register_split_callbacks_v1)>(
       dlsym(loaded, "bato_native_slot_register_split_callbacks_v1"));
+  auto register_split_layout = reinterpret_cast<decltype(&bato_native_slot_register_split_layout_callbacks_v1)>(
+      dlsym(loaded, "bato_native_slot_register_split_layout_callbacks_v1"));
+  auto swift_split_layout = reinterpret_cast<SwiftSplitLayout>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceSplitLayout"));
+  auto swift_configure_pane_navigation = reinterpret_cast<SwiftConfigurePaneNavigation>(
+      dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceConfigurePaneNavigation"));
   auto register_peeks = reinterpret_cast<decltype(&bato_native_slot_register_peek_callbacks_v1)>(
       dlsym(loaded, "bato_native_slot_register_peek_callbacks_v1"));
   auto peek_present = reinterpret_cast<PeekPresent>(dlsym(loaded, "bato_native_slot_peek_present_v1"));
@@ -1511,6 +1560,18 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
     g_present_split = present_split;
     g_separate_split = separate_split;
     BatoSwiftWorkspaceConfigureSplits(PresentWorkspaceSplit, SeparateWorkspaceSplit);
+    // Native pane toolbars are additive: without them the pair keeps Chrome's own toolbar.
+    if (register_split_layout && swift_split_layout) {
+      BatoSplitLayoutCallbacksV1 layout_callbacks = {};
+      layout_callbacks.size = sizeof(layout_callbacks);
+      layout_callbacks.version = 1;
+      layout_callbacks.changed = SplitLayoutChanged;
+      if (register_split_layout(&layout_callbacks) == 1) {
+        g_swift_split_layout = swift_split_layout;
+        if (swift_configure_pane_navigation)
+          swift_configure_pane_navigation(PaneNavigate, PaneNavigationState);
+      }
+    }
     // Peek is additive: a framework or Swift library without it keeps working.
     if (register_peeks && peek_present && peek_end && swift_configure_peek && swift_peek_ended) {
       BatoPeekCallbacksV1 peek_callbacks = {};
