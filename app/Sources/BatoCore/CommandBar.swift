@@ -63,12 +63,102 @@ public enum CommandBarInput {
             }
             return .navigate(url)
         }
-        var search = URLComponents(url: provider.endpoint, resolvingAgainstBaseURL: false)!
-        search.queryItems = [URLQueryItem(name: "q", value: text)]
-        // Search endpoints decode form queries, where a literal + means space.
-        // URLComponents uses RFC 3986 and leaves + unescaped by default.
-        search.percentEncodedQuery = search.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-        return .search(search.url!)
+        return .search(searchURL(for: text, provider: provider))
+    }
+
+    public static func searchURL(for text: String, provider: CommandBarSearchProvider) -> URL {
+        formURL(provider.endpoint, [URLQueryItem(name: "q", value: text)])
+    }
+
+    /// Search endpoints decode form queries, where a literal + means space.
+    /// URLComponents uses RFC 3986 and leaves + unescaped by default.
+    static func formURL(_ endpoint: URL, _ items: [URLQueryItem]) -> URL {
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = items
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        return components.url!
+    }
+}
+
+/// Typed-query completions from the selected search provider. The typed text leaves the device only
+/// when the user has search suggestions on, and never for addresses.
+public enum SearchSuggestions {
+    public static let maxQueryLength = 100
+
+    /// Nil unless the input is a plain search: addresses and invalid input are never sent to a provider.
+    public static func endpoint(for query: String, provider: CommandBarSearchProvider) -> URL? {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count <= maxQueryLength, case .search = CommandBarInput.resolve(text, provider: provider) else { return nil }
+        switch provider {
+        case .duckDuckGo:
+            return CommandBarInput.formURL(URL(string: "https://duckduckgo.com/ac/")!, [URLQueryItem(name: "q", value: text)])
+        case .google:
+            return CommandBarInput.formURL(URL(string: "https://suggestqueries.google.com/complete/search")!,
+                                           [URLQueryItem(name: "client", value: "firefox"), URLQueryItem(name: "q", value: text)])
+        case .brave:
+            return CommandBarInput.formURL(URL(string: "https://search.brave.com/api/suggest")!, [URLQueryItem(name: "q", value: text)])
+        case .bing:
+            return CommandBarInput.formURL(URL(string: "https://api.bing.com/osjson.aspx")!, [URLQueryItem(name: "query", value: text)])
+        }
+    }
+
+    /// Reads the OpenSearch shape (`["q", ["a", "b"]]`, Google, Brave, Bing) and DuckDuckGo's
+    /// `[{"phrase": "a"}]`. Anything else yields no suggestions.
+    public static func parse(_ data: Data) -> [String] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
+        let raw: [String]
+        if json.first is String, json.count > 1, let list = json[1] as? [Any] {
+            raw = list.compactMap { $0 as? String }
+        } else {
+            raw = json.compactMap { ($0 as? [String: Any])?["phrase"] as? String }
+        }
+        var seen = Set<String>()
+        return raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+    }
+}
+
+/// Fetches suggestions after the user pauses typing. A new request cancels the previous one, so a slow
+/// response for an old query is never delivered.
+@MainActor
+public final class SearchSuggestionFetcher {
+    public typealias Fetch = @Sendable (URL) async throws -> Data
+    public static let debounce: Duration = .milliseconds(120)
+
+    private let delay: Duration
+    private let fetch: Fetch
+    private var task: Task<Void, Never>?
+
+    public init(delay: Duration = SearchSuggestionFetcher.debounce, fetch: @escaping Fetch = SearchSuggestionFetcher.live) {
+        self.delay = delay
+        self.fetch = fetch
+    }
+
+    public func request(query: String, provider: CommandBarSearchProvider,
+                        deliver: @escaping @MainActor (_ query: String, _ suggestions: [String]) -> Void) {
+        task?.cancel()
+        guard let url = SearchSuggestions.endpoint(for: query, provider: provider) else { task = nil; return }
+        task = Task { [delay, fetch] in
+            do {
+                try await Task.sleep(for: delay)
+                let data = try await fetch(url)
+                try Task.checkCancellation()
+                deliver(query, SearchSuggestions.parse(data))
+            } catch {}
+        }
+    }
+
+    public func cancel() {
+        task?.cancel()
+        task = nil
+    }
+
+    private static let session = URLSession(configuration: .ephemeral)
+
+    public static let live: Fetch = { url in
+        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 3))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return data
     }
 }
 
@@ -102,6 +192,10 @@ public struct CommandBarResult: Identifiable, Equatable, Sendable {
     public let title: String
     public let subtitle: String
     public let action: CommandBarAction
+
+    public static let webSearchSubtitle = "Web search"
+    public static let suggestionSubtitle = "Suggestion"
+    public var isSearch: Bool { subtitle == Self.webSearchSubtitle || subtitle == Self.suggestionSubtitle }
 }
 
 public enum CommandBarSelection {
@@ -116,8 +210,13 @@ public enum CommandBarSelection {
 public enum CommandBarResults {
     /// Stable IDs let the UI preserve selection while organization events arrive.
     /// Results never mutate state; activation must revalidate through PageRuntime.
+    /// A typed query shows at most this many rows, so the palette stays about as tall as Arc's.
+    public static let queryRowLimit = 7
+    /// Open-tab matches that rank above search suggestions; further matches follow the suggestions.
+    static let leadingPageMatches = 3
+
     public static func make(query: String, state: BrowserState, provider: CommandBarSearchProvider = .duckDuckGo,
-                            navigatingCurrentPage: Bool = false) -> [CommandBarResult] {
+                            navigatingCurrentPage: Bool = false, suggestions: [String] = []) -> [CommandBarResult] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var results: [CommandBarResult] = []
         switch CommandBarInput.resolve(text, provider: provider) {
@@ -133,7 +232,7 @@ public enum CommandBarResults {
             }
         case .search(let url):
             results.append(CommandBarResult(id: "destination", title: "Search \(provider.title) for “\(text)”",
-                subtitle: "Web search", action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
+                subtitle: CommandBarResult.webSearchSubtitle, action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url)))
         case .empty, .invalid: break
         }
         let commands = CommandBarCommand.allCases.filter {
@@ -151,12 +250,18 @@ public enum CommandBarResults {
             results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
             remainingCommands.removeAll(where: isExactCommand)
         }
-        results += state.searchPages(matching: text).map {
+        let pages = state.searchPages(matching: text).map {
             CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
                 subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
         }
-        results += remainingCommands
-        return results
+        let suggestionRows = suggestions.filter { $0.caseInsensitiveCompare(text) != .orderedSame }.map { suggestion in
+            let url = CommandBarInput.searchURL(for: suggestion, provider: provider)
+            return CommandBarResult(id: "suggestion:\(suggestion)", title: suggestion,
+                subtitle: CommandBarResult.suggestionSubtitle, action: navigatingCurrentPage ? .navigateCurrent(url) : .open(url))
+        }
+        guard !text.isEmpty else { return results + pages + remainingCommands }
+        results += pages.prefix(leadingPageMatches) + suggestionRows + pages.dropFirst(leadingPageMatches) + remainingCommands
+        return Array(results.prefix(queryRowLimit))
     }
 }
 
