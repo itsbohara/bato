@@ -43,3 +43,37 @@ Palette-driven Add Split commit; divider drag; orientation relaunch; extension i
 ## Verification
 
 `test_patch.py` OK (24 exports, new split-toolbar policy test); `swift test` 255 XCTest + 222 Swift Testing pass; client patch 62 files and 57 mirrors, engine 10 files verified; `native_slot.py check` patched; builds succeeded.
+
+# Split row in the list, Ctrl-Tab switcher, resize grabber (2026-11-08, uncommitted)
+
+Test instance only (mock keychain, SSD): wrapper `tmp/launch-splitrow.py`, seed `runtime/splitrow-seed`, states `runtime/splitrow-state-v{1,2}`, exits 0 via Quit Bato (`logs/splitrow-v{1,2}-exit.json`), builds `logs/splitrow-build-{1,2}.log` (client-only, 65-file client patch). dist/Bato.app and Application Support untouched. Shots `tmp/sbs-shots/splitrow-*.png`. 280 tests pass (new: `SplitRowTests` rows/DnD/move/swap/regression, `TabSwitcherTests`, `SplitGrabberTests`, `TabSwitcherPanelTests`).
+
+Changes: the "Split view" block is gone; `BrowserState.sidebarRows()` collapses each pair to one row at its first drawn member (drawing and drop indices share it); `SidebarPairView` (one pill, two halves); `placeSplit`/`moveSplit`/`swapSplitSides`/`setSplitOrientation` in model and runtime; selecting either member now shows the pair and leaving only hides it (root cause of the Ctrl-Tab bug: `selectEntryInPlace`, `activateSplit` and `deactivateSplit` deleted any unpinned pair when the selection left it; four old tests changed to the new rule); MRU switcher; grabber in `ContentCardFrameView`.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | No top block; pair is one row at its first member's place (Today, folder) | PASS | splitrow-selected, -unselected-full |
+| 2 | Halves equal width, favicon + title, divider, row height 38 | PASS | splitrow-selected-hover |
+| 3 | Selected: container fill, lighter half plates, 4pt gap; hover shows a close on each half (closes that pane) | PASS | splitrow-selected-hover |
+| 4 | Unselected idle: no fill, 1pt separator; hover fills the row, one close at the far right closes both, per-half hover card | PASS (single close drawn, click not exercised; card seen) | splitrow-hover-close, -light-hover-unselected |
+| 5 | Click a half shows the pair and focuses that pane; middle-click | PASS click (AX); middle-click coded, not exercised | state `active/activeSplit` |
+| 6 | Context menu: Pin Pair (hidden when saved), Separate All Tabs, Swap Sides, Convert to Vertical/Horizontal, Adjust Widths, per-tab submenus, Move to Workspace, Close Both Tabs | PASS (Separate and Swap verified by state; the others listed in menu) | splitrow-context-menu, -after-swap, -after-separate |
+| 7 | Orientation toggle on a displayed pair | NOT RUN (menu item present, `setSplitOrientation` unit-tested) | |
+| 8 | DnD pair as unit: reorder, into folder, to another Space (both members, state consistent) | PASS | splitrow-dragging, -after-drag-2, -after-folder; organization.json |
+| 9 | DnD pin/unpin whole pair; Favorites refuses pairs | PASS unit tests; folder drop converted both to pins on host | SplitRowTests |
+| 10 | Dropping a single tab onto a half | OUT OF SCOPE (lands before/after the row) | |
+| 11 | Bug A: Ctrl-Tab away from a shown pair keeps it; switching back to a member shows it | PASS | state before/after, splitrow-after-switch-back; `testSwitchingAwayAndBackKeepsAndRedisplaysThePair` |
+| 12 | Ctrl-Tab quick tap switches with no panel | PASS (toggled to previous, no panel in splitrow-ctrltab-tap) | |
+| 13 | Hold Ctrl: panel after 300ms, centred, MRU order, pair = one card, Tab advances, release commits | PASS | splitrow-ctrltab-panel, -panel-2, -committed |
+| 14 | Shift-Tab, Esc cancel, wrap | unit-tested state machine only; not driven on host | `TabSwitcherTests` |
+| 15 | Switcher visuals vs Arc checklist (181x158 cards, 15 pad, #1a1919 plate, #3d3d3d border, r28, selected #423f82 r11, 150x100 plate, 16pt favicon + 14pt title) | PASS in values; plates show a large favicon, not a page thumbnail (no capture API) | splitrow-ctrltab-panel-2 |
+| 16 | Grabber pill 2x24, #56505c idle, #949199 hover, centred in gap | PASS | splitrow-grabber-idle, -hover |
+| 17 | Grabber drag resizes live; ratio persisted (0.5 to 0.333), gap follows pointer | PASS | splitrow-grabber-dragging, -after |
+| 18 | Resize cursor | NOT VERIFIED (cursor not visible in captures) | |
+| 19 | Light and dark (Dark restored) | PASS row, switcher | splitrow-light-selected, -light-ctrltab |
+
+Arc split-view checklist items not met: pane gap is 8pt (Arc 10) and pane radius 12 (Arc 10) because both are engine layout constants; focus outline uses the workspace accent, not fixed #4f40f9, and has no glow; toolbar copy-link toast, extension icons and split-menu items (Move Left/Right, Separate Tab, Convert, Share) are not done; row context menu lacks Share, Change Icon, Rename, Duplicate, Archive entries.
+
+## Open items
+
+Pane gap/radius engine change; orientation toggle, Esc/Shift-Tab and middle-click not exercised on host; unpinned pairs now persist while hidden (they only disappear by Separate or closing a member); closing one member of a saved pair unloads it and re-selecting it re-shows the pair; Ctrl-Tab MRU is session-only and starts with the current tab then sidebar order; the grabber persists the ratio on every drag step (one save each); a user running Arc beside the test repeatedly took focus, so physical steps were guarded with a frontmost check.
