@@ -23,3 +23,21 @@ Shots in `/Volumes/Mahesh/personal/bato-build/tmp/sbs-shots/`: `toggle-docked-da
 - Hover fill matches the header toggle, which has none.
 - A second Profile window and window resize were not checked.
 - The button is not in Chromium's focus order, only reachable by mouse, AX and Cmd-S.
+
+# Stuck floating sidebar after Cmd-T: real-host results
+
+Run 2026-11-08, uncommitted. Root cause: with the sidebar hidden, `showCommandBar` and its commit/cancel paths call `requestNativeFocus`, which lands in `WorkspaceSlot.focusNative`; that reveals the sidebar (geometry mode 2) so a hidden control can take focus. The pointer never enters the overlay, so `mouseExited` never fires, and the only other dismissal was a click outside the sidebar. Fix: `SidebarPeekDismissal` (BatoCore, pure rules, 7 unit tests in `SidebarPeekDismissalTests`) decides when a floating sidebar goes away; `WorkspaceSlot` feeds it pointer exit, a 0.5 s pointer poll while floating, key presses in the page (non-Command), clicks outside, and window resign. Focus left on the control `focusNative` landed on counts as incidental, so the poll dismisses and hands focus back to the page; real sidebar focus (rename, search) and open sheets/menus still hold the overlay. New file registered in `client.json`, `compile_native_slot.py` and `BUILD.gn` inputs; mirrors staged, client patch regenerated (60 files, 55 mirrors), `native_slot.py check` ok, `build --execute` waited to exit 0 (segment `logs/sbp-build.log`), `swift test` 247 pass.
+
+Launches (SSD, `--use-mock-keychain`, `tmp/launch-sbp.py v1|v2|v3`, states `runtime/sbp-state-v*`, exits 0 via Quit Bato, windows selected by pid). Shots `tmp/sbs-shots/peek-*.png`. The pointer was moved with posted CGEvents (`tmp/movemouse.js`); `agent-desktop mouse-move` does not move the real pointer. Another session was driving a second test instance on the same screen during the run; its windows are visible in a few discarded shots.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Before fix: hidden, Cmd-T, type, Enter: overlay still up 5 s later | REPRODUCED | `peek-before-5-after-enter-5s.png` |
+| 2 | After fix: same flow, overlay gone by 2 s (visible at 0.4 s, poll interval) | PASS | `peek-after-3-*`, `-4-*`, `-5-*`, `peek-v1-cmdt-enter-2s.png`, `peek-w2-cmdt-enter-2s.png` |
+| 3 | Cmd-T then Esc while hidden: overlay not left behind | PASS (failed on the first fix, `peek-v2-cmdt-esc-2s.png`) | `peek-w1-cmdt-esc-2s.png` |
+| 4 | Edge hover reveals, pointer exit dismisses | PASS | `peek-u1-*`, `peek-u2-*`, `peek-t2-*`, `peek-w4-*` |
+| 5 | Plain key press in the page dismisses a hover overlay (pointer inside it) | PASS | `peek-y1-*`, `peek-y2-after-key.png` |
+| 6 | Cmd-S docks from peek, hides when docked | PASS | `peek-u3/u4`, `peek-w5/w6` |
+| 7 | Show-sidebar button docks the sidebar | PASS | `peek-u5`, `peek-w7` |
+
+Not exercised: window resign dismissal and click-outside dismissal on the new path (covered by the unit rules; click-outside unchanged in behaviour), fullscreen floating sidebar, a keystroke while the pointer rests inside the 6 pt edge strip (the overlay re-reveals because the pointer is still on the edge, as Arc does).
