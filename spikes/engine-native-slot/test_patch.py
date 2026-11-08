@@ -69,7 +69,7 @@ class NativeSlotPatchTest(unittest.TestCase):
         added = '\n'.join(line[1:] for line in (HERE / 'engine.patch').read_text().splitlines()
                           if line.startswith('+') and not line.startswith('+++'))
         self.assertIn('sidebar_owns_tabs = cef::NativeSidebarOwnsTabs(&browser_view_.get())', added)
-        self.assertIn('Inset(gfx::Insets::TLBR(0, reserved_width, 0, 0))', added)
+        self.assertIn('kNativeCardMargin, kNativeCardMargin)', added)
         self.assertIn('Inset(gfx::Insets::TLBR(top_row, reserved_width, 0, 0))', added)
         self.assertIn('leading_exclusion.vertical_padding', added)
         self.assertIn('cef::NativeSidebarOwnsTabs(this) ? 0 : 44', added)

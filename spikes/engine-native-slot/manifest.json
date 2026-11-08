@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "010c8ace64204fc914301b756a91fb4ea0b199d5d899db3ae2dbd970ba0cd0b7",
+  "patch_sha256": "0dea8bdf6d9d32b7d273ed59353df179cbfbf79128ee346777c0cf04f9ad1f97",
   "files": [
     {
       "root": "cef",
@@ -36,6 +36,12 @@
     },
     {
       "root": "cef",
+      "path": "libcef/browser/browser_info_manager.cc",
+      "original_sha256": "690e54f84d5fa08d57c2c6166d97298befbf2c7c434bf0c406c6e513208b8105",
+      "patched_sha256": "3ead5090f57a9172d1a24f689694ef3c56c13d023f788ee12d29231f8e369d4b"
+    },
+    {
+      "root": "cef",
       "path": "libcef/browser/chrome/chrome_browser_web_contents_delegate.cc",
       "original_sha256": "e6df7e225a666a2b753d86686f93815221072e241453539c22b19e79675928c5",
       "patched_sha256": "e46dbd462c02f4e258e44aee64d5d08963db00ace4c2f3dec38d639b0532c814"
@@ -50,19 +56,19 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
       "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
-      "patched_sha256": "edb66da20d918070ff74067812dc247e019e3a5c64694cf7494088f0f9d07a42"
+      "patched_sha256": "4c4518c9cda2f8e63d94e90575126baec3743e6f3e35cd8c9f09fdd57e3b74e5"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "d723e2702102dabb1e100ecb20e588b40979355acd7b98d3ed0500e45976adc0"
+      "patched_sha256": "bea1086dfd264030a49b33735ab3503704211b5d52df055b1c023e38e9fc90ee"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_native_widget_mac.mm",
       "original_sha256": "cdfad90ea6b9cb4e9fc7f2b0fe7c88edd70e760e1de94f3fd09999cc8e307c8d",
-      "patched_sha256": "90e8a34d94f00eba91eb27504488d0b3946269fe6e0b4b4252b02957a35f4156"
+      "patched_sha256": "c7c07e99fb190f21186d08a26c1e410aab72ffaf177ffff6c2672bb00e6afe07"
     },
     {
       "root": "chromium",
@@ -129,6 +135,36 @@
       "path": "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.cc",
       "original_sha256": "377c47e8a556d09ca0527bae49efc3ef1e639838356e08c6abeb9d104f8045e9",
       "patched_sha256": "09196ced4fce511018859578f540e86269dfbbe5038d2372fc38dcd48044052d"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/app/chromium_strings.grd",
+      "original_sha256": "2744123fbc7d9a99b5d08ae3669c605f77550501c5d4275311f25312c405af26",
+      "patched_sha256": "50bd17ed051e0dac6bc4737d4d7e9bc55605964f35e0ea6cf5e751117b3bf35f"
+    },
+    {
+      "root": "chromium",
+      "path": "chrome/app/settings_chromium_strings.grdp",
+      "original_sha256": "9fb3a5d1020f25121dbc59df33031554bd9f8498c74aa5c220a26364ee0d2b57",
+      "patched_sha256": "391612ff9cfab64c268d500cf3778144459eb6733ba13ecf8cce3c404da6b3e4"
+    },
+    {
+      "root": "chromium",
+      "path": "components/components_chromium_strings.grd",
+      "original_sha256": "4e7a3f6cd427bc3cd026082321f35269c246a32b4c4443865d1b45f8a1b0e6f1",
+      "patched_sha256": "1e3776524f52f602a4d171691521d52b55a5bf10db2282eb9b3d91d4e171ab1e"
+    },
+    {
+      "root": "chromium",
+      "path": "extensions/strings/extensions_chromium_strings.grdp",
+      "original_sha256": "10145c9012871b5945184a180758a4c9ce5d69ab0df7d8f781d81aac97b9ac31",
+      "patched_sha256": "17e4264b4722527ad9e19950bbd606e2d271f4c98d125fe14141d643706df508"
+    },
+    {
+      "root": "chromium",
+      "path": "components/new_or_sad_tab_strings.grdp",
+      "original_sha256": "257ab14f948f2e8aeb216b388b3122c2b7f4522294fd0160775830743effc025",
+      "patched_sha256": "84fbc3fe9514f661f7a2d26b54c8df0aab4c04a49b40c4c7fc57a1e4b359475d"
     }
   ]
 }
