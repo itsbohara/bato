@@ -35,3 +35,31 @@ Green tint in Bato (#3F5F3A-ish wash) now reads like Dia 33's dark green translu
 ## Not verified
 
 Light mode, Profile switcher popover, favicon-backed favorites, Settings Profiles sheets, Esc cancel.
+
+---
+
+# Side-by-side polish pass (2026-11-08)
+
+Existing build (`libBatoNativeSlot.dylib` 21:59, newer than all Swift sources) run once with `tmp/launch-sbs-v1.py` (guard `logs/m6-v5-exit.json`, state `runtime/sbs-state-v1`, `--use-mock-keychain`, SSD paths); quit through the app menu, exit 0 (`logs/sbs-v1-exit.json`). Before shots, cropped to the Bato window, in `tmp/sbs-shots/` on the SSD (`w-106-a.png` sidebar plus recovery-style sheet, `cmdbar-a.png`, `profile-pop-a.png`, `settings-privacy-a.png`). Dark mode with Increase Contrast ON only. References: Dia 33, 17, 10. No engine build was run, so the fixes below are NOT yet in any binary and have no after screenshots; the client mirrors (`client.json` `source_mirrors`, patch hashes) were not regenerated because the engine agent owns `client.patch`/`client.json` this batch. Next engine/client build must sync the five edited mirrors below.
+
+| Surface | Gap vs Dia | Fix | Status |
+| --- | --- | --- | --- |
+| Sidebar selected row | Bato lifts the row lighter (label 16%); Dia sinks it into the tint with a darker pill (33, 17) | `SidebarStyle.selectedRowFill`: dark black 28%, light white 55% | Fixed in source, unverified in host |
+| Command bar field | Hairline under the field and 22pt text; Dia has no divider and ~20pt | Divider removed, field 20pt | Fixed in source |
+| Command bar rows | Tab/arrow glyphs and 13pt detail; Dia uses globe for URLs, magnifier for searches, larger secondary text | Globe/magnifier glyph for open/navigate rows, detail 14pt | Fixed in source |
+| Switcher popover | Rows 30pt; Dia ~24-26pt (33) | Rows 27pt | Fixed in source |
+| Settings rail | All rail labels medium weight; Dia regular with a bold selected row (10) | Regular, semibold when selected | Fixed in source |
+| Switcher popover arrow | NSPopover always draws an arrow; Dia's menu hangs flush under the header | none | Remaining (needs custom panel) |
+| Sidebar width | Bato default 255pt wide so favorites are 75pt tiles; Dia about 190pt (tiles about 55x41pt) | none, width is user-resizable and engine-owned | Remaining, confirm intended default |
+| Command bar | Go pill is white; Dia's is workspace-tinted sage; Dia has "Add tabs or files" and mic controls; bar sits lower | none | Remaining |
+| Settings | Rail is a lighter grey slab; Dia's rail matches the content background | none | Remaining |
+| Launch window | Blank grey slab sidebar on the about:blank window (F3) | none | Remaining, WorkspaceSlot/engine |
+| Archive sheet, recovery card, downloads, light mode, motion | not captured this run (no Dia light capture exists; motion not measurable by screenshot) | none | Not verified |
+
+## Files changed (Swift only)
+
+`app/Sources/BatoBrowserUI/SidebarStyle.swift`, `CommandBarController.swift`, `SettingsWindowController.swift`, `SwitcherPopover.swift` (all four have client mirrors). Other modified files in the tree (`NativeWorkspaceController.swift`, `BrowserState.swift`, `PageRuntime.swift`, `ClosedTabRuntimeTests.swift`) belong to another agent and were not touched.
+
+## Tests
+
+`cd app && swift test`: 215 tests in 26 suites passed.
