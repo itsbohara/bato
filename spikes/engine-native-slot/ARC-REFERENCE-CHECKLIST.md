@@ -149,6 +149,17 @@ Common
       Set Profile >, New Folder, Live Folders >, Share Space, Export Space into Folder >, Manage Spaces,
       Delete Space). Not part of the scoped features.
 
+## 5. Cmd-W on a split (captured 2026-11-08, `cw-*.png`)
+
+Test pairs made from two example.com tabs, removed afterwards (the pinned pair was archived, so Arc's archive holds one test item).
+- [ ] Unpinned split, Cmd-W: closes only the FOCUSED pane's tab; the pair dissolves and the other tab stays selected as a normal
+      single tab (`cw-03-split` -> `cw-04-unpinned-cmdw`).
+- [ ] Pinned split (dragged into a pinned folder), Cmd-W: BOTH members unload, the pair stays in the sidebar as ONE split row
+      (halves dimmed, no selection), content area empty ("Search or Enter URL..", `cw-08-pinned-cmdw`).
+- [ ] Clicking either half of the unloaded pinned pair reloads and shows BOTH panes, first half focused (`cw-09-reselect`).
+- [ ] The split row menu lists "Close  Cmd-W" as its last item; there is no Pin item on a split row (pinning is by dragging into the
+      pinned area).
+
 ## Not captured / caveats
 
 - Grabber "dragging" colour is indistinguishable from hover; no distinct pressed style seen.

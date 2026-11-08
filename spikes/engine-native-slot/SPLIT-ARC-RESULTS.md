@@ -77,3 +77,18 @@ Arc split-view checklist items not met: pane gap is 8pt (Arc 10) and pane radius
 ## Open items
 
 Pane gap/radius engine change; orientation toggle, Esc/Shift-Tab and middle-click not exercised on host; unpinned pairs now persist while hidden (they only disappear by Separate or closing a member); closing one member of a saved pair unloads it and re-selecting it re-shows the pair; Ctrl-Tab MRU is session-only and starts with the current tab then sidebar order; the grabber persists the ratio on every drag step (one save each); a user running Arc beside the test repeatedly took focus, so physical steps were guarded with a frontmost check.
+
+# Cmd-W on a split (2026-11-08, uncommitted)
+
+Arc behaviour recorded in ARC-REFERENCE-CHECKLIST.md section 5 (driven in Arc with two test example.com tabs, removed afterwards).
+
+Bato now matches: `BrowserState.unloadPinnedPair`, `PageRuntime.closePinnedPair` (Cmd-W / Close Tab on a displayed pinned pair, and "Close Both Tabs" on a pinned row) unload both members through the engine, keep the pair saved, clear the selection (empty card) and skip the usual successor selection. Unpinned pairs keep the existing behaviour, which equals Arc's (only the focused pane closes).
+
+Test instance `runtime/pin-state-v10` (exit 0, `logs/pin-v10-exit.json`); shots `tmp/sbs-shots/pin-cmdw-*.png`. Cmd-W key events posted to the process did not reach the inactive window, so the Close Tab menu item (same `closeSelection` path as Cmd-W) was clicked via the menu bar.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Pinned pair shown, Close Tab: pair stays as one row, nothing selected, empty card, organization.json keeps the pinned pair | PASS | pin-cmdw-1, -2 |
+| Re-selecting a half restores both panes | PASS | pin-cmdw-3-reselected |
+| Unpinned pair, Close Tab: only the focused pane closes, other tab stays (Arc equivalent) | PASS | pin-cmdw-4-unpinned-after |
+| Regression tests | PASS: `closingPinnedPairUnloadsBothKeepsPairAndClearsSelection`, `closingUnpinnedPairStillClosesOnlyTheFocusedPane`, `testUnloadPinnedPair*` | |

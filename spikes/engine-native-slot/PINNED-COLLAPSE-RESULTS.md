@@ -1,6 +1,6 @@
 # Pinned collapse, Tidy | Clear, split polish (2026-11-08, uncommitted)
 
-Test instance only (mock keychain, SSD): wrapper `tmp/launch-pin.py`, seed `runtime/pin-seed`, states `runtime/pin-state-v{1,2}`, exits 0 via Quit Bato (`logs/pin-v{1,2}-exit.json`). Builds: engine+client (v1), client-only (v2). dist/Bato.app and Application Support untouched. Shots in `/Volumes/Mahesh/personal/bato-build/tmp/sbs-shots/pin-*.png` (v1 shots: header hover, collapsed hover, Tidy/Clear hover, after Clear; v2: expanded, expand frames, collapsed idle, hover with the fixed chevron, split, Ctrl-Tab). References: `bato-references/arc/2026-11-08/` (03b, 07b, 09, 10-expand-frame*).
+v3 (collapse animation, 18pt gap, hover refresh): `runtime/pin-state-v3`, exit 0. Test instance only (mock keychain, SSD): wrapper `tmp/launch-pin.py`, seed `runtime/pin-seed`, states `runtime/pin-state-v{1,2}`, exits 0 via Quit Bato (`logs/pin-v{1,2}-exit.json`). Builds: engine+client (v1), client-only (v2). dist/Bato.app and Application Support untouched. Shots in `/Volumes/Mahesh/personal/bato-build/tmp/sbs-shots/pin-*.png` (v1 shots: header hover, collapsed hover, Tidy/Clear hover, after Clear; v2: expanded, expand frames, collapsed idle, hover with the fixed chevron, split, Ctrl-Tab). References: `bato-references/arc/2026-11-08/` (03b, 07b, 09, 10-expand-frame*).
 
 Verification: `swift test` 288 XCTest 0 failures + 224 Swift Testing passed; `test_patch.py` 10 OK (gap constant asserted); engine 8-file and client 65-file roundtrips verified.
 
@@ -14,11 +14,11 @@ Verification: `swift test` 288 XCTest 0 failures + 224 Swift Testing passed; `te
 | 4 | Click row or label collapses; header, Favorites, Tidy/Clear, New Tab, Today stay | PASS | pin-collapsed-hover, state `pinsCollapsed: true` |
 | 5 | Collapsed chevron points right and stays visible when idle; dots hover-only | PASS | pin-collapsed-idle |
 | 6 | Collapsed hover fill identical to expanded | PASS | pin-collapsed-hover |
-| 7 | Divider+Tidy/Clear sit under the header after collapse | PASS in structure; gap is 14pt custom spacing (Arc ~18) | pin-collapsed-idle |
-| 8 | Expand ~220ms: pinned rows fade in, content below slides, cross-fade overlap | PASS (mid-frame shows rows overlapping New Tab) | pin-expand-frame3 |
+| 7 | Divider+Tidy/Clear sit under the header after collapse | PASS in structure; gap is now 18pt custom spacing | pin-collapsed-idle |
+| 8 | Expand ~220ms: pinned rows fade in while content below moves down | PASS; superseded Arc's overlap with a clipped wipe (no overlapping text, per coordinator) | pin-expand-frame2..4 |
 | 9 | Chevron rotation on the same ease | PASS coded (animatable `chevronTurn`, 220ms ease in-out); not frame-checked | |
-| 10 | Collapse animation | PARTIAL: below content slides, pinned rows vanish instantly (Arc's collapse frames were not captured either) | |
-| 11 | Reduce Motion skips animation | coded, not run | |
+| 10 | Collapse and expand animate symmetrically (~220ms): a clipped picture of the pinned rows sits between the header and the content below; its height animates (stepped per frame, ease-out cubic) with a fade, so the content follows in lockstep and no text ever overlaps; chevron rotates | PASS (v9 build; no overlapping text in any captured frame) | pin-collapse-frame2..4, pin-expand-frame2..4 |
+| 11 | Reduce Motion skips animation (expand and collapse) | coded, not run | |
 | 12 | Tidy/Clear row only while pointer is over the sidebar; right aligned, 11pt semibold, idle ~35% | PASS | pin-collapsed-idle (hidden) vs pin-hover-header (shown) |
 | 13 | Hover brightens the hovered label (95%), other dims, no pill | PASS | pin-tidyclear-hover-clear, -tidy |
 | 14 | Tooltips: Clear "Clear unselected Today tabs" | PASS coded (toolTip set); tooltip window not in the capture. Tidy tooltip is "Archive duplicate Today tabs" (Arc: "Organize") | |
@@ -36,8 +36,9 @@ Verification: `swift test` 288 XCTest 0 failures + 224 Swift Testing passed; `te
 ## Open items
 
 - Space header is part of the scrolling list, not fixed above an independently scrolling pinned area (Arc geometry item).
-- Collapse has no fade-out of pinned rows.
 - Tidy is duplicates-only; no sort by host. Tidy and Clear clicks beyond Clear were not repeated after Tidy; archive restore through the sheet not driven.
-- A hovered New Tab row can keep its hover fill after the pointer leaves during a slide (stale hover on a reused row view); not fixed.
+- New Tab hover is now re-read from the pointer after the slide and when the row is re-added (coded; the pointer was not resting on the row in the v3 capture, so the fix is not shown on host).
 - Glow on the side facing the sidebar is also drawn (outside-the-card region); Arc shows it too, not compared pixel-for-pixel.
 - Header has no drop target (dragging a tab onto a collapsed section does nothing).
+
+Re-renders during the animation (the runtime commits and calls render again) are deferred until it ends; otherwise they dropped the picture and the animation snapped. Captured with `screencapture -R` (window-id capture does not show mid-animation frames).
