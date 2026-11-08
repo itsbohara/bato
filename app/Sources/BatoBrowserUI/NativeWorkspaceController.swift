@@ -80,7 +80,15 @@ public final class NativeWorkspaceController: NSObject {
     private weak var pendingCommandBarWindow: NSWindow?
     private var commandBarNavigationTarget: LivePage?
     private var commandBarSplitSide: SplitSide?
-    private var accent: NSColor { workspaceColor(runtime.state.currentWorkspace.color) }
+    /// The state the list is drawn from; a neighbouring workspace's while its picture is taken for a slide.
+    private var previewState: BrowserState?
+    private var sidebarState: BrowserState { previewState ?? runtime.state }
+    private var accent: NSColor { workspaceColor(sidebarState.currentWorkspace.color) }
+    private let sidebarScroll = SidebarScrollView()
+    private var slide: SpaceSlide?
+    private var slideReleasing = false
+    private var slideListTop: CGFloat = 0
+    private var slideHeight: CGFloat = 0
     private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
     public func makeCardFrame() -> ContentCardFrameView {
@@ -665,7 +673,7 @@ public final class NativeWorkspaceController: NSObject {
             view.editAddress = { [weak self] in self?.editAddress() ?? false }
             view.copyLink = { [weak self] in self?.copyCurrentLink() ?? false }
             view.switchToWorkspace = { [weak self] in self?.switchToShortcut($0) ?? false }
-            view.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
+            configureSwipe(view.swipe)
             view.pointerChanged = { [weak self] in self?.setPointerInSidebar($0) }
         }
 
@@ -767,8 +775,8 @@ public final class NativeWorkspaceController: NSObject {
         entries.alignment = .leading
         entries.spacing = 5
         entries.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = SidebarScrollView()
-        scroll.swipe.onSwipe = { [weak self] in self?.swipeWorkspace($0) }
+        let scroll = sidebarScroll
+        configureSwipe(scroll.swipe)
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -891,6 +899,42 @@ public final class NativeWorkspaceController: NSObject {
         if constraint.constant != fitted { constraint.constant = fitted }
     }
 
+    private func rebuildEntries(_ state: BrowserState, pinsAnimation: PinsAnimation?) {
+        let workspace = state.currentWorkspace
+        pageControls.removeAll()
+        folderControls.removeAll()
+        dropSlotViews.removeAll()
+        hoverCard.dismiss()
+        entries.accent = accent
+        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
+                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
+        pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
+        for view in entries.arrangedSubviews {
+            entries.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let rows = state.sidebarRows()
+        addSection("Favorites", rows: rows[.favorites] ?? [])
+        let spaceHeader = makeSpaceHeader(workspace, animatingFromCollapsed: pinsAnimation.map { !$0.expanding })
+        entries.addArrangedSubview(spaceHeader)
+        spaceHeaderRow = spaceHeader
+        spaceHeader.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
+        if workspace.pinsCollapsed { entries.setCustomSpacing(SidebarMetrics.collapsedPinsGap, after: spaceHeader) }
+        let pinnedStart = entries.arrangedSubviews.count
+        pinnedViews = []
+        if !workspace.pinsCollapsed {
+            addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
+            for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
+        }
+        pinnedViews = Array(entries.arrangedSubviews[pinnedStart...])
+        let belowStart = entries.arrangedSubviews.count
+        addSection("Tabs", rows: rows[.tabs] ?? [])
+        if let pinsAnimation {
+            animatePinnedSection(pinsAnimation, pinned: pinnedStart..<belowStart, below: belowStart..<entries.arrangedSubviews.count)
+        }
+        entries.restoreFavoritesZone()
+    }
+
     private func render() {
         defer { onSpacesChanged?() }
         // A rebuild would drop the clipped picture mid-animation; the latest state is drawn when it ends.
@@ -900,7 +944,7 @@ public final class NativeWorkspaceController: NSObject {
         settingsWindow?.reload()
         let state = runtime.state
         let workspace = state.currentWorkspace
-        (root as? WorkspaceRoot)?.accent = accent
+        if slide == nil { (root as? WorkspaceRoot)?.accent = accent }
         for frame in cardFrames.allObjects {
             frame.accent = accent
             frame.showsEmptyState = state.showsEmptySpace
@@ -922,40 +966,9 @@ public final class NativeWorkspaceController: NSObject {
             return (id, role)
         }.first
         let parentOfFocusedPin = focusedControl.flatMap { workspace.folder(containingPin: $0.id)?.id }
-        pageControls.removeAll()
-        folderControls.removeAll()
-        dropSlotViews.removeAll()
-        hoverCard.dismiss()
-        entries.accent = accent
-        let existingIDs = Set(state.profiles.flatMap { $0.favorites.map(\.id) } +
-                              state.workspaces.flatMap { ($0.pins + $0.tabs).map(\.id) })
-        pageIcons = pageIcons.filter { existingIDs.contains($0.key) }
-        for view in entries.arrangedSubviews {
-            entries.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        let rows = state.sidebarRows()
         let pinsAnimation = pendingPinsAnimation
         pendingPinsAnimation = nil
-        addSection("Favorites", rows: rows[.favorites] ?? [])
-        let spaceHeader = makeSpaceHeader(workspace, animatingFromCollapsed: pinsAnimation.map { !$0.expanding })
-        entries.addArrangedSubview(spaceHeader)
-        spaceHeaderRow = spaceHeader
-        spaceHeader.widthAnchor.constraint(equalTo: entries.widthAnchor).isActive = true
-        if workspace.pinsCollapsed { entries.setCustomSpacing(SidebarMetrics.collapsedPinsGap, after: spaceHeader) }
-        let pinnedStart = entries.arrangedSubviews.count
-        pinnedViews = []
-        if !workspace.pinsCollapsed {
-            addSection("Pinned", rows: rows[.pinned(folder: nil)] ?? [], includeEmpty: !workspace.folders.isEmpty)
-            for folder in workspace.subfolders(of: nil) { addFolder(folder, depth: 1, workspace: workspace, rows: rows) }
-        }
-        pinnedViews = Array(entries.arrangedSubviews[pinnedStart...])
-        let belowStart = entries.arrangedSubviews.count
-        addSection("Tabs", rows: rows[.tabs] ?? [])
-        if let pinsAnimation {
-            animatePinnedSection(pinsAnimation, pinned: pinnedStart..<belowStart, below: belowStart..<entries.arrangedSubviews.count)
-        }
-        entries.restoreFavoritesZone()
+        rebuildEntries(state, pinsAnimation: pinsAnimation)
         if let focusedControl, let controls = pageControls[focusedControl.id] {
             root.window?.makeFirstResponder(focusedControl.close ? controls.close : controls.select)
         } else if let focusedFolder, let controls = folderControls[focusedFolder.id] {
@@ -1127,7 +1140,7 @@ public final class NativeWorkspaceController: NSObject {
         // Small borderless close controls stay present for keyboard and AX access;
         // hover changes the surface, never the set of available actions.
         let row = SidebarPageView(select: select, close: close, tile: tile,
-                                  selected: runtime.state.currentWorkspace.activeEntryID == page.id,
+                                  selected: sidebarState.currentWorkspace.activeEntryID == page.id,
                                   accent: accent)
         pageControls[page.id] = (select, close)
         let card = SidebarHoverCardContent(title: page.title, url: page.lastURL)
@@ -1149,9 +1162,9 @@ public final class NativeWorkspaceController: NSObject {
 
     /// One pill split into two halves, each with its own favicon, title and close; the pair is one row of the list.
     private func makePairView(_ split: PageSplit, left: PageEntry, right: PageEntry) -> NSView {
-        let workspaceID = runtime.state.activeWorkspaceID
-        let isDisplayed = runtime.state.currentSplit?.id == split.id
-        let activeID = runtime.state.currentWorkspace.activeEntryID
+        let workspaceID = sidebarState.activeWorkspaceID
+        let isDisplayed = sidebarState.currentSplit?.id == split.id
+        let activeID = sidebarState.currentWorkspace.activeEntryID
         let halves = [left, right].enumerated().map { index, page -> SidebarPairHalf in
             let title = pageTitle(page)
             let isClosing = runtime.pendingClose.contains { $0.entryID == page.id }
@@ -2076,16 +2089,167 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private func swipeWorkspace(_ direction: WorkspaceSwipe.Direction) {
+        guard let id = neighbour(direction) else { return }
+        switchWorkspace(id)
+    }
+
+    private func neighbour(_ direction: WorkspaceSwipe.Direction) -> UUID? {
         let state = runtime.state
         guard let index = state.workspaces.firstIndex(where: { $0.id == state.activeWorkspaceID }),
-              let target = WorkspaceSwipe.target(from: index, direction: direction, count: state.workspaces.count) else { return }
-        switchWorkspace(state.workspaces[target].id)
+              let target = WorkspaceSwipe.target(from: index, direction: direction, count: state.workspaces.count) else { return nil }
+        return state.workspaces[target].id
     }
 
     private func switchWorkspace(_ id: UUID) {
         guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
               id != runtime.state.activeWorkspaceID else { return }
+        finishSlideNow()
+        let state = runtime.state
+        guard let from = state.workspaces.firstIndex(where: { $0.id == state.activeWorkspaceID }),
+              let to = state.workspaces.firstIndex(where: { $0.id == id }),
+              beginSlide(toward: to > from ? .next : .previous, target: id) else {
+            perform { runtime.activateWorkspace(id) }
+            return
+        }
+        commitSlide(to: id)
+    }
+
+    // MARK: Workspace slide
+
+    private func configureSwipe(_ recognizer: WorkspaceSwipeRecognizer) {
+        recognizer.layout = { [weak self] in
+            guard let self else { return WorkspaceSwipe.Layout(width: 268, hasPrevious: false, hasNext: false) }
+            return WorkspaceSwipe.Layout(width: self.sidebarScroll.bounds.width,
+                                         hasPrevious: self.neighbour(.previous) != nil, hasNext: self.neighbour(.next) != nil)
+        }
+        recognizer.onTrack = { [weak self] in self?.trackSlide(offset: $0) }
+        recognizer.onFinish = { [weak self] direction, _ in self?.releaseSlide(direction) }
+    }
+
+    private var canSlide: Bool {
+        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating
+    }
+
+    private func trackSlide(offset: CGFloat) {
+        guard !Self.reducesMotion, canSlide else { return }
+        if slideReleasing { finishSlideNow() }
+        if slide == nil {
+            guard beginSlide(toward: nil, target: nil) else { return }
+        }
+        guard let slide, !slideReleasing else { return }
+        let direction: WorkspaceSwipe.Direction = offset > 0 ? .previous : .next
+        if !slide.hasNeighbour(direction), let id = neighbour(direction) { addSlideNeighbour(direction, id: id) }
+        slide.setOffset(offset)
+        let state = runtime.state
+        if let index = state.workspaces.firstIndex(where: { $0.id == state.activeWorkspaceID }), slide.hasNeighbour(direction) {
+            highlightPagerDot(at: abs(offset) >= slide.width / 2 ? index + (direction == .next ? 1 : -1) : index)
+        }
+    }
+
+    private func highlightPagerDot(at index: Int) {
+        for (position, dot) in workspacePager.arrangedSubviews.enumerated() {
+            (dot as? ActionButton)?.image = pagerDot(isActive: position == index)
+        }
+    }
+
+    private func releaseSlide(_ direction: WorkspaceSwipe.Direction?) {
+        if Self.reducesMotion {
+            if let direction, let id = neighbour(direction) { switchWorkspace(id) }
+            return
+        }
+        guard let slide, !slideReleasing else { return }
+        if let direction, let id = neighbour(direction) {
+            commitSlide(to: id, direction: direction)
+        } else {
+            slideReleasing = true
+            let state = runtime.state
+            highlightPagerDot(at: state.workspaces.firstIndex { $0.id == state.activeWorkspaceID } ?? 0)
+            let fraction = abs(slide.offset) / slide.width
+            slide.animate(to: 0, duration: 0.2 + 0.06 * fraction) { [weak self, weak slide] in self?.endSlide(slide) }
+        }
+    }
+
+    /// Pictures the list as it stands and hides the live one. `direction`/`target` prepare a keyboard-style slide whose
+    /// neighbour is known up front; a gesture adds its neighbours as the fingers choose a side.
+    private func beginSlide(toward direction: WorkspaceSwipe.Direction?, target: UUID?) -> Bool {
+        guard canSlide, slide == nil, let stack = sidebarScroll.superview else { return false }
+        entries.layoutSubtreeIfNeeded()
+        let visible = entries.visibleRect
+        let headerTop = spaceHeaderRow.map { entries.convert($0.bounds, from: $0).minY } ?? visible.minY
+        let slideTop = min(max(headerTop, visible.minY), visible.maxY)
+        let area = root.convert(sidebarScroll.frame, from: stack)
+        let slide = SpaceSlide(root: root, stack: stack, listFrame: area)
+        let current = capture(NSRect(x: 0, y: slideTop, width: entries.bounds.width, height: visible.maxY - slideTop),
+                              top: slideTop - visible.minY)
+        let fixed = slideTop > visible.minY
+            ? capture(NSRect(x: 0, y: visible.minY, width: entries.bounds.width, height: slideTop - visible.minY), top: 0) : nil
+        guard let current else { slide.remove(); return false }
+        slide.setCurrent(current, fixedTop: fixed)
+        self.slide = slide
+        slideReleasing = false
+        slideListTop = slideTop - visible.minY
+        slideHeight = visible.maxY - slideTop
+        sidebarScroll.alphaValue = 0
+        if let direction, let target { addSlideNeighbour(direction, id: target) }
+        return true
+    }
+
+    private func addSlideNeighbour(_ direction: WorkspaceSwipe.Direction, id: UUID) {
+        guard let slide else { return }
+        var state = runtime.state
+        state.activeWorkspaceID = id
+        previewState = state
+        rebuildEntries(state, pinsAnimation: nil)
+        entries.layoutSubtreeIfNeeded()
+        let top = spaceHeaderRow.map { entries.convert($0.bounds, from: $0).minY } ?? 0
+        let height = min(slideHeight, max(entries.bounds.height - top, 0))
+        let page = capture(NSRect(x: 0, y: top, width: entries.bounds.width, height: height), top: slideListTop)
+        let tint = accent
+        previewState = nil
+        rebuildEntries(runtime.state, pinsAnimation: nil)
+        if let page { slide.addNeighbour(direction, page: page, accent: tint) }
+    }
+
+    private func capture(_ rect: NSRect, top: CGFloat) -> SpaceSlide.Page? {
+        guard rect.width > 0, rect.height > 0, let rep = entries.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        entries.cacheDisplay(in: rect, to: rep)
+        return rep.cgImage.map { SpaceSlide.Page(image: $0, size: rect.size, top: top) }
+    }
+
+    /// The model switches as the fingers lift, so the page follows at once; only the sidebar settles. The slide is
+    /// handed to Core Animation before the switch, whose page work would otherwise hold the first frame back.
+    private func commitSlide(to id: UUID, direction: WorkspaceSwipe.Direction? = nil) {
+        guard let slide else { return }
+        let side: WorkspaceSwipe.Direction = direction ?? (slide.hasNeighbour(.next) ? .next : .previous)
+        slideReleasing = true
+        guard slide.hasNeighbour(side) else {
+            perform { runtime.activateWorkspace(id) }
+            return endSlide(slide)
+        }
+        if Self.reducesMotion {
+            slide.crossfade(to: side, duration: 0.18) { [weak self, weak slide] in self?.endSlide(slide) }
+        } else {
+            let target = side == .previous ? slide.width : -slide.width
+            let remaining = abs(target - slide.offset) / slide.width
+            slide.animate(to: target, duration: 0.12 + 0.1 * remaining) { [weak self, weak slide] in self?.endSlide(slide) }
+        }
         perform { runtime.activateWorkspace(id) }
+        if runtime.state.activeWorkspaceID != id { endSlide(slide) }
+    }
+
+    private func finishSlideNow() {
+        guard slide != nil else { return }
+        endSlide()
+    }
+
+    private func endSlide(_ finished: SpaceSlide? = nil) {
+        guard let slide, finished == nil || finished === slide else { return }
+        self.slide = nil
+        slideReleasing = false
+        slide.remove()
+        sidebarScroll.alphaValue = 1
+        sidebarScroll.contentView.scroll(to: .zero)
+        (root as? WorkspaceRoot)?.accent = accent
     }
 
     /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
