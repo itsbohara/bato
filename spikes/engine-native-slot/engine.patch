@@ -1569,7 +1569,7 @@
    // Since the user may be triggering navigation from another UI element such as
 --- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
-@@ -39,7 +39,16 @@
+@@ -39,7 +39,19 @@
 
  #if BUILDFLAG(ENABLE_CEF)
  #include "cef/libcef/browser/chrome/browser_delegate.h"
@@ -1583,11 +1583,14 @@
 +// Gutter around the floating content card. The client paints it in the sidebar tint
 +// (see WorkspaceSlot.swift CardFrameView); both sides must use the same value.
 +constexpr int kNativeCardMargin = 8;
++// Room the client's show-sidebar button takes after the traffic lights while the
++// sidebar reserves no width; must equal SidebarMetrics.revealButtonSlot.
++constexpr int kNativeSidebarToggleSlot = 38;
 +}  // namespace
 
  BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
      BrowserView& browser_view)
-@@ -123,18 +132,88 @@
+@@ -123,18 +135,95 @@
      auto local_params = params.InLocalCoordinates(
          use_browser_bounds ? browser_bounds : params.visual_client_area);
  #if BUILDFLAG(IS_MAC)
@@ -1642,6 +1645,13 @@
 +        local_params.leading_exclusion.content.set_height(std::min(
 +            local_params.leading_exclusion.content.height(),
 +            static_cast<float>(top_row)));
++        // The show-sidebar button sits after the traffic lights, so the toolbar
++        // starts after it; a docked sidebar has already consumed the exclusion.
++        if (reserved_width == 0) {
++          local_params.leading_exclusion.content.set_width(
++              local_params.leading_exclusion.content.width() +
++              kNativeSidebarToggleSlot);
++        }
 +        // The exclusion's height sets the toolbar row. Padding it to the
 +        // toolbar's minimum keeps that row and the sidebar's top edge equal.
 +        local_params.leading_exclusion.vertical_padding = std::max(
