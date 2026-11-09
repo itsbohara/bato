@@ -453,6 +453,8 @@
     "app/Sources/BatoCore/SidebarPeekDismissal.swift": "tests/cefsimple/bato/BatoCore/SidebarPeekDismissal.swift",
     "app/Sources/BatoCore/SplitPaneChrome.swift": "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
     "app/Sources/BatoBrowserUI/SplitPaneOverlay.swift": "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift",
+    "app/Sources/BatoCore/SplitDropZones.swift": "tests/cefsimple/bato/BatoCore/SplitDropZones.swift",
+    "app/Sources/BatoBrowserUI/SplitDropOverlay.swift": "tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift",
     "app/Sources/BatoCore/SidebarRows.swift": "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
     "app/Sources/BatoCore/TabSwitcher.swift": "tests/cefsimple/bato/BatoCore/TabSwitcher.swift",
     "app/Sources/BatoBrowserUI/TabSwitcherPanel.swift": "tests/cefsimple/bato/BatoBrowserUI/TabSwitcherPanel.swift"

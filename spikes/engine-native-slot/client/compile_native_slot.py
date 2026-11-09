@@ -22,7 +22,7 @@ def main():
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
                                         'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SidebarRows.swift', 'TabSwitcher.swift']),
+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -35,7 +35,7 @@ def main():
                                               'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
                                               'AppearanceWatcher.swift', 'SwitcherPopover.swift',
                                               'WorkspaceSwipe.swift', 'TabAudio.swift',
-                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift',
+                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift', 'SplitDropOverlay.swift',
                                               'TabSwitcherPanel.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
