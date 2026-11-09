@@ -21,6 +21,14 @@ final class SplitDropZonesTests: XCTestCase {
         XCTAssertTrue(card.contains(expanded))
     }
 
+    func testHoveredZoneGrowsAboutItsCentre() throws {
+        let resting = try XCTUnwrap(SplitDropZones.frame(of: .right, in: card, expanded: true))
+        let hovered = try XCTUnwrap(SplitDropZones.frame(of: .right, in: card, expanded: true, hovered: true))
+        XCTAssertEqual(hovered.width, resting.width * SplitDropZones.hoverScale, accuracy: 0.001)
+        XCTAssertEqual(hovered.midX, resting.midX, accuracy: 0.001)
+        XCTAssertEqual(hovered.midY, resting.midY, accuracy: 0.001)
+    }
+
     func testNarrowCardKeepsPageBetweenZones() throws {
         let narrow = CGRect(x: 0, y: 0, width: 500, height: 400)
         let left = try XCTUnwrap(SplitDropZones.frame(of: .left, in: narrow, expanded: true))
