@@ -252,12 +252,19 @@ public final class NativeWorkspaceController: NSObject {
         }
     }
 
+    /// `BATO_IMPORT_HOME` points detection and import at a synthetic home so the flow can be exercised without
+    /// reading the user's real browsers.
+    private static func browserImporter() -> BrowserImporter {
+        guard let path = ProcessInfo.processInfo.environment["BATO_IMPORT_HOME"], path.hasPrefix("/") else { return BrowserImporter() }
+        return BrowserImporter(home: URL(fileURLWithPath: path, isDirectory: true))
+    }
+
     /// Opens the first-run card: on a fresh install, and from the Help menu afterwards.
     public func showOnboarding() {
         guard canOpenBrowserPage, let window = root.window else { return }
         requestNativeFocus?()
         let card = OnboardingController(parent: window, hooks: OnboardingHooks(
-            importer: BrowserImporter(),
+            importer: Self.browserImporter(),
             defaultSource: {
                 NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
                     .flatMap { Bundle(url: $0)?.bundleIdentifier }.flatMap(ImportSource.init(bundleIdentifier:))

@@ -229,22 +229,30 @@ public final class OnboardingController: NSObject {
         } else {
             let defaultSource = hooks.defaultSource()
             let choices = BrowserChoice.choices(from: detected, defaultSource: defaultSource)
-            let grid = NSGridView()
-            grid.rowSpacing = 12
-            grid.columnSpacing = 12
+            let grid = NSStackView()
+            grid.orientation = .vertical
+            grid.alignment = .leading
+            grid.spacing = 12
             for start in stride(from: 0, to: choices.count, by: 2) {
-                let row = choices[start..<min(start + 2, choices.count)].map { choice in
+                let cards = choices[start..<min(start + 2, choices.count)].map { choice in
                     BrowserCard(choice: choice) { [weak self] in self?.open(choice.source) } as NSView
                 }
-                grid.addRow(with: row + (row.count == 1 ? [NSView()] : []))
+                let row = NSStackView(views: cards)
+                row.spacing = 12
+                grid.addArrangedSubview(row)
             }
-            grid.column(at: 0).width = 276
-            grid.column(at: 1).width = 276
             let scroll = NSScrollView()
             scroll.drawsBackground = false
             scroll.hasVerticalScroller = true
             scroll.autohidesScrollers = true
-            scroll.documentView = FlippedView(wrapping: grid)
+            let document = FlippedView(wrapping: grid)
+            document.translatesAutoresizingMaskIntoConstraints = false
+            scroll.documentView = document
+            NSLayoutConstraint.activate([
+                document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+                document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+                document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            ])
             body = scroll
         }
         return page(header: header, body: body, footer: footer(primary: "Continue", primaryEnabled: true,
@@ -632,6 +640,11 @@ private final class OnboardingButton: NSButton {
 
     override var isEnabled: Bool { didSet { refresh() } }
     override func updateLayer() { refresh() }
+    override var intrinsicContentSize: NSSize {
+        var size = super.intrinsicContentSize
+        if style == .secondary || style == .pill { size.width += 24 }
+        return size
+    }
 
     private func refresh() {
         let foreground: NSColor = style == .primary ? .white : (style == .text ? .secondaryLabelColor : .labelColor)
@@ -669,9 +682,12 @@ private final class BrowserCard: NSControl {
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
+        widthAnchor.constraint(equalToConstant: Self.width).isActive = true
         let chevron = NSImageView(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) ?? NSImage())
         chevron.contentTintColor = .tertiaryLabelColor
-        let row = NSStackView(views: [icon, text, chevron])
+        let spring = NSView()
+        spring.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [icon, text, spring, chevron])
         row.spacing = 12
         row.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -687,6 +703,9 @@ private final class BrowserCard: NSControl {
 
     required init?(coder: NSCoder) { nil }
 
+    static let width: CGFloat = 282
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { handler() }
 
     private static func icon(for source: ImportSource) -> NSImage {
