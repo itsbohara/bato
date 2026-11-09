@@ -1,6 +1,7 @@
 import AppKit
 import BatoBlocking
 import BatoCore
+import BatoImport
 import BatoPersistence
 import BatoRuntime
 
@@ -63,6 +64,8 @@ public final class NativeWorkspaceController: NSObject {
     private let organizationStore: OrganizationStore<BrowserState>
     private let recovery: RecoveryController
     private var arcImport: ArcImportController?
+    private var onboarding: OnboardingController?
+    private let stateDirectory: URL
     private var settingsWindow: SettingsWindowController?
     private let switcherPopover = SwitcherPopover()
     private lazy var archiveController = ArchiveController(
@@ -190,6 +193,7 @@ public final class NativeWorkspaceController: NSObject {
         let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
         organizationStore = store
         preferences = AppPreferencesStore(directory: directory)
+        stateDirectory = directory
         self.recovery = recovery
         runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
         runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
@@ -210,6 +214,7 @@ public final class NativeWorkspaceController: NSObject {
     public func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        NSApp.appearance = preferences.current().appearance.nsAppearance
         installTabSwitcherMonitor()
         sheetObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndSheetNotification, object: root.window, queue: .main) { [weak self] _ in
@@ -229,7 +234,69 @@ public final class NativeWorkspaceController: NSObject {
         recovery.confirmLaunchSoon()
         if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
         archiveController.start()
-        offerUBlockListsOnFirstRun()
+        if preferences.current().onboardingCompleted {
+            offerUBlockListsOnFirstRun()
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.showOnboarding() }
+        }
+    }
+
+    /// Opens the first-run card: on a fresh install, and from the Help menu afterwards.
+    public func showOnboarding() {
+        guard canOpenBrowserPage, let window = root.window else { return }
+        requestNativeFocus?()
+        let card = OnboardingController(parent: window, hooks: OnboardingHooks(
+            importer: BrowserImporter(),
+            defaultSource: {
+                NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
+                    .flatMap { Bundle(url: $0)?.bundleIdentifier }.flatMap(ImportSource.init(bundleIdentifier:))
+            },
+            commitImport: { [weak self] snapshot, items in
+                self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
+            },
+            applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
+            finished: { [weak self] in
+                try? self?.preferences.update { $0.onboardingCompleted = true }
+                self?.onboarding = nil
+                self?.render()
+            }))
+        onboarding = card
+        card.show()
+    }
+
+    /// Same seam as the Arc import: one saved organization transaction, then the runtime adopts it; a runtime
+    /// refusal restores the pre-import snapshot. Bookmarks and history are staged only after the save.
+    private func commitBrowserImport(_ snapshot: BrowserSnapshot, items: Set<ImportItem>) -> Result<String, OnboardingImportFailure> {
+        let target = runtime.state.currentWorkspace.profileID
+        let plan: BrowserImportPlan
+        do { plan = try BrowserImportPlan.make(snapshot, items: items, into: runtime.state, targetProfileID: target) }
+        catch { return .failure(OnboardingImportFailure("This data couldn’t be prepared for import. Nothing was changed.")) }
+        let applied: BrowserImportPlan.Applied
+        do {
+            applied = try plan.apply(to: organizationStore,
+                                     pending: PendingImportStore(directory: stateDirectory.appendingPathComponent("import-pending")))
+        } catch let error as OrganizationStore<BrowserState>.StoreError {
+            return .failure(OnboardingImportFailure(error == .conflict
+                ? "Bato’s organization changed outside this window. Reopen Bato, then try again."
+                : "Changes couldn’t be saved. Nothing was changed."))
+        } catch { return .failure(OnboardingImportFailure("Changes couldn’t be saved. Nothing was changed.")) }
+        guard runtime.adoptSavedOrganization(applied.organization.state) else {
+            _ = try? ImportTransaction.undo(applied.organization, in: organizationStore)
+            return .failure(OnboardingImportFailure("Changes couldn’t be saved. Nothing was changed."))
+        }
+        let preview = plan.preview
+        var parts: [String] = []
+        if preview.favoritesToAdd > 0 { parts.append("\(preview.favoritesToAdd) Favorites") }
+        if let spaces = preview.spaces, spaces.workspaces > 0 { parts.append("\(spaces.workspaces) Spaces") }
+        if preview.bookmarks > 0 { parts.append("\(preview.bookmarks) bookmarks") }
+        if preview.historyPages > 0 { parts.append("\(preview.historyPages) history pages") }
+        return .success(parts.isEmpty ? "Everything was already here." : "Brought over " + parts.joined(separator: ", ") + ".")
+    }
+
+    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
+        try? preferences.update { $0.appearance = appearance }
+        NSApp.appearance = appearance.nsAppearance
+        if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
     }
 
     /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
@@ -416,7 +483,7 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private var canOpenBrowserPage: Bool {
-        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
+        guard hasStarted, onboarding == nil, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
         return true
     }
@@ -460,7 +527,7 @@ public final class NativeWorkspaceController: NSObject {
 
     private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil,
                                 splittingTo side: SplitSide? = nil) {
-        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
+        guard hasStarted, onboarding == nil, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
               let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         runtime.endPeek()
         requestNativeFocus?()
