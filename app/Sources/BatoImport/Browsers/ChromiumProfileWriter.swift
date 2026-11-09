@@ -90,8 +90,11 @@ public enum ChromiumProfileWriter {
 
     /// Writes into a profile no browser has open. History already present is never modified: a URL
     /// that exists keeps its own counts and the import only adds the ones missing.
-    public static func apply(_ data: PendingBrowserData, profileDirectory: URL, userDataDirectory: URL) throws -> ChromiumWriteResult {
-        guard !isInUse(userDataDirectory: userDataDirectory) else { throw ChromiumWriteError.engineRunning }
+    /// - Parameter lockIsOurs: the caller is the engine process itself and knows this Profile's context is not
+    ///   open yet, so the user data directory's own lock does not count as another browser using it.
+    public static func apply(_ data: PendingBrowserData, profileDirectory: URL, userDataDirectory: URL,
+                             lockIsOurs: Bool = false) throws -> ChromiumWriteResult {
+        guard lockIsOurs || !isInUse(userDataDirectory: userDataDirectory) else { throw ChromiumWriteError.engineRunning }
         var result = ChromiumWriteResult()
         result.bookmarksAdded = try writeBookmarks(data, profileDirectory: profileDirectory)
         if !data.history.isEmpty { try writeHistory(data.history, profileDirectory: profileDirectory, into: &result) }
@@ -231,10 +234,11 @@ public extension PendingImportStore {
 
     /// Call at launch for a Profile, before its engine context starts. A batch is discarded once its
     /// bookmarks and history are fully written; an engine-in-use or deferred batch stays staged.
-    func applyPending(profileKey: String, profileDirectory: URL, userDataDirectory: URL) -> [Outcome] {
+    func applyPending(profileKey: String, profileDirectory: URL, userDataDirectory: URL, lockIsOurs: Bool = false) -> [Outcome] {
         pending(profileKey: profileKey).map { data in
             do {
-                let result = try ChromiumProfileWriter.apply(data, profileDirectory: profileDirectory, userDataDirectory: userDataDirectory)
+                let result = try ChromiumProfileWriter.apply(data, profileDirectory: profileDirectory,
+                                                             userDataDirectory: userDataDirectory, lockIsOurs: lockIsOurs)
                 if !result.historyDeferred { discard(data, profileKey: profileKey) }
                 return Outcome(batchID: data.batchID, result: result, error: nil)
             } catch let error as ChromiumWriteError {
@@ -243,5 +247,16 @@ public extension PendingImportStore {
                 return Outcome(batchID: data.batchID, result: nil, error: .writeFailed)
             }
         }
+    }
+}
+
+public extension PendingImportStore {
+    /// The engine's directory layout: the launch Profile lives in `<root>/Default`, every other Profile in
+    /// `<root>/<key>`. The launch Profile is applied before the engine initializes, others right before their
+    /// context is created, so Chromium has not opened either one yet. Failures keep the batch staged.
+    func applyBeforeEngineOpens(profileKey: String, isLaunchProfile: Bool, userDataDirectory: URL) -> [Outcome] {
+        let profileDirectory = userDataDirectory.appendingPathComponent(isLaunchProfile ? "Default" : profileKey, isDirectory: true)
+        return applyPending(profileKey: profileKey, profileDirectory: profileDirectory,
+                            userDataDirectory: userDataDirectory, lockIsOurs: !isLaunchProfile)
     }
 }

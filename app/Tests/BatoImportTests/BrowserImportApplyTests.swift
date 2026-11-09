@@ -259,4 +259,39 @@ final class BrowserImportApplyTests: XCTestCase {
         XCTAssertTrue(result.historyDeferred)
         XCTAssertEqual(try database.scalarInt("SELECT COUNT(*) FROM urls"), 0)
     }
+
+    func testLaunchProfileIsAppliedInDefaultAndWaitsForAnotherBrowserHoldingTheLock() throws {
+        let (batch, root, profile) = try stagedChromeBatch()
+        try makeEngineHistory(at: profile)
+        let store = pendingStore
+        let key = "LAUNCH"
+        try store.stage(batch, profileKey: key)
+        let lock = root.appendingPathComponent("SingletonLock")
+        try FileManager.default.createSymbolicLink(atPath: lock.path, withDestinationPath: "host-\(getpid())")
+        let blocked = store.applyBeforeEngineOpens(profileKey: key, isLaunchProfile: true, userDataDirectory: root)
+        XCTAssertEqual(blocked.first?.error, .engineRunning)
+        XCTAssertEqual(store.pending(profileKey: key).count, 1)
+
+        try FileManager.default.removeItem(at: lock)
+        let applied = store.applyBeforeEngineOpens(profileKey: key, isLaunchProfile: true, userDataDirectory: root)
+        XCTAssertEqual(applied.first?.result?.historyAdded, 2)
+        XCTAssertTrue(store.pending(profileKey: key).isEmpty)
+    }
+
+    func testOtherProfileIsAppliedInItsOwnDirectoryDespiteTheEnginesLock() throws {
+        let (batch, root, _) = try stagedChromeBatch()
+        let key = UUID().uuidString
+        let directory = root.appendingPathComponent(key)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try makeEngineHistory(at: directory)
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("SingletonLock").path,
+                                                   withDestinationPath: "host-\(getpid())")
+        let store = pendingStore
+        try store.stage(batch, profileKey: key)
+        let applied = store.applyBeforeEngineOpens(profileKey: key, isLaunchProfile: false, userDataDirectory: root)
+        XCTAssertEqual(applied.first?.result?.historyAdded, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Bookmarks").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Default/Bookmarks").path))
+        XCTAssertTrue(store.pending(profileKey: key).isEmpty)
+    }
 }
