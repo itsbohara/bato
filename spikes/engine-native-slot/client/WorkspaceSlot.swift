@@ -3,6 +3,8 @@ import BatoCore
 import BatoRuntime
 import BatoBrowserUI
 import BatoBlocking
+import BatoImport
+import BatoPersistence
 
 private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 private typealias CommandID = @convention(c) (Int32) -> Int32
@@ -1376,6 +1378,32 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     precondition(Thread.isMainThread)
     guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
     workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
+}
+
+/// Writes imported bookmarks and history staged for a Profile into its Chromium directory. The engine calls it
+/// before it opens that Profile's context: a null key means the launch Profile, whose id comes from the saved
+/// organization. Anything that goes wrong is logged and the batch stays staged for the next launch.
+@_cdecl("BatoSwiftWorkspaceApplyPendingImport")
+@MainActor public func applyPendingImport(_ key: UnsafePointer<CChar>?, _ userDataDirectory: UnsafePointer<CChar>?) {
+    precondition(Thread.isMainThread)
+    guard let userDataDirectory, let stateDirectory = workspaceDirectory else { return }
+    let root = URL(fileURLWithPath: String(cString: userDataDirectory), isDirectory: true)
+    let profileKey: String
+    if let key {
+        guard let id = UUID(uuidString: String(cString: key)) else { return }
+        profileKey = id.uuidString
+    } else {
+        let store = OrganizationStore<BrowserState>(directory: stateDirectory, validate: { try $0.validate() })
+        guard let state = try? store.load(), let launch = state.launchProfileID else { return }
+        profileKey = launch.uuidString
+    }
+    let pending = PendingImportStore(directory: stateDirectory.appendingPathComponent("import-pending"))
+    for outcome in pending.applyBeforeEngineOpens(profileKey: profileKey, isLaunchProfile: key == nil, userDataDirectory: root) {
+        let result = outcome.result
+        fputs("{\"event\":\"import-pending-applied\",\"launch\":\(key == nil),\"batch\":\"\(outcome.batchID)\","
+              + "\"bookmarks\":\(result?.bookmarksAdded ?? 0),\"history\":\(result?.historyAdded ?? 0),"
+              + "\"deferred\":\(result?.historyDeferred ?? false),\"error\":\(outcome.error.map { "\"\($0)\"" } ?? "null")}\n", stderr)
+    }
 }
 
 @_cdecl("BatoSwiftWorkspaceConfigureProfileDelete")

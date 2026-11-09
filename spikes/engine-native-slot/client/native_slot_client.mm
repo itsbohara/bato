@@ -65,6 +65,7 @@ using SwiftConfigureNavigation = void (*)(int (*)(uint64_t, int, const char*));
 // ProfileWindowReady(token, profile_key, ok): the requested window is bound (ok != 0) or failed.
 using SwiftConfigureProfiles = void (*)(int (*)(const char*, int));
 using SwiftProfileWindowReady = void (*)(uint64_t, const char*, int);
+using SwiftApplyPendingImport = void (*)(const char*, const char*);
 
 // Download hooks are optional Swift exports, resolved with dlsym at registration.
 // DownloadsConfigure(snapshot, act): act(profile_key, id, action) with the Bato Profile key.
@@ -110,6 +111,7 @@ SwiftPeekScrimClicked g_swift_peek_scrim_clicked = nullptr;
 SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
 SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
 SwiftProfileWindowReady g_swift_profile_ready = nullptr;
+SwiftApplyPendingImport g_swift_apply_pending_import = nullptr;
 bool g_workspace_enabled = false;
 int g_initial_browser_id = 0;
 
@@ -1099,6 +1101,8 @@ int OpenProfileWindow(const char* utf8_key, int launch) {
         LogProfileRefusal("cache-root-unavailable");
         return 0;
       }
+      // Imported bookmarks and history are written while Chromium has not opened this directory.
+      if (g_swift_apply_pending_import) g_swift_apply_pending_import(key.c_str(), CacheRoot().c_str());
       CefRequestContextSettings settings;
       CefString(&settings.cache_path) = path;
       context = CefRequestContext::CreateContext(settings, nullptr);
@@ -1648,6 +1652,13 @@ bool BatoRegisterNativeSlotClient(CefRefPtr<CefCommandLine> command_line) {
                                  SelectWorkspacePage, CloseWorkspacePage,
                                  ActiveWorkspacePage, native_focus, WorkspaceCommandId,
                                  ScheduleWorkspaceSelection, sidebar_geometry, focus);
+    // CefInitialize has not run yet, so Chromium has not opened the launch Profile's History or Bookmarks.
+    g_swift_apply_pending_import = reinterpret_cast<SwiftApplyPendingImport>(
+        dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceApplyPendingImport"));
+    if (g_swift_apply_pending_import) {
+      g_swift_apply_pending_import(nullptr,
+          ResolvePath(command_line->GetSwitchValue("cache-path").ToString()).c_str());
+    }
     // Links that macOS hands the app while it starts arrive before any window exists.
     if (auto install_router = reinterpret_cast<void (*)()>(
             dlsym(RTLD_DEFAULT, "BatoSwiftInstallExternalURLRouter"))) {
