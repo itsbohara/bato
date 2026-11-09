@@ -9,16 +9,24 @@ public struct OnboardingHooks {
     /// Saves the snapshot into the current Profile as one transaction and returns a one-line result.
     public var commitImport: (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>
     public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
+    /// Shows a look without saving it; nil theme keeps the Space's own.
+    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
+    /// Drops any preview and returns to the saved look.
+    public var endPreview: () -> Void
     /// Called once when the card ends by any route, including Skip Setup.
     public var finished: () -> Void
 
     public init(importer: BrowserImporter, defaultSource: @escaping () -> ImportSource?,
                 commitImport: @escaping (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>,
-                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void, finished: @escaping () -> Void) {
+                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void,
+                previewLook: @escaping (SpaceTheme?, AppAppearance) -> Void, endPreview: @escaping () -> Void,
+                finished: @escaping () -> Void) {
         self.importer = importer
         self.defaultSource = defaultSource
         self.commitImport = commitImport
         self.applyLook = applyLook
+        self.previewLook = previewLook
+        self.endPreview = endPreview
         self.finished = finished
     }
 }
@@ -90,6 +98,7 @@ public final class OnboardingController: NSObject {
         parent.removeChildWindow(panel)
         panel.orderOut(nil)
         parent.makeKeyAndOrderFront(nil)
+        hooks.endPreview()
         hooks.finished()
     }
 
@@ -113,6 +122,10 @@ public final class OnboardingController: NSObject {
     private func skip() {
         flow.skip()
         close()
+    }
+
+    private func previewChoices() {
+        hooks.previewLook(choices.theme, choices.appearance)
     }
 
     private func finishLook() {
@@ -153,6 +166,7 @@ public final class OnboardingController: NSObject {
     }
 
     private func present(animated: Bool) {
+        flow.step == .makeItYours ? previewChoices() : hooks.endPreview()
         let next = makeStepView()
         next.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(next)
@@ -415,6 +429,7 @@ public final class OnboardingController: NSObject {
         let appearance = segmented(AppAppearance.allCases.map(\.title), selected: AppAppearance.allCases.firstIndex(of: choices.appearance) ?? 0,
                                    enabled: nil) { [weak self] index in
             self?.choices.appearance = AppAppearance.allCases[index]
+            self?.previewChoices()
         }
         let sections = NSStackView(views: [
             section("Tabs", tiles), section("Space Theme", swatches),

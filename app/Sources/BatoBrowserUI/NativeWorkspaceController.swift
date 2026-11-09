@@ -273,6 +273,8 @@ public final class NativeWorkspaceController: NSObject {
                 self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
             },
             applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
+            previewLook: { [weak self] theme, appearance in self?.previewOnboardingLook(theme: theme, appearance: appearance) },
+            endPreview: { [weak self] in self?.endOnboardingPreview() },
             finished: { [weak self] in
                 try? self?.preferences.update { $0.onboardingCompleted = true }
                 self?.onboarding = nil
@@ -315,6 +317,23 @@ public final class NativeWorkspaceController: NSObject {
         try? preferences.update { $0.appearance = appearance }
         NSApp.appearance = appearance.nsAppearance
         if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
+    }
+
+    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
+        NSApp.appearance = appearance.nsAppearance
+        guard let theme else { return endThemePreview() }
+        previewTheme(theme)
+    }
+
+    private func endOnboardingPreview() {
+        NSApp.appearance = preferences.current().appearance.nsAppearance
+        endThemePreview()
+    }
+
+    private func endThemePreview() {
+        guard themePreview != nil else { return }
+        themePreview = nil
+        render()
     }
 
     /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
