@@ -46,7 +46,7 @@ final class SplitDropOverlay: NSView {
 
     private func layoutZones(animated: Bool) {
         for (side, zone) in zones {
-            guard let frame = SplitDropZones.frame(of: side, in: cardRect, expanded: expanded) else { continue }
+            guard let frame = SplitDropZones.frame(of: side, in: cardRect, expanded: expanded, hovered: hovered == side) else { continue }
             zone.isTargeted = hovered == side
             if animated {
                 NSAnimationContext.runAnimationGroup { $0.duration = 0.2; zone.animator().frame = frame }
@@ -62,10 +62,10 @@ final class SplitDropOverlay: NSView {
 
     private func update(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let point = convert(sender.draggingLocation, from: nil)
-        let wasExpanded = expanded
+        let (wasExpanded, wasHovered) = (expanded, hovered)
         expanded = cardRect.contains(point)
         hovered = SplitDropZones.side(at: point, in: cardRect, expanded: expanded)
-        if wasExpanded != expanded { layoutZones(animated: true) } else { zones.forEach { $0.value.isTargeted = hovered == $0.key } }
+        if wasExpanded != expanded || wasHovered != hovered { layoutZones(animated: true) }
         return hovered == nil ? [] : .move
     }
 
@@ -87,9 +87,20 @@ final class SplitDropOverlay: NSView {
 
 @MainActor
 private final class SplitDropZoneView: NSView {
-    var isTargeted = false { didSet { if isTargeted != oldValue { needsDisplay = true } } }
+    var isTargeted = false {
+        didSet {
+            guard isTargeted != oldValue else { return }
+            let tint = isTargeted ? Self.targetAccent : NSColor.white.withAlphaComponent(0.6)
+            icon.contentTintColor = tint
+            label.textColor = tint
+            needsDisplay = true
+        }
+    }
     private let icon = NSImageView()
     private let label: NSTextField
+
+    private static let targetAccent = NSColor(srgbRed: 0.84, green: 0.50, blue: 0, alpha: 1)
+    private static let targetFill = NSColor(srgbRed: 0.24, green: 0.18, blue: 0.12, alpha: 0.96)
 
     override var isFlipped: Bool { true }
 
@@ -119,12 +130,12 @@ private final class SplitDropZoneView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let radius = SplitDropZones.cornerRadius
-        NSColor(white: isTargeted ? 0.2 : 0.13, alpha: 0.96).setFill()
+        (isTargeted ? Self.targetFill : NSColor(white: 0.13, alpha: 0.96)).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
         let dashed = NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 8), xRadius: radius - 8, yRadius: radius - 8)
         dashed.lineWidth = 1.5
         dashed.setLineDash([5, 4], count: 2, phase: 0)
-        NSColor.white.withAlphaComponent(isTargeted ? 0.85 : 0.4).setStroke()
+        (isTargeted ? Self.targetAccent : NSColor.white.withAlphaComponent(0.4)).setStroke()
         dashed.stroke()
     }
 }

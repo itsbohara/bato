@@ -107,7 +107,13 @@ public final class NativeWorkspaceController: NSObject {
         }
         frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
         frame.splitDrop.onDrop = { [weak self] id, side in
-            guard let self, self.runtime.state.canCreateSplit(with: id) else { return false }
+            guard let self else { return false }
+            if self.isUnsplitSelection(id) {
+                // The page stays on its side; the other pane opens a new tab.
+                DispatchQueue.main.async { self.addSplit(side == .left ? .right : .left) }
+                return true
+            }
+            guard self.runtime.state.canCreateSplit(with: id) else { return false }
             self.perform { self.runtime.createSplit(with: id, side: side) }
             return true
         }
@@ -162,6 +168,11 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     /// Opens the command bar to choose what the new pane on `side` shows (Add Right Split and friends).
+    private func isUnsplitSelection(_ id: UUID) -> Bool {
+        let state = runtime.state
+        return id == state.currentWorkspace.activeEntryID && state.canSplitSelection && state.split(containingEntry: id) == nil
+    }
+
     public func addSplit(_ side: SplitSide) {
         guard hasStarted, runtime.supportsSplits, runtime.state.canSplitSelection else { return }
         showCommandBar(splittingTo: side)
@@ -779,7 +790,8 @@ public final class NativeWorkspaceController: NSObject {
 
         entries.slotViews = { [weak self] in self?.dropSlotViews ?? [] }
         entryDragSource.onBegan = { [weak self] id in
-            guard let self, self.runtime.supportsSplits, self.runtime.state.canCreateSplit(with: id) else { return }
+            guard let self, self.runtime.supportsSplits,
+                  self.runtime.state.canCreateSplit(with: id) || self.isUnsplitSelection(id) else { return }
             self.cardFrames.allObjects.forEach { $0.beginSplitDrop() }
         }
         entryDragSource.onEnded = { [weak self] in
