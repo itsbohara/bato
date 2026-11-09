@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,83 @@
+@@ -2313,6 +2317,87 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -302,6 +302,7 @@
 +      "tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift",
 +      "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
 +      "tests/cefsimple/bato/BatoCore/TabSwitcher.swift",
++      "tests/cefsimple/bato/BatoCore/SpaceTheme.swift",
 +      "tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
@@ -314,6 +315,9 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/TabSwitcherPanel.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SpaceThemePicker.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -332,7 +336,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2417,19 @@
+@@ -2336,12 +2421,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2074,7 +2078,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -2099,7 +2103,7 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SidebarRows.swift', 'TabSwitcher.swift']),
++                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -2113,7 +2117,8 @@
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
 +                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift',
-+                                              'TabSwitcherPanel.swift'])]:
++                                              'TabSwitcherPanel.swift', 'CreateSpacePage.swift',
++                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -4689,7 +4694,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1528 @@
+@@ -0,0 +1,1561 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -4932,12 +4937,20 @@
 +    public var archivePeriod: ArchivePeriod?
 +    /// Hides every pinned page and folder under the Space header. Pinned pages stay loaded and selectable by other means.
 +    public var pinsCollapsed: Bool
++    /// Absent in documents saved before Spaces had themes; `effectiveTheme` then derives one from `color`.
++    public var theme: SpaceTheme?
++    /// An emoji, or `symbol:` followed by an SF Symbol name.
++    public var icon: String?
 +
-+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil, pinsCollapsed: Bool = false) {
++    public var effectiveTheme: SpaceTheme { theme ?? SpaceTheme(color: color) }
++
++    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil, pinsCollapsed: Bool = false, theme: SpaceTheme? = nil, icon: String? = nil) {
 +        self.id = id
 +        self.profileID = profileID
 +        self.name = name
 +        self.color = color
++        self.theme = theme
++        self.icon = icon
 +        self.pins = pins
 +        self.folders = folders
 +        self.tabs = tabs
@@ -4998,7 +5011,7 @@
 +    }
 +
 +    private enum CodingKeys: String, CodingKey {
-+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod, pinsCollapsed
++        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod, pinsCollapsed, theme, icon
 +    }
 +
 +    public init(from decoder: any Decoder) throws {
@@ -5015,6 +5028,8 @@
 +        activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
 +        archivePeriod = try values.decodeIfPresent(ArchivePeriod.self, forKey: .archivePeriod)
 +        pinsCollapsed = try values.decodeIfPresent(Bool.self, forKey: .pinsCollapsed) ?? false
++        theme = try values.decodeIfPresent(SpaceTheme.self, forKey: .theme)
++        icon = try values.decodeIfPresent(String.self, forKey: .icon)
 +    }
 +
 +    public func encode(to encoder: any Encoder) throws {
@@ -5033,6 +5048,8 @@
 +        try values.encodeIfPresent(archivePeriod, forKey: .archivePeriod)
 +        // Documents that never collapsed the pinned section keep their bytes.
 +        if pinsCollapsed { try values.encode(true, forKey: .pinsCollapsed) }
++        try values.encodeIfPresent(theme, forKey: .theme)
++        try values.encodeIfPresent(icon, forKey: .icon)
 +    }
 +}
 +
@@ -5226,6 +5243,7 @@
 +            try Self.validateName(workspace.name)
 +            guard profileIDs.contains(workspace.profileID) else { throw BrowserStateError.missingProfile }
 +            try Self.validateColor(workspace.color)
++            if let theme = workspace.theme, !theme.isValid { throw BrowserStateError.invalidColor }
 +            for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
 +            for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
 +            let pinIDs = Set(workspace.pins.map(\.id))
@@ -5438,7 +5456,8 @@
 +    }
 +
 +    @discardableResult
-+    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil) throws -> UUID {
++    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil,
++                                      theme: SpaceTheme? = nil, icon: String? = nil) throws -> UUID {
 +        try transact { draft in
 +            guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
 +            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5448,6 +5467,12 @@
 +                try Self.validateColor(color)
 +                workspace.color = color.uppercased()
 +            }
++            if let theme {
++                guard theme.isValid else { throw BrowserStateError.invalidColor }
++                workspace.theme = theme
++                workspace.color = theme.primaryColor
++            }
++            workspace.icon = icon
 +            draft.workspaces.append(workspace)
 +            return workspace.id
 +        }
@@ -5487,7 +5512,20 @@
 +            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
 +            try Self.validateName(name)
 +            draft.workspaces[index].name = name
++            if color.uppercased() != draft.workspaces[index].color { draft.workspaces[index].theme = nil }
 +            draft.workspaces[index].color = color.uppercased()
++        }
++    }
++
++    /// Replaces the theme; the workspace colour follows its first stop so badges and dots keep matching.
++    public mutating func updateWorkspaceTheme(_ id: UUID, theme: SpaceTheme) throws {
++        try transact { draft in
++            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            guard theme.isValid else { throw BrowserStateError.invalidColor }
++            draft.workspaces[index].theme = theme
++            draft.workspaces[index].color = theme.primaryColor
 +        }
 +    }
 +
@@ -6513,7 +6551,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1164 @@
+@@ -0,0 +1,1170 @@
 +import Foundation
 +import BatoCore
 +
@@ -6752,9 +6790,10 @@
 +    }
 +
 +    @discardableResult
-+    public func addWorkspace(name: String, color: String? = nil) -> Bool {
++    public func addWorkspace(name: String, color: String? = nil, theme: SpaceTheme? = nil, icon: String? = nil) -> Bool {
 +        change { candidate in
-+            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID, color: color)
++            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID,
++                                                color: color, theme: theme, icon: icon)
 +            try candidate.activateWorkspace(id)
 +        }
 +    }
@@ -6794,6 +6833,11 @@
 +    @discardableResult
 +    public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
 +        change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
++    }
++
++    @discardableResult
++    public func updateWorkspaceTheme(_ id: UUID, theme: SpaceTheme) -> Bool {
++        change(reconcileSelection: false) { try $0.updateWorkspaceTheme(id, theme: theme) }
 +    }
 +
 +    /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine
@@ -7800,7 +7844,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4023 @@
+@@ -0,0 +1,4109 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7886,16 +7930,21 @@
 +    /// The state the list is drawn from; a neighbouring workspace's while its picture is taken for a slide.
 +    private var previewState: BrowserState?
 +    private var sidebarState: BrowserState { previewState ?? runtime.state }
-+    private var accent: NSColor { workspaceColor(sidebarState.currentWorkspace.color) }
++    /// A theme being edited in the Create Space page or the theme popover, drawn instead of the stored one.
++    private var themePreview: SpaceTheme?
++    private var theme: SpaceTheme { themePreview ?? sidebarState.currentWorkspace.effectiveTheme }
++    private var accent: NSColor { themePreview?.primaryNSColor ?? workspaceColor(sidebarState.currentWorkspace.color) }
 +    private let sidebarScroll = SidebarScrollView()
 +    private var slide: SpaceSlide?
++    private var createSpacePage: CreateSpacePageView?
++    private var themePopover: SpaceThemePopover?
 +    private var slideReleasing = false
 +    private var slideListTop: CGFloat = 0
 +    private var slideHeight: CGFloat = 0
 +    private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
 +    /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
 +    public func makeCardFrame() -> ContentCardFrameView {
-+        let frame = ContentCardFrameView(accent: accent)
++        let frame = ContentCardFrameView(theme: theme)
 +        frame.showsEmptyState = runtime.state.showsEmptySpace
 +        frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
 +        frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
@@ -8747,9 +8796,9 @@
 +        settingsWindow?.reload()
 +        let state = runtime.state
 +        let workspace = state.currentWorkspace
-+        if slide == nil { (root as? WorkspaceRoot)?.accent = accent }
++        if slide == nil { (root as? WorkspaceRoot)?.theme = theme }
 +        for frame in cardFrames.allObjects {
-+            frame.accent = accent
++            frame.theme = theme
 +            frame.showsEmptyState = state.showsEmptySpace
 +            frame.canAddSplit = runtime.supportsSplits && state.canSplitSelection
 +            frame.focusedPane = focusedPaneIndex
@@ -9594,7 +9643,7 @@
 +
 +    private func makeSpaceHeader(_ workspace: Workspace, animatingFromCollapsed: Bool?) -> SpaceHeaderRow {
 +        let workspaceID = workspace.id
-+        let header = SpaceHeaderRow(name: workspace.name, color: workspaceColor(workspace.color),
++        let header = SpaceHeaderRow(name: workspace.name, color: workspaceColor(workspace.color), icon: workspace.icon,
 +                                    collapsed: animatingFromCollapsed ?? workspace.pinsCollapsed)
 +        header.toggle = { [weak self] in self?.togglePins(inWorkspace: workspaceID) }
 +        header.showActions = { [weak self, weak header] in
@@ -9704,7 +9753,7 @@
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
 +        menu.addItem(ActionMenuItem(title: "Rename Space…") { [weak self] in self?.editWorkspace() })
-+        menu.addItem(ActionMenuItem(title: "Change Colour…") { [weak self] in self?.editWorkspace() })
++        menu.addItem(ActionMenuItem(title: "Edit Theme…") { [weak self] in self?.editTheme() })
 +        menu.addItem(.separator())
 +        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
@@ -9831,37 +9880,91 @@
 +        finder.focusSearch()
 +    }
 +
-+    /// Asks for the name and colour first, so Cancel leaves organization untouched.
++    /// Shows the Create a Space page in place of the sidebar list. The draft theme previews on the window; Cancel
++    /// leaves organization untouched.
 +    private func createSpace() {
-+        guard hasStarted, workspaceEditor == nil, folderEditor == nil, profileEditor == nil, let window = root.window,
-+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        guard hasStarted, createSpacePage == nil, workspaceEditor == nil, folderEditor == nil, profileEditor == nil,
++              themePopover == nil, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        finishSlideNow()
 +        let state = runtime.state
 +        let profileID = state.currentWorkspace.profileID
 +        let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
-+        requestNativeFocus?()
-+        let editor = WorkspaceEditor(creating: true, name: "Workspace \(state.workspaces.count + 1)", color: color) { [weak self] name, color in
-+            guard let self else { return "Bato is no longer available." }
-+            guard self.runtime.state.currentWorkspace.profileID == profileID else { return "The Profile is no longer active." }
++        var draft = SpaceTheme(color: color)
++        draft.intensity = Self.newSpaceIntensity
++        let profileName = state.profiles.first { $0.id == profileID }?.name ?? "Default"
++        let page = CreateSpacePageView(theme: draft, profileName: profileName)
++        page.onThemeChange = { [weak self] in self?.previewTheme($0) }
++        page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
++        page.onCreate = { [weak self] name, icon, theme in
++            guard let self else { return }
++            guard self.runtime.state.currentWorkspace.profileID == profileID else { return self.dismissCreateSpacePage() }
 +            let before = self.runtime.state.workspaces.count
-+            // The engine rejects the selection change while this sheet is attached; the sheet's completion retries it.
-+            _ = self.runtime.addWorkspace(name: name, color: color)
-+            guard self.runtime.state.workspaces.count > before else {
-+                return self.runtime.lastError == .saveFailed
-+                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
-+                    : "The Space couldn’t be created. Check its name and try again."
-+            }
++            _ = self.runtime.addWorkspace(name: name, theme: theme, icon: icon)
++            guard self.runtime.state.workspaces.count > before else { return NSSound.beep() }
++            self.dismissCreateSpacePage()
++        }
++        page.translatesAutoresizingMaskIntoConstraints = false
++        root.addSubview(page)
++        NSLayoutConstraint.activate([
++            page.leadingAnchor.constraint(equalTo: sidebarScroll.leadingAnchor),
++            page.trailingAnchor.constraint(equalTo: sidebarScroll.trailingAnchor),
++            page.topAnchor.constraint(equalTo: sidebarScroll.topAnchor),
++            page.bottomAnchor.constraint(equalTo: sidebarScroll.bottomAnchor)
++        ])
++        createSpacePage = page
++        sidebarScroll.alphaValue = 0
++        requestNativeFocus?()
++        previewTheme(draft)
++        if !Self.reducesMotion { slideIn(page) }
++        page.focusName()
++    }
++
++    private static let newSpaceIntensity = 0.6
++
++    private func slideIn(_ page: NSView) {
++        page.wantsLayer = true
++        let animation = CABasicAnimation(keyPath: "transform.translation.x")
++        animation.fromValue = sidebarScroll.bounds.width
++        animation.toValue = 0
++        animation.duration = 0.24
++        animation.timingFunction = SpaceSlide.releaseTiming
++        page.layer?.add(animation, forKey: "slideIn")
++    }
++
++    private func dismissCreateSpacePage() {
++        guard let page = createSpacePage else { return }
++        createSpacePage = nil
++        themePreview = nil
++        sidebarScroll.alphaValue = 1
++        page.removeFromSuperview()
++        render()
++    }
++
++    private func previewTheme(_ draft: SpaceTheme) {
++        themePreview = draft
++        (root as? WorkspaceRoot)?.theme = draft
++        for frame in cardFrames.allObjects { frame.theme = draft }
++    }
++
++    /// Edits the current Space's theme in the same popover the Create page uses; the change previews live and is
++    /// saved when the popover closes.
++    private func editTheme() {
++        guard hasStarted, createSpacePage == nil, themePopover == nil, workspaceEditor == nil, folderEditor == nil,
++              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil,
++              let anchor = spaceHeaderRow else { return }
++        finishSlideNow()
++        let workspace = runtime.state.currentWorkspace
++        let original = workspace.effectiveTheme
++        requestNativeFocus?()
++        let popover = SpaceThemePopover(theme: original, onChange: { [weak self] in self?.previewTheme($0) }, onClose: { [weak self] edited in
++            guard let self else { return }
++            self.themePopover = nil
++            self.themePreview = nil
++            if edited != original { _ = self.runtime.updateWorkspaceTheme(workspace.id, theme: edited) }
 +            self.render()
-+            return nil
-+        }
-+        workspaceEditor = editor
-+        guard let sheet = editor.window else { workspaceEditor = nil; return }
-+        window.beginSheet(sheet) { [weak self] _ in
-+            self?.workspaceEditor = nil
-+            // The engine refuses to change its selection while the sheet is attached, so the new Space's
-+            // empty selection is presented only now; otherwise the previous Space's page stays visible.
-+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.resumeCommittedSelection() } }
-+        }
-+        editor.focusName()
++        })
++        themePopover = popover
++        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
 +    }
 +
 +    private func editWorkspace() {
@@ -9904,6 +10007,7 @@
 +    }
 +
 +    private func switchWorkspace(_ id: UUID) {
++        if createSpacePage != nil { dismissCreateSpacePage() }
 +        guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
 +              id != runtime.state.activeWorkspaceID else { return }
 +        finishSlideNow()
@@ -9927,10 +10031,11 @@
 +        }
 +        recognizer.onTrack = { [weak self] in self?.trackSlide(offset: $0) }
 +        recognizer.onFinish = { [weak self] direction, _ in self?.releaseSlide(direction) }
++        recognizer.onPastEnd = { [weak self] in self?.createSpace() }
 +    }
 +
 +    private var canSlide: Bool {
-+        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating
++        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating && createSpacePage == nil
 +    }
 +
 +    private func trackSlide(offset: CGFloat) {
@@ -10002,15 +10107,17 @@
 +        var state = runtime.state
 +        state.activeWorkspaceID = id
 +        previewState = state
++        (root as? WorkspaceRoot)?.appearance = state.currentWorkspace.effectiveTheme.appearance
 +        rebuildEntries(state, pinsAnimation: nil)
 +        entries.layoutSubtreeIfNeeded()
 +        let top = spaceHeaderRow.map { entries.convert($0.bounds, from: $0).minY } ?? 0
 +        let height = min(slideHeight, max(entries.bounds.height - top, 0))
 +        let page = capture(NSRect(x: 0, y: top, width: entries.bounds.width, height: height), top: slideListTop)
-+        let tint = accent
++        let tint = theme
 +        previewState = nil
++        (root as? WorkspaceRoot)?.appearance = runtime.state.currentWorkspace.effectiveTheme.appearance
 +        rebuildEntries(runtime.state, pinsAnimation: nil)
-+        if let page { slide.addNeighbour(direction, page: page, accent: tint) }
++        if let page { slide.addNeighbour(direction, page: page, theme: tint) }
 +    }
 +
 +    private func capture(_ rect: NSRect, top: CGFloat) -> SpaceSlide.Page? {
@@ -10052,7 +10159,7 @@
 +        slide.remove()
 +        sidebarScroll.alphaValue = 1
 +        sidebarScroll.contentView.scroll(to: .zero)
-+        (root as? WorkspaceRoot)?.accent = accent
++        (root as? WorkspaceRoot)?.theme = theme
 +    }
 +
 +    /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
@@ -10559,11 +10666,15 @@
 +    override func scrollWheel(with event: NSEvent) {
 +        if !swipe.handle(event) { super.scrollWheel(with: event) }
 +    }
-+    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
++    var theme = SpaceTheme(color: "#B47879") {
++        didSet {
++            appearance = theme.appearance
++            needsDisplay = true
++        }
++    }
 +    override var isOpaque: Bool { true }
 +    override func draw(_ dirtyRect: NSRect) {
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
-+        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
++        ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
 +    }
 +    var keyEquivalentsEnabled = true
 +    var pointerChanged: ((Bool) -> Void)?
@@ -11266,7 +11377,12 @@
 +public final class ContentCardFrameView: NSView {
 +    public static let margin: CGFloat = 8
 +    static let cornerRadius: CGFloat = 12
-+    var accent: NSColor { didSet { needsDisplay = true } }
++    var theme: SpaceTheme {
++        didSet {
++            appearance = theme.appearance
++            needsDisplay = true
++        }
++    }
 +    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
 +    public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
 +    /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
@@ -11308,9 +11424,10 @@
 +    /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
 +    static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
 +
-+    init(accent: NSColor) {
-+        self.accent = accent
++    init(theme: SpaceTheme) {
++        self.theme = theme
 +        super.init(frame: .zero)
++        appearance = theme.appearance
 +        autoresizingMask = [.width, .height]
 +        // Sibling layers composite by zPosition, not subview order, so Chromium re-adding a native
 +        // view (new tab, DevTools, Peek) above this one cannot cover the gutter.
@@ -11513,14 +11630,13 @@
 +        let paths = cardPaths
 +        let card = NSBezierPath()
 +        paths.forEach { card.append($0) }
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
 +        let ring = NSBezierPath(rect: bounds)
 +        ring.append(card)
 +        ring.windingRule = .evenOdd
 +        NSGraphicsContext.saveGraphicsState()
 +        ring.addClip()
 +        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
-+        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
++        ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
 +        let shadow = NSShadow()
 +        shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
 +        shadow.shadowBlurRadius = 8
@@ -11570,12 +11686,9 @@
 +    static let focusColor = NSColor(srgbRed: 0x4f / 255, green: 0x40 / 255, blue: 0xf9 / 255, alpha: 1)
 +
 +    private func drawEmptyState(in card: NSBezierPath) {
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
-+        let lift = effectiveAppearance.isDark ? NSColor.white : NSColor.black
 +        NSGraphicsContext.saveGraphicsState()
 +        card.addClip()
-+        NSGradient(starting: top.blended(withFraction: 0.08, of: lift) ?? top,
-+                   ending: bottom.blended(withFraction: 0.08, of: lift) ?? bottom)?.draw(in: cardRect, angle: -90)
++        ThemeFill.drawLifted(theme, in: cardRect, appearance: effectiveAppearance)
 +        NSGraphicsContext.restoreGraphicsState()
 +        let text = NSAttributedString(string: Self.emptyHint, attributes: [
 +            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
@@ -11593,6 +11706,7 @@
 +    static let height: CGFloat = 36
 +    private static let labelX: CGFloat = 36
 +    private let color: NSColor
++    private let icon: String?
 +    private let name: String
 +    private lazy var nameButton = ActionButton(title: name) { [weak self] in self?.toggle?() }
 +    private lazy var actions = ActionButton(title: "") { [weak self] in self?.showActions?() }
@@ -11618,9 +11732,10 @@
 +        key == "chevronTurn" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
 +    }
 +
-+    init(name: String, color: NSColor, collapsed: Bool) {
++    init(name: String, color: NSColor, icon: String?, collapsed: Bool) {
 +        self.name = name
 +        self.color = color
++        self.icon = icon
 +        isCollapsed = collapsed
 +        super.init(frame: .zero)
 +        chevronTurn = collapsed ? 1 : 0
@@ -11707,10 +11822,25 @@
 +        let slot = NSPoint(x: 18, y: bounds.midY)
 +        if hovered || isCollapsed || chevronTurn != 0 {
 +            drawChevron(at: slot)
++        } else if let icon, let image = CreateSpacePageView.iconImage(icon, size: 14) {
++            drawIcon(image, at: slot)
 +        } else {
 +            color.setFill()
 +            NSBezierPath(ovalIn: NSRect(x: slot.x - 6, y: slot.y - 6, width: 12, height: 12)).fill()
 +        }
++    }
++
++    /// Emoji keep their colours; symbols take the Space colour.
++    private func drawIcon(_ image: NSImage, at slot: NSPoint) {
++        let rect = NSRect(x: slot.x - 7, y: slot.y - 7, width: 14, height: 14)
++        guard image.isTemplate else { return image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
++        let tinted = NSImage(size: rect.size, flipped: false) { bounds in
++            image.draw(in: bounds)
++            SidebarStyle.vivid(self.color).setFill()
++            bounds.fill(using: .sourceAtop)
++            return true
++        }
++        tinted.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
 +    }
 +
 +    /// A 10pt wide chevron, stroke 1.5, turned about its centre by `chevronTurn` quarter-turns.
@@ -15610,7 +15740,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarStyle.swift
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,131 @@
 +import AppKit
 +import BatoCore
 +
@@ -15683,16 +15813,18 @@
 +
 +    /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
 +    /// Dia; the system background only keeps the result from going neon. Resolved under `appearance`, so
-+    /// the result is correct whichever appearance the caller happens to be drawing in.
-+    static func tint(_ accent: NSColor, appearance: NSAppearance) -> (top: NSColor, bottom: NSColor) {
++    /// the result is correct whichever appearance the caller happens to be drawing in. `intensity` scales how far
++    /// the colour replaces the base; the default reproduces a Space saved before themes.
++    static func tint(_ accent: NSColor, appearance: NSAppearance, intensity: Double = SpaceTheme.defaultIntensity) -> (top: NSColor, bottom: NSColor) {
 +        var result: (top: NSColor, bottom: NSColor)?
 +        appearance.performAsCurrentDrawingAppearance {
 +            let dark = appearance.isDark
 +            let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
 +            let hue = vivid(accent)
 +            let body = dark ? darkened(hue) : hue
-+            result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
-+                      base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
++            let strength = CGFloat(intensity / SpaceTheme.defaultIntensity)
++            result = (base.blended(withFraction: min(1, (dark ? 0.8 : 0.55) * strength), of: body) ?? base,
++                      base.blended(withFraction: min(1, (dark ? 0.6 : 0.4) * strength), of: body) ?? base)
 +        }
 +        return result ?? (.windowBackgroundColor, .windowBackgroundColor)
 +    }
@@ -18262,8 +18394,9 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/WorkspaceSwipe.swift
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,284 @@
 +import AppKit
++import BatoCore
 +
 +/// Decides whether a two-finger scroll gesture over the sidebar is a horizontal workspace swipe, and where the
 +/// page sits while the fingers are down. Vertical scrolling of the tab list and wheel mice (no gesture phases)
@@ -18277,6 +18410,9 @@
 +        case track(CGFloat)
 +        /// The fingers lifted. `nil` means the page springs back; `velocity` is the page's pt/s at release.
 +        case finish(Direction?, velocity: CGFloat)
++        /// Like `finish(nil)`, but the fingers pulled a full commit distance past the last workspace: Arc opens its
++        /// Create a Space page from there.
++        case pastEnd(velocity: CGFloat)
 +    }
 +    struct Layout: Equatable {
 +        var width: CGFloat
@@ -18329,9 +18465,11 @@
 +        let hasNeighbour = direction == .previous ? layout.hasPrevious : layout.hasNext
 +        let flicked = abs(velocity) >= Self.flickVelocity && velocity * offset > 0 && abs(offset) >= Self.flickMinimumOffset
 +        let commit = phase.contains(.ended) && hasNeighbour && (abs(offset) >= Self.commitFraction * layout.width || flicked)
++        let pulledPastEnd = phase.contains(.ended) && direction == .next && !hasNeighbour
++            && -travelled.width * Self.travelScale >= Self.commitFraction * layout.width
 +        reset()
 +        swallowingMomentum = true
-+        return .finish(commit ? direction : nil, velocity: velocity)
++        return pulledPastEnd ? .pastEnd(velocity: velocity) : .finish(commit ? direction : nil, velocity: velocity)
 +    }
 +
 +    /// Finger travel scaled to the page, held to one page where a neighbour exists and resisted where none does.
@@ -18375,6 +18513,7 @@
 +    var layout: (() -> WorkspaceSwipe.Layout)?
 +    var onTrack: ((CGFloat) -> Void)?
 +    var onFinish: ((WorkspaceSwipe.Direction?, CGFloat) -> Void)?
++    var onPastEnd: (() -> Void)?
 +
 +    /// True when the event belongs to a horizontal workspace swipe and must not reach the scroll view.
 +    func handle(_ event: NSEvent) -> Bool {
@@ -18390,6 +18529,10 @@
 +            return true
 +        case .finish(let direction, let velocity):
 +            onFinish?(direction, velocity)
++            return true
++        case .pastEnd:
++            onFinish?(nil, 0)
++            onPastEnd?()
 +            return true
 +        }
 +    }
@@ -18446,14 +18589,14 @@
 +
 +    func hasNeighbour(_ direction: WorkspaceSwipe.Direction) -> Bool { neighbours[direction] != nil }
 +
-+    func addNeighbour(_ direction: WorkspaceSwipe.Direction, page: Page, accent: NSColor) {
++    func addNeighbour(_ direction: WorkspaceSwipe.Direction, page: Page, theme: SpaceTheme) {
 +        let layer = layer(for: page, x: direction == .previous ? -width : width)
 +        slider.addSublayer(layer)
 +        neighbours[direction] = layer
 +        let tint = CALayer()
 +        tint.frame = backdrop.bounds
 +        tint.contentsScale = scale
-+        tint.contents = Self.tintImage(accent, size: backdrop.bounds.size, appearance: appearance)
++        tint.contents = Self.tintImage(theme, size: backdrop.bounds.size, appearance: theme.appearance ?? appearance)
 +        tint.opacity = 0
 +        backdrop.layer?.addSublayer(tint)
 +        tints[direction] = tint
@@ -18528,10 +18671,9 @@
 +        return layer
 +    }
 +
-+    private static func tintImage(_ accent: NSColor, size: NSSize, appearance: NSAppearance) -> CGImage? {
-+        let (top, bottom) = SidebarStyle.tint(accent, appearance: appearance)
++    private static func tintImage(_ theme: SpaceTheme, size: NSSize, appearance: NSAppearance) -> CGImage? {
 +        let image = NSImage(size: size, flipped: true) { rect in
-+            NSGradient(starting: top, ending: bottom)?.draw(in: rect, angle: -90)
++            appearance.performAsCurrentDrawingAppearance { ThemeFill.draw(theme, in: rect, appearance: appearance) }
 +            return true
 +        }
 +        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
@@ -20078,4 +20220,1078 @@
 +                .paragraphStyle: style]).draw(in: NSRect(x: 38, y: 11, width: bounds.width - 38 - 14, height: 20))
 +        }
 +    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/SpaceTheme.swift
+@@ -0,0 +1,162 @@
++import Foundation
++
++/// A Space's look: one to three colours blended across the window, a light or dark scheme for the sidebar,
++/// how strongly the colours replace the neutral base, and film grain. A Space saved before themes existed
++/// has only a colour and reads as `init(color:)`.
++public struct SpaceTheme: Codable, Equatable, Sendable {
++    public enum Mode: String, Codable, CaseIterable, Sendable { case auto, light, dark }
++
++    /// A colour and where its handle sits in the picker's field, a unit disc with y pointing down.
++    public struct Stop: Codable, Equatable, Sendable {
++        public var color: String
++        public var x: Double
++        public var y: Double
++
++        public init(color: String, x: Double, y: Double) {
++            self.color = color.uppercased()
++            self.x = x
++            self.y = y
++        }
++
++        /// A stop at the field position that best reproduces `color`.
++        public init(color: String) {
++            let position = SpaceTheme.fieldPosition(ofColor: color)
++            self.init(color: color, x: position.x, y: position.y)
++        }
++    }
++
++    public struct Preset: Equatable, Sendable {
++        public var stops: [Stop]
++    }
++
++    public static let maxStops = 3
++    /// The strength at which a colour reads exactly as Spaces did before themes had a strength.
++    public static let defaultIntensity = 0.5
++
++    public var mode: Mode
++    public var stops: [Stop]
++    public var intensity: Double
++    public var grain: Double
++
++    public init(mode: Mode = .auto, stops: [Stop], intensity: Double = SpaceTheme.defaultIntensity, grain: Double = 0) {
++        self.mode = mode
++        self.stops = stops
++        self.intensity = intensity
++        self.grain = grain
++    }
++
++    public init(color: String) {
++        self.init(stops: [Stop(color: color)])
++    }
++
++    public var primaryColor: String { stops[0].color }
++
++    public var isValid: Bool {
++        (1...Self.maxStops).contains(stops.count)
++            && stops.allSatisfy { Self.isHex($0.color) && $0.x.isFinite && $0.y.isFinite && $0.x * $0.x + $0.y * $0.y <= 1.0001 }
++            && (0...1).contains(intensity) && (0...1).contains(grain)
++    }
++
++    /// Adds a colour beside the last one. False at the limit.
++    @discardableResult
++    public mutating func addStop() -> Bool {
++        guard stops.count < Self.maxStops, let last = stops.last else { return false }
++        let angle = atan2(last.y, last.x) + 2 * .pi / 3
++        let radius = max(0.35, min(0.75, hypot(last.x, last.y)))
++        let x = radius * cos(angle), y = radius * sin(angle)
++        stops.append(Stop(color: Self.fieldColor(x: x, y: y), x: x, y: y))
++        return true
++    }
++
++    /// Removes a colour; the last one cannot go.
++    @discardableResult
++    public mutating func removeStop(at index: Int) -> Bool {
++        guard stops.count > 1, stops.indices.contains(index) else { return false }
++        stops.remove(at: index)
++        return true
++    }
++
++    /// Moves a handle, holding it inside the field, and recolours it from the spot.
++    public mutating func moveStop(at index: Int, toX x: Double, y: Double) {
++        guard stops.indices.contains(index) else { return }
++        let length = hypot(x, y)
++        let clamped = length > 1 ? (x: x / length, y: y / length) : (x: x, y: y)
++        stops[index] = Stop(color: Self.fieldColor(x: clamped.x, y: clamped.y), x: clamped.x, y: clamped.y)
++    }
++
++    // MARK: Field
++
++    /// Hue follows the angle around the field, lightness the distance from the centre: black in the middle,
++    /// pure colour halfway out, white at the rim.
++    public static func fieldColor(x: Double, y: Double) -> String {
++        var hue = atan2(y, x) * 180 / .pi
++        if hue < 0 { hue += 360 }
++        return hex(fromHue: hue, saturation: 1, lightness: min(hypot(x, y), 1))
++    }
++
++    public static func fieldPosition(ofColor color: String) -> (x: Double, y: Double) {
++        guard let (hue, _, lightness) = hsl(ofHex: color) else { return (0, 0) }
++        let angle = hue * .pi / 180
++        return (lightness * cos(angle), lightness * sin(angle))
++    }
++
++    static func isHex(_ value: String) -> Bool {
++        value.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil
++    }
++
++    static func hex(fromHue hue: Double, saturation: Double, lightness: Double) -> String {
++        let chroma = (1 - abs(2 * lightness - 1)) * saturation
++        let sector = hue / 60
++        let second = chroma * (1 - abs(sector.truncatingRemainder(dividingBy: 2) - 1))
++        let (r, g, b): (Double, Double, Double)
++        switch Int(sector) % 6 {
++        case 0: (r, g, b) = (chroma, second, 0)
++        case 1: (r, g, b) = (second, chroma, 0)
++        case 2: (r, g, b) = (0, chroma, second)
++        case 3: (r, g, b) = (0, second, chroma)
++        case 4: (r, g, b) = (second, 0, chroma)
++        default: (r, g, b) = (chroma, 0, second)
++        }
++        let match = lightness - chroma / 2
++        return String(format: "#%02X%02X%02X", Int(((r + match) * 255).rounded()),
++                      Int(((g + match) * 255).rounded()), Int(((b + match) * 255).rounded()))
++    }
++
++    static func hsl(ofHex value: String) -> (hue: Double, saturation: Double, lightness: Double)? {
++        guard isHex(value), let packed = UInt32(value.dropFirst(), radix: 16) else { return nil }
++        let r = Double((packed >> 16) & 255) / 255, g = Double((packed >> 8) & 255) / 255, b = Double(packed & 255) / 255
++        let high = max(r, g, b), low = min(r, g, b), delta = high - low
++        let lightness = (high + low) / 2
++        guard delta > 0 else { return (0, 0, lightness) }
++        let saturation = delta / (1 - abs(2 * lightness - 1))
++        var hue: Double
++        switch high {
++        case r: hue = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
++        case g: hue = (b - r) / delta + 2
++        default: hue = (r - g) / delta + 4
++        }
++        hue *= 60
++        if hue < 0 { hue += 360 }
++        return (hue, saturation, lightness)
++    }
++
++    // MARK: Presets
++
++    /// Four pages of nine swatches: solid, gradient, pastel and deep.
++    public static let presetPages: [[Preset]] = [
++        solids(["#F2EFEA", "#E1B4C6", "#A88CAA", "#D68681", "#E3A376", "#EEDD83", "#A4E3AE", "#A2C3DD", "#7B7B98"]),
++        gradients([("#E8B4B8", "#9AA9D8"), ("#E1B4C6", "#7B7B98"), ("#A88CAA", "#E3A376"), ("#D68681", "#EEDD83"),
++                   ("#E3A376", "#A88CAA"), ("#EEDD83", "#A4E3AE"), ("#A4E3AE", "#A2C3DD"), ("#A2C3DD", "#A88CAA"),
++                   ("#7B7B98", "#D68681")]),
++        solids(["#FFFFFF", "#F5DDF0", "#E0D0F0", "#F0CCCC", "#F5DFCF", "#FFF3D0", "#D8F0E0", "#CFE3F8", "#BDB8E0"]),
++        solids(["#4B3A7A", "#7A3A70", "#8A4A44", "#A5733E", "#D6B95A", "#D8D6B0", "#8DAE8A", "#2F5A3C", "#2A3A80"])
++    ]
++
++    private static func solids(_ colors: [String]) -> [Preset] {
++        colors.map { Preset(stops: [Stop(color: $0)]) }
++    }
++
++    private static func gradients(_ pairs: [(String, String)]) -> [Preset] {
++        pairs.map { Preset(stops: [Stop(color: $0.0), Stop(color: $0.1)]) }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift
+@@ -0,0 +1,408 @@
++import AppKit
++import BatoCore
++
++/// Arc's "Create a Space" page: it replaces the sidebar list while the new Space is named, themed and given an
++/// icon. The theme previews on the whole window as it changes; nothing is saved until Create.
++@MainActor
++final class CreateSpacePageView: NSView, NSTextFieldDelegate {
++    var onThemeChange: ((SpaceTheme) -> Void)?
++    var onCreate: ((String, String?, SpaceTheme) -> Void)?
++    var onCancel: (() -> Void)?
++
++    private(set) var theme: SpaceTheme
++    private var icon: String?
++    private let profileName: String
++    private let nameField = NSTextField()
++    private let iconButton = NSButton()
++    private let themeRow = PageRow()
++    private let createButton = NSButton()
++    private var themePopover: SpaceThemePopover?
++    private var iconPopover: NSPopover?
++
++    init(theme: SpaceTheme, profileName: String) {
++        self.theme = theme
++        self.profileName = profileName
++        super.init(frame: .zero)
++        setAccessibilityIdentifier("bato-create-space")
++        build()
++        refresh()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override var isFlipped: Bool { true }
++
++    func focusName() { window?.makeFirstResponder(nameField) }
++
++    // MARK: Layout
++
++    private func build() {
++        let illustration = SpaceIllustration()
++        let title = Self.label("Create a Space", size: 17, weight: .semibold, color: .labelColor)
++        let subtitle = Self.label("Separate your tabs for life, work, projects, and more.", size: 13, weight: .regular,
++                                  color: NSColor.labelColor.withAlphaComponent(0.85))
++        subtitle.maximumNumberOfLines = 2
++        subtitle.preferredMaxLayoutWidth = 190
++
++        let nameRow = PageRow()
++        iconButton.isBordered = false
++        iconButton.imagePosition = .imageOnly
++        iconButton.target = self
++        iconButton.action = #selector(chooseIcon)
++        iconButton.setAccessibilityLabel("Space icon")
++        iconButton.setAccessibilityIdentifier("bato-create-space-icon")
++        nameField.isBordered = false
++        nameField.drawsBackground = false
++        nameField.focusRingType = .none
++        nameField.font = .systemFont(ofSize: 14, weight: .medium)
++        nameField.placeholderString = "Space name…"
++        nameField.delegate = self
++        nameField.setAccessibilityLabel("Space name")
++        nameField.setAccessibilityIdentifier("bato-create-space-name")
++        nameRow.addSubview(iconButton)
++        nameRow.addSubview(nameField)
++
++        let profileRow = PageRow()
++        let profileIcon = NSImageView(image: Self.symbol("person.crop.circle", 13))
++        profileIcon.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
++        let profileLabel = Self.label("Profile", size: 13, weight: .semibold, color: .labelColor)
++        let profilePill = NSButton(title: "\(profileName) ⌄", target: self, action: #selector(showProfileMenu(_:)))
++        profilePill.isBordered = false
++        profilePill.font = .systemFont(ofSize: 11, weight: .semibold)
++        profilePill.wantsLayer = true
++        profilePill.layer?.cornerRadius = 10
++        profilePill.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
++        profilePill.setAccessibilityIdentifier("bato-create-space-profile")
++        let info = NSButton(image: Self.symbol("info.circle", 13), target: nil, action: nil)
++        info.isBordered = false
++        info.contentTintColor = NSColor.labelColor.withAlphaComponent(0.6)
++        info.toolTip = "A Profile keeps its own logins, cookies and history. The new Space joins the current Profile."
++        info.setAccessibilityLabel("About Profiles")
++        for view in [profileIcon, profileLabel, profilePill, info] { profileRow.addSubview(view) }
++
++        let themeIcon = NSImageView(image: Self.symbol("paintbrush.pointed.fill", 12))
++        themeIcon.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
++        let themeLabel = Self.label("Choose a Theme", size: 13, weight: .semibold, color: .labelColor)
++        themeRow.onClick = { [weak self] in self?.toggleThemePopover() }
++        themeRow.setAccessibilityLabel("Choose a Theme")
++        themeRow.setAccessibilityIdentifier("bato-create-space-theme")
++        themeRow.setAccessibilityRole(.button)
++        themeRow.addSubview(themeIcon)
++        themeRow.addSubview(themeLabel)
++
++        createButton.title = "Create Space"
++        createButton.font = .systemFont(ofSize: 13, weight: .semibold)
++        createButton.isBordered = false
++        createButton.wantsLayer = true
++        createButton.layer?.cornerRadius = 8
++        createButton.target = self
++        createButton.action = #selector(create)
++        createButton.setAccessibilityIdentifier("bato-create-space-create")
++        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelTapped))
++        cancel.isBordered = false
++        cancel.font = .systemFont(ofSize: 13, weight: .medium)
++        cancel.contentTintColor = NSColor.labelColor.withAlphaComponent(0.8)
++        cancel.setAccessibilityIdentifier("bato-create-space-cancel")
++
++        let all: [NSView] = [illustration, title, subtitle, nameRow, profileRow, themeRow, createButton, cancel]
++        for view in all {
++            view.translatesAutoresizingMaskIntoConstraints = false
++            addSubview(view)
++        }
++        for view in [iconButton, nameField, profileIcon, profileLabel, profilePill, info, themeIcon, themeLabel] {
++            view.translatesAutoresizingMaskIntoConstraints = false
++        }
++        let inset: CGFloat = 14
++        func row(_ view: NSView, top: CGFloat, height: CGFloat) -> [NSLayoutConstraint] {
++            [view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
++             view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
++             view.topAnchor.constraint(equalTo: topAnchor, constant: top),
++             view.heightAnchor.constraint(equalToConstant: height)]
++        }
++        NSLayoutConstraint.activate(row(nameRow, top: 192, height: 35) + row(profileRow, top: 233, height: 37)
++            + row(themeRow, top: 277, height: 37) + [
++            illustration.centerXAnchor.constraint(equalTo: centerXAnchor),
++            illustration.topAnchor.constraint(equalTo: topAnchor, constant: 32),
++            illustration.widthAnchor.constraint(equalToConstant: 70),
++            illustration.heightAnchor.constraint(equalToConstant: 50),
++            title.centerXAnchor.constraint(equalTo: centerXAnchor),
++            title.topAnchor.constraint(equalTo: topAnchor, constant: 94),
++            subtitle.centerXAnchor.constraint(equalTo: centerXAnchor),
++            subtitle.topAnchor.constraint(equalTo: topAnchor, constant: 122),
++            subtitle.widthAnchor.constraint(equalToConstant: 190),
++            iconButton.leadingAnchor.constraint(equalTo: nameRow.leadingAnchor, constant: 8),
++            iconButton.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
++            iconButton.widthAnchor.constraint(equalToConstant: 22),
++            iconButton.heightAnchor.constraint(equalToConstant: 22),
++            nameField.leadingAnchor.constraint(equalTo: nameRow.leadingAnchor, constant: 34),
++            nameField.trailingAnchor.constraint(equalTo: nameRow.trailingAnchor, constant: -8),
++            nameField.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
++            profileIcon.leadingAnchor.constraint(equalTo: profileRow.leadingAnchor, constant: 11),
++            profileIcon.centerYAnchor.constraint(equalTo: profileRow.centerYAnchor),
++            profileLabel.leadingAnchor.constraint(equalTo: profileRow.leadingAnchor, constant: 32),
++            profileLabel.centerYAnchor.constraint(equalTo: profileRow.centerYAnchor),
++            profilePill.leadingAnchor.constraint(equalTo: profileLabel.trailingAnchor, constant: 8),
++            profilePill.centerYAnchor.constraint(equalTo: profileRow.centerYAnchor),
++            profilePill.heightAnchor.constraint(equalToConstant: 20),
++            info.trailingAnchor.constraint(equalTo: profileRow.trailingAnchor, constant: -8),
++            info.centerYAnchor.constraint(equalTo: profileRow.centerYAnchor),
++            themeIcon.leadingAnchor.constraint(equalTo: themeRow.leadingAnchor, constant: 11),
++            themeIcon.centerYAnchor.constraint(equalTo: themeRow.centerYAnchor),
++            themeLabel.leadingAnchor.constraint(equalTo: themeRow.leadingAnchor, constant: 32),
++            themeLabel.centerYAnchor.constraint(equalTo: themeRow.centerYAnchor),
++            cancel.centerXAnchor.constraint(equalTo: centerXAnchor),
++            cancel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
++            createButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
++            createButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
++            createButton.heightAnchor.constraint(equalToConstant: 36),
++            createButton.bottomAnchor.constraint(equalTo: cancel.topAnchor, constant: -8)
++        ])
++    }
++
++    private static func label(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
++        let field = NSTextField(wrappingLabelWithString: text)
++        field.font = .systemFont(ofSize: size, weight: weight)
++        field.textColor = color
++        field.alignment = .center
++        field.isSelectable = false
++        return field
++    }
++
++    private static func symbol(_ name: String, _ size: CGFloat) -> NSImage {
++        NSImage(systemSymbolName: name, accessibilityDescription: nil)?
++            .withSymbolConfiguration(.init(pointSize: size, weight: .medium)) ?? NSImage()
++    }
++
++    // MARK: State
++
++    private var trimmedName: String { nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
++
++    func controlTextDidChange(_ obj: Notification) { refresh() }
++
++    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
++        switch selector {
++        case #selector(NSResponder.insertNewline(_:)): create(); return true
++        case #selector(NSResponder.cancelOperation(_:)): cancelTapped(); return true
++        default: return false
++        }
++    }
++
++    func apply(theme: SpaceTheme) {
++        self.theme = theme
++        refresh()
++    }
++
++    private func refresh() {
++        let enabled = !trimmedName.isEmpty
++        createButton.isEnabled = enabled
++        createButton.layer?.backgroundColor = (theme.primaryNSColor.blended(withFraction: 0.5, of: .black) ?? .systemIndigo)
++            .withAlphaComponent(enabled ? 1 : 0.45).cgColor
++        createButton.contentTintColor = .white
++        createButton.attributedTitle = NSAttributedString(string: "Create Space", attributes: [
++            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
++            .foregroundColor: NSColor.white.withAlphaComponent(enabled ? 1 : 0.6)])
++        themeRow.highlighted = themePopover?.isShown ?? false
++        if let icon {
++            iconButton.image = Self.iconImage(icon, size: 16)
++            iconButton.contentTintColor = .labelColor
++        } else {
++            iconButton.image = Self.placeholderIcon
++            iconButton.contentTintColor = NSColor.labelColor.withAlphaComponent(0.55)
++        }
++    }
++
++    static func iconImage(_ icon: String, size: CGFloat) -> NSImage? {
++        if icon.hasPrefix("symbol:") {
++            return NSImage(systemSymbolName: String(icon.dropFirst(7)), accessibilityDescription: nil)?
++                .withSymbolConfiguration(.init(pointSize: size, weight: .medium))
++        }
++        let font = NSFont.systemFont(ofSize: size)
++        let text = NSAttributedString(string: icon, attributes: [.font: font])
++        let bounds = text.size()
++        return NSImage(size: bounds, flipped: false) { _ in text.draw(at: .zero); return true }
++    }
++
++    private static let placeholderIcon: NSImage = {
++        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
++        let box = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
++        box.setLineDash([2, 2], count: 2, phase: 0)
++        box.lineWidth = 1
++        NSColor.black.setStroke()
++        box.stroke()
++        let plus = NSBezierPath()
++        plus.move(to: NSPoint(x: 9, y: 5)); plus.line(to: NSPoint(x: 9, y: 13))
++        plus.move(to: NSPoint(x: 5, y: 9)); plus.line(to: NSPoint(x: 13, y: 9))
++        plus.lineWidth = 1.2
++        plus.stroke()
++        return true
++        }
++        image.isTemplate = true
++        return image
++    }()
++
++    // MARK: Actions
++
++    @objc private func create() {
++        guard !trimmedName.isEmpty else { return }
++        themePopover?.close()
++        onCreate?(trimmedName, icon, theme)
++    }
++
++    @objc private func cancelTapped() {
++        themePopover?.close()
++        onCancel?()
++    }
++
++    @objc private func showProfileMenu(_ sender: NSButton) {
++        let menu = NSMenu()
++        let item = NSMenuItem(title: profileName, action: nil, keyEquivalent: "")
++        item.state = .on
++        menu.addItem(item)
++        menu.popUp(positioning: item, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
++    }
++
++    @objc private func chooseIcon() {
++        if let iconPopover, iconPopover.isShown { return iconPopover.performClose(nil) }
++        let picker = SpaceIconPicker { [weak self] choice in
++            self?.icon = choice
++            self?.iconPopover?.performClose(nil)
++            self?.refresh()
++            self?.focusName()
++        }
++        let controller = NSViewController()
++        controller.view = picker
++        let popover = NSPopover()
++        popover.contentViewController = controller
++        popover.contentSize = SpaceIconPicker.size
++        popover.behavior = .transient
++        popover.appearance = theme.appearance
++        popover.show(relativeTo: iconButton.bounds, of: iconButton, preferredEdge: .maxY)
++        iconPopover = popover
++    }
++
++    private func toggleThemePopover() {
++        if let themePopover, themePopover.isShown { return themePopover.close() }
++        let popover = SpaceThemePopover(theme: theme, onChange: { [weak self] in
++            self?.theme = $0
++            self?.onThemeChange?($0)
++            self?.refresh()
++        }, onClose: { [weak self] _ in
++            self?.themePopover = nil
++            self?.refresh()
++        })
++        themePopover = popover
++        popover.show(relativeTo: themeRow.bounds, of: themeRow, preferredEdge: .maxX)
++        refresh()
++    }
++}
++
++/// A translucent rounded row; `highlighted` marks the one whose popover is open.
++@MainActor
++private final class PageRow: NSView {
++    var highlighted = false { didSet { needsDisplay = true } }
++    var onClick: (() -> Void)?
++    override var isFlipped: Bool { true }
++
++    override func draw(_ dirtyRect: NSRect) {
++        NSColor.labelColor.withAlphaComponent(highlighted ? 0.18 : 0.09).setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
++    }
++
++    override func mouseDown(with event: NSEvent) {}
++    override func mouseUp(with event: NSEvent) {
++        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
++    }
++}
++
++/// Three fanned cards standing in for Arc's artwork.
++@MainActor
++private final class SpaceIllustration: NSView {
++    override var isFlipped: Bool { true }
++    override func draw(_ dirtyRect: NSRect) {
++        let centre = NSPoint(x: bounds.midX, y: bounds.midY + 2)
++        for (angle, offset, tint) in [(-9.0, -17.0, NSColor.systemGreen), (9.0, 17.0, NSColor.systemRed), (0.0, 0.0, NSColor.systemGray)] {
++            NSGraphicsContext.saveGraphicsState()
++            var transform = AffineTransform(translationByX: centre.x + offset, byY: centre.y)
++            transform.rotate(byDegrees: angle)
++            let card = NSBezierPath(roundedRect: NSRect(x: -16, y: -20, width: 32, height: 40), xRadius: 3, yRadius: 3)
++            card.transform(using: transform)
++            NSColor.white.setFill()
++            card.fill()
++            let mark = NSBezierPath(roundedRect: NSRect(x: -10, y: -14, width: 20, height: 14), xRadius: 2, yRadius: 2)
++            mark.transform(using: transform)
++            tint.withAlphaComponent(0.55).setFill()
++            mark.fill()
++            NSGraphicsContext.restoreGraphicsState()
++        }
++    }
++}
++
++/// Emoji and SF Symbol grids behind two tabs.
++@MainActor
++final class SpaceIconPicker: NSView {
++    static let size = NSSize(width: 272, height: 270)
++    private static let emoji = Array("😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩😘😋😛😜🤪😎🤓🧐🤠🥳😴🤯😱🤔🫡🤗🌞🌙⭐🔥🌈🌱🌳🌸🍀🍎🍕🍔☕🍺🎵🎮🎬📚💻📱💡🔧🛠🎨✈🚗🏠🏢💼🎁❤💜💙💚🏁🚀🧪🧠🐱🐶🦊🐼🐸🦄🐝").map(String.init)
++    private static let symbols = ["star.fill", "bookmark.fill", "heart.fill", "flag.fill", "bolt.fill", "triangle.fill", "asterisk", "bell.fill",
++                                  "lightbulb.fill", "drop.fill", "square.grid.2x2.fill", "circle.grid.3x3.fill", "square.stack.3d.up.fill",
++                                  "externaldrive.fill", "tray.fill", "doc.on.doc.fill", "folder.fill", "archivebox.fill", "calendar",
++                                  "envelope.fill", "checkmark.square.fill", "doc.fill", "book.fill", "bubble.left.fill", "person.2.fill",
++                                  "terminal.fill", "hammer.fill", "square.fill", "leaf.fill", "circle.fill", "moon.fill", "sun.max.fill",
++                                  "globe", "cloud.fill", "pawprint.fill", "gift.fill", "bed.double.fill", "fork.knife", "dumbbell.fill",
++                                  "airplane", "music.note", "paintpalette.fill", "video.fill", "pills.fill", "chevron.left.forwardslash.chevron.right",
++                                  "basketball.fill", "map.fill", "graduationcap.fill", "cart.fill", "house.fill", "briefcase.fill", "gamecontroller.fill"]
++    private let onPick: (String) -> Void
++    private let content = NSView()
++    private let tabs = NSSegmentedControl(labels: ["Emoji", "Icon"], trackingMode: .selectOne, target: nil, action: nil)
++
++    init(onPick: @escaping (String) -> Void) {
++        self.onPick = onPick
++        super.init(frame: NSRect(origin: .zero, size: Self.size))
++        tabs.selectedSegment = 0
++        tabs.target = self
++        tabs.action = #selector(tabChanged)
++        tabs.frame = NSRect(x: 76, y: 232, width: 120, height: 24)
++        addSubview(tabs)
++        content.frame = NSRect(x: 8, y: 8, width: 256, height: 216)
++        addSubview(content)
++        show(emoji: true)
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    @objc private func tabChanged() { show(emoji: tabs.selectedSegment == 0) }
++
++    private func show(emoji: Bool) {
++        content.subviews.forEach { $0.removeFromSuperview() }
++        let columns = emoji ? 7 : 8
++        let items = emoji ? Self.emoji : Self.symbols
++        let pitch: CGFloat = emoji ? 35 : 32
++        let rows = (items.count + columns - 1) / columns
++        let grid = NSView(frame: NSRect(x: 0, y: 0, width: 256, height: max(216, CGFloat(rows) * pitch)))
++        for (index, item) in items.enumerated() {
++            let button = NSButton()
++            button.isBordered = false
++            button.imagePosition = .imageOnly
++            let value = emoji ? item : "symbol:\(item)"
++            button.image = CreateSpacePageView.iconImage(value, size: emoji ? 20 : 15)
++            button.contentTintColor = .labelColor
++            button.identifier = NSUserInterfaceItemIdentifier(value)
++            button.target = self
++            button.action = #selector(picked(_:))
++            button.setAccessibilityLabel(item)
++            button.frame = NSRect(x: CGFloat(index % columns) * pitch, y: grid.frame.height - CGFloat(index / columns + 1) * pitch,
++                                  width: pitch, height: pitch)
++            grid.addSubview(button)
++        }
++        let scroll = NSScrollView(frame: content.bounds)
++        scroll.drawsBackground = false
++        scroll.hasVerticalScroller = true
++        scroll.autohidesScrollers = true
++        scroll.documentView = grid
++        content.addSubview(scroll)
++        scroll.contentView.scroll(to: NSPoint(x: 0, y: grid.frame.height - content.bounds.height))
++    }
++
++    @objc private func picked(_ sender: NSButton) {
++        if let value = sender.identifier?.rawValue { onPick(value) }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SpaceThemePicker.swift
+@@ -0,0 +1,421 @@
++import AppKit
++import BatoCore
++
++/// Arc's theme picker: a dotted colour field with draggable handles, light/dark modes, preset swatches,
++/// a wavy strength slider and a grain dial. It edits a draft and reports every change as it happens.
++@MainActor
++final class SpaceThemePickerView: NSView {
++    static let size = NSSize(width: 355, height: 506)
++
++    private(set) var theme: SpaceTheme
++    var onChange: ((SpaceTheme) -> Void)?
++    private var selectedStop = 0
++    private var presetPage = 0
++
++    private let field = ThemeFieldView()
++    private let modeButtons: [(SpaceTheme.Mode, NSButton)]
++    private let remove = NSButton()
++    private let add = NSButton()
++    private let swatches = SwatchRow()
++    private let slider = WaveSlider()
++    private let dial = GrainDial()
++
++    init(theme: SpaceTheme) {
++        self.theme = theme
++        modeButtons = [(.auto, "sparkles"), (.light, "sun.max"), (.dark, "moon")].map { mode, symbol in
++            (mode, Self.symbolButton(symbol, size: 15, label: "\(mode.rawValue.capitalized) mode"))
++        }
++        super.init(frame: NSRect(origin: .zero, size: Self.size))
++        setAccessibilityIdentifier("bato-theme-picker")
++        wantsLayer = true
++
++        field.frame = NSRect(x: 7, y: 7, width: 340, height: 340)
++        field.onTap = { [weak self] in self?.fieldTapped(at: $0) }
++        field.onDrag = { [weak self] in self?.fieldDragged(to: $0) }
++        field.onSelect = { [weak self] in self?.select($0) }
++        addSubview(field)
++
++        for (index, (mode, button)) in modeButtons.enumerated() {
++            button.frame = NSRect(x: 120 + 40.5 * CGFloat(index), y: 32, width: 32, height: 30)
++            button.target = self
++            button.action = #selector(modeChosen(_:))
++            button.tag = SpaceTheme.Mode.allCases.firstIndex(of: mode) ?? 0
++            button.setAccessibilityIdentifier("bato-theme-mode-\(mode.rawValue)")
++            addSubview(button)
++        }
++        for (button, symbol, label, x, action) in [(remove, "minus", "Remove colour", 147.0, #selector(removeStop)),
++                                                   (add, "plus", "Add colour", 187.0, #selector(addStop))] {
++            configure(button, symbol: symbol, label: label)
++            button.frame = NSRect(x: x, y: 305, width: 20, height: 20)
++            button.action = action
++            addSubview(button)
++        }
++        addSubview(swatches)
++        swatches.frame = NSRect(x: 7, y: 358, width: 340, height: 42)
++        swatches.onPick = { [weak self] in self?.pick($0) }
++        swatches.onPage = { [weak self] in self?.turnPage($0) }
++
++        slider.frame = NSRect(x: 12, y: 416, width: 234, height: 72)
++        slider.onChange = { [weak self] in self?.update { $0.intensity = $1 }($0) }
++        addSubview(slider)
++        dial.frame = NSRect(x: 252, y: 416, width: 88, height: 72)
++        dial.onChange = { [weak self] in self?.update { $0.grain = $1 }($0) }
++        addSubview(dial)
++        refresh()
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override var isFlipped: Bool { true }
++
++    private func update(_ change: @escaping (inout SpaceTheme, Double) -> Void) -> (Double) -> Void {
++        { [weak self] value in
++            guard let self else { return }
++            change(&self.theme, value)
++            self.refresh()
++            self.onChange?(self.theme)
++        }
++    }
++
++    private func configure(_ button: NSButton, symbol: String, label: String) {
++        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
++        button.image = image?.withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
++        button.imagePosition = .imageOnly
++        button.isBordered = false
++        button.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
++        button.target = self
++        button.setAccessibilityLabel(label)
++    }
++
++    private static func symbolButton(_ symbol: String, size: CGFloat, label: String) -> NSButton {
++        let button = NSButton()
++        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
++            .withSymbolConfiguration(.init(pointSize: size, weight: .medium))
++        button.imagePosition = .imageOnly
++        button.isBordered = false
++        button.wantsLayer = true
++        button.layer?.cornerRadius = 8
++        button.setAccessibilityLabel(label)
++        return button
++    }
++
++    private func commit() {
++        refresh()
++        onChange?(theme)
++    }
++
++    private func refresh() {
++        field.stops = theme.stops
++        field.selected = selectedStop
++        for (mode, button) in modeButtons {
++            let on = mode == theme.mode
++            button.layer?.backgroundColor = on ? NSColor.labelColor.withAlphaComponent(0.2).cgColor : nil
++            button.contentTintColor = NSColor.labelColor.withAlphaComponent(on ? 0.95 : 0.6)
++        }
++        remove.isEnabled = theme.stops.count > 1
++        add.isEnabled = theme.stops.count < SpaceTheme.maxStops
++        remove.alphaValue = remove.isEnabled ? 1 : 0.35
++        add.alphaValue = add.isEnabled ? 1 : 0.35
++        swatches.page = presetPage
++        slider.value = theme.intensity
++        dial.value = theme.grain
++    }
++
++    // MARK: Actions
++
++    @objc private func modeChosen(_ sender: NSButton) {
++        theme.mode = SpaceTheme.Mode.allCases[sender.tag]
++        commit()
++    }
++
++    @objc private func removeStop() {
++        guard theme.removeStop(at: selectedStop) else { return }
++        selectedStop = min(selectedStop, theme.stops.count - 1)
++        commit()
++    }
++
++    @objc private func addStop() {
++        guard theme.addStop() else { return }
++        selectedStop = theme.stops.count - 1
++        commit()
++    }
++
++    private func select(_ index: Int) {
++        selectedStop = index
++        refresh()
++    }
++
++    private func fieldTapped(at point: CGPoint) {
++        theme.moveStop(at: selectedStop, toX: point.x, y: point.y)
++        commit()
++    }
++
++    private func fieldDragged(to point: CGPoint) { fieldTapped(at: point) }
++
++    private func pick(_ index: Int) {
++        theme.stops = SpaceTheme.presetPages[presetPage][index].stops
++        selectedStop = 0
++        commit()
++    }
++
++    private func turnPage(_ delta: Int) {
++        presetPage = min(max(presetPage + delta, 0), SpaceTheme.presetPages.count - 1)
++        refresh()
++    }
++}
++
++/// The dotted field. Positions are in the unit disc, y down.
++@MainActor
++private final class ThemeFieldView: NSView {
++    var stops: [SpaceTheme.Stop] = [] { didSet { needsDisplay = true } }
++    var selected = 0
++    var onTap: ((CGPoint) -> Void)?
++    var onDrag: ((CGPoint) -> Void)?
++    var onSelect: ((Int) -> Void)?
++    private var draggingHandle = false
++
++    private var radius: CGFloat { bounds.width / 2 }
++    override var isFlipped: Bool { true }
++
++    private func point(for stop: SpaceTheme.Stop) -> CGPoint {
++        CGPoint(x: bounds.midX + CGFloat(stop.x) * radius, y: bounds.midY + CGFloat(stop.y) * radius)
++    }
++
++    private func unit(_ location: CGPoint) -> CGPoint {
++        CGPoint(x: (location.x - bounds.midX) / radius, y: (location.y - bounds.midY) / radius)
++    }
++
++    override func draw(_ dirtyRect: NSRect) {
++        NSColor.labelColor.withAlphaComponent(0.06).setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: 16, yRadius: 16).fill()
++        NSColor.labelColor.withAlphaComponent(0.16).setFill()
++        for x in stride(from: CGFloat(4), to: bounds.width, by: 5) {
++            for y in stride(from: CGFloat(4), to: bounds.height, by: 5) {
++                NSBezierPath(ovalIn: NSRect(x: x - 0.7, y: y - 0.7, width: 1.4, height: 1.4)).fill()
++            }
++        }
++        if stops.isEmpty { return }
++        for (index, stop) in stops.enumerated().sorted(by: { $0.offset == selected ? false : $1.offset == selected }) {
++            drawHandle(stop, large: index == selected)
++        }
++    }
++
++    private func drawHandle(_ stop: SpaceTheme.Stop, large: Bool) {
++        let diameter: CGFloat = large ? 46 : 28
++        let centre = point(for: stop)
++        let rect = NSRect(x: centre.x - diameter / 2, y: centre.y - diameter / 2, width: diameter, height: diameter)
++        NSGraphicsContext.saveGraphicsState()
++        let shadow = NSShadow()
++        shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
++        shadow.shadowBlurRadius = 4
++        shadow.set()
++        NSColor.white.setFill()
++        NSBezierPath(ovalIn: rect).fill()
++        NSGraphicsContext.restoreGraphicsState()
++        let ring: CGFloat = large ? 3.5 : 2
++        NSColor(hex: stop.color).setFill()
++        NSBezierPath(ovalIn: rect.insetBy(dx: ring, dy: ring)).fill()
++    }
++
++    override func mouseDown(with event: NSEvent) {
++        let location = convert(event.locationInWindow, from: nil)
++        let hit = stops.enumerated().min { hypot(point(for: $0.element).x - location.x, point(for: $0.element).y - location.y)
++            < hypot(point(for: $1.element).x - location.x, point(for: $1.element).y - location.y) }
++        if let hit, hypot(point(for: hit.element).x - location.x, point(for: hit.element).y - location.y) <= 24 {
++            draggingHandle = true
++            onSelect?(hit.offset)
++        } else {
++            draggingHandle = false
++            onTap?(unit(location))
++        }
++    }
++
++    override func mouseDragged(with event: NSEvent) {
++        let location = unit(convert(event.locationInWindow, from: nil))
++        if draggingHandle { onDrag?(location) } else { onTap?(location) }
++    }
++
++    override func isAccessibilityElement() -> Bool { true }
++    override func accessibilityLabel() -> String? { "Theme colour field" }
++}
++
++/// Nine swatches with arrows to page through the presets.
++@MainActor
++private final class SwatchRow: NSView {
++    var page = 0 { didSet { needsDisplay = true } }
++    var onPick: ((Int) -> Void)?
++    var onPage: ((Int) -> Void)?
++    override var isFlipped: Bool { true }
++
++    private func swatchCentre(_ index: Int) -> CGPoint { CGPoint(x: 51 + 29.6 * CGFloat(index), y: bounds.midY) }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let pages = SpaceTheme.presetPages
++        for (symbol, x, enabled) in [("chevron.left", CGFloat(16), page > 0), ("chevron.right", CGFloat(324), page < pages.count - 1)] {
++            guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
++                .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold)) else { continue }
++            image.isTemplate = true
++            let tinted = NSImage(size: image.size, flipped: false) { rect in
++                image.draw(in: rect)
++                NSColor.labelColor.withAlphaComponent(enabled ? 0.8 : 0.25).setFill()
++                rect.fill(using: .sourceAtop)
++                return true
++            }
++            tinted.draw(at: NSPoint(x: x - image.size.width / 2, y: bounds.midY - image.size.height / 2), from: .zero, operation: .sourceOver, fraction: 1)
++        }
++        for (index, preset) in pages[page].enumerated() {
++            let centre = swatchCentre(index)
++            let rect = NSRect(x: centre.x - 12, y: centre.y - 12, width: 24, height: 24)
++            let path = NSBezierPath(ovalIn: rect)
++            NSGraphicsContext.saveGraphicsState()
++            path.addClip()
++            let colors = preset.stops.map { NSColor(hex: $0.color) }
++            if colors.count > 1 { NSGradient(colors: colors)?.draw(in: rect, angle: -45) } else { colors[0].setFill(); rect.fill() }
++            NSGraphicsContext.restoreGraphicsState()
++        }
++    }
++
++    override func mouseDown(with event: NSEvent) {
++        let location = convert(event.locationInWindow, from: nil)
++        if location.x < 34 { onPage?(-1); return }
++        if location.x > 306 { onPage?(1); return }
++        let index = Int(((location.x - 51) / 29.6).rounded())
++        if (0..<9).contains(index), hypot(swatchCentre(index).x - location.x, swatchCentre(index).y - location.y) <= 15 { onPick?(index) }
++    }
++}
++
++/// A sine track whose swing and thumb grow with the value.
++@MainActor
++private final class WaveSlider: NSView {
++    var value = 0.5 { didSet { needsDisplay = true } }
++    var onChange: ((Double) -> Void)?
++    override var isFlipped: Bool { true }
++    private let inset: CGFloat = 36
++    private var travel: ClosedRange<CGFloat> { inset...(bounds.width - inset) }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let track = NSRect(x: 6, y: bounds.midY - 8, width: bounds.width - 12, height: 16)
++        NSColor.labelColor.withAlphaComponent(0.08).setFill()
++        NSBezierPath(roundedRect: track, xRadius: 8, yRadius: 8).fill()
++        let wave = NSBezierPath()
++        let amplitude = 2 + 15 * CGFloat(value)
++        for x in stride(from: track.minX + 4, through: track.maxX - 4, by: 1) {
++            let point = NSPoint(x: x, y: bounds.midY + sin((x - track.minX) / 28 * 2 * .pi) * amplitude * ((x - track.minX) / track.width * 0.6 + 0.4))
++            if x == track.minX + 4 { wave.move(to: point) } else { wave.line(to: point) }
++        }
++        wave.lineWidth = 3
++        wave.lineCapStyle = .round
++        NSColor.labelColor.withAlphaComponent(0.55).setStroke()
++        wave.stroke()
++        let width = 16 + 12 * CGFloat(value), height = 52 + 10 * CGFloat(value)
++        let x = travel.lowerBound + (travel.upperBound - travel.lowerBound) * CGFloat(value)
++        NSGraphicsContext.saveGraphicsState()
++        let shadow = NSShadow()
++        shadow.shadowColor = NSColor.black.withAlphaComponent(0.2)
++        shadow.shadowBlurRadius = 4
++        shadow.set()
++        NSColor.white.setFill()
++        NSBezierPath(roundedRect: NSRect(x: x - width / 2, y: bounds.midY - height / 2, width: width, height: height),
++                     xRadius: width / 2, yRadius: width / 2).fill()
++        NSGraphicsContext.restoreGraphicsState()
++    }
++
++    private func set(from event: NSEvent) {
++        let x = convert(event.locationInWindow, from: nil).x
++        onChange?(Double(min(max((x - travel.lowerBound) / (travel.upperBound - travel.lowerBound), 0), 1)))
++    }
++    override func mouseDown(with event: NSEvent) { set(from: event) }
++    override func mouseDragged(with event: NSEvent) { set(from: event) }
++    override func isAccessibilityElement() -> Bool { true }
++    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
++    override func accessibilityLabel() -> String? { "Theme strength" }
++    override func accessibilityValue() -> Any? { value }
++}
++
++/// A ring of dots that fill clockwise from the top as the grain grows.
++@MainActor
++private final class GrainDial: NSView {
++    var value = 0.0 { didSet { needsDisplay = true } }
++    var onChange: ((Double) -> Void)?
++    override var isFlipped: Bool { true }
++    private static let dots = 28
++
++    override func draw(_ dirtyRect: NSRect) {
++        let centre = NSPoint(x: bounds.midX, y: bounds.midY)
++        for index in 0..<Self.dots {
++            let fraction = Double(index) / Double(Self.dots)
++            let angle = CGFloat(fraction) * 2 * .pi - .pi / 2
++            let filled = fraction < value
++            NSColor.labelColor.withAlphaComponent(filled ? 0.7 : 0.22).setFill()
++            let dot = NSPoint(x: centre.x + cos(angle) * 33, y: centre.y + sin(angle) * 33)
++            NSBezierPath(ovalIn: NSRect(x: dot.x - 1.3, y: dot.y - 1.3, width: 2.6, height: 2.6)).fill()
++        }
++        NSColor.labelColor.withAlphaComponent(0.1 + 0.2 * CGFloat(value)).setFill()
++        NSBezierPath(ovalIn: NSRect(x: centre.x - 20, y: centre.y - 20, width: 40, height: 40)).fill()
++        NSColor.labelColor.withAlphaComponent(0.2).setStroke()
++        let outline = NSBezierPath(ovalIn: NSRect(x: centre.x - 20, y: centre.y - 20, width: 40, height: 40))
++        outline.lineWidth = 1
++        outline.stroke()
++        let angle = CGFloat(value) * 2 * .pi - .pi / 2
++        NSGraphicsContext.saveGraphicsState()
++        var transform = AffineTransform(translationByX: centre.x + cos(angle) * 33, byY: centre.y + sin(angle) * 33)
++        transform.rotate(byRadians: angle + .pi / 2)
++        let pill = NSBezierPath(roundedRect: NSRect(x: -2, y: -6, width: 4, height: 12), xRadius: 2, yRadius: 2)
++        pill.transform(using: transform)
++        NSColor.white.setFill()
++        pill.fill()
++        NSGraphicsContext.restoreGraphicsState()
++    }
++
++    private func set(from event: NSEvent) {
++        let location = convert(event.locationInWindow, from: nil)
++        var turns = Double(atan2(location.y - bounds.midY, location.x - bounds.midX) + .pi / 2) / (2 * .pi)
++        if turns < 0 { turns += 1 }
++        onChange?(turns > 0.985 ? 1 : turns)
++    }
++    override func mouseDown(with event: NSEvent) { set(from: event) }
++    override func mouseDragged(with event: NSEvent) { set(from: event) }
++    override func isAccessibilityElement() -> Bool { true }
++    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
++    override func accessibilityLabel() -> String? { "Grain" }
++    override func accessibilityValue() -> Any? { value }
++}
++
++/// Hosts the picker in a callout popover anchored to the row that opened it.
++@MainActor
++final class SpaceThemePopover: NSObject, NSPopoverDelegate {
++    private let popover = NSPopover()
++    private let picker: SpaceThemePickerView
++    private var onClose: ((SpaceTheme) -> Void)?
++
++    init(theme: SpaceTheme, onChange: @escaping (SpaceTheme) -> Void, onClose: @escaping (SpaceTheme) -> Void) {
++        picker = SpaceThemePickerView(theme: theme)
++        self.onClose = onClose
++        super.init()
++        picker.onChange = { [weak self] in
++            self?.popover.appearance = $0.appearance
++            onChange($0)
++        }
++        let controller = NSViewController()
++        controller.view = picker
++        popover.contentViewController = controller
++        popover.contentSize = SpaceThemePickerView.size
++        popover.behavior = .semitransient
++        popover.animates = true
++        popover.appearance = theme.appearance
++        popover.delegate = self
++    }
++
++    var isShown: Bool { popover.isShown }
++
++    func show(relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge) {
++        popover.show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
++    }
++
++    func close() { popover.performClose(nil) }
++
++    func popoverDidClose(_ notification: Notification) {
++        onClose?(picker.theme)
++        onClose = nil
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift
+@@ -0,0 +1,71 @@
++import AppKit
++import BatoCore
++
++extension SpaceTheme {
++    /// Nil follows the system.
++    var appearance: NSAppearance? {
++        switch mode {
++        case .auto: nil
++        case .light: NSAppearance(named: .aqua)
++        case .dark: NSAppearance(named: .darkAqua)
++        }
++    }
++
++    var primaryNSColor: NSColor { NSColor(hex: primaryColor) }
++}
++
++extension NSColor {
++    convenience init(hex: String) {
++        let value = hex.count == 7 ? UInt32(hex.dropFirst(), radix: 16) ?? 0x808080 : 0x808080
++        self.init(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
++                  blue: CGFloat(value & 255) / 255, alpha: 1)
++    }
++}
++
++/// Paints a Space theme: the tint gradient, then grain over it.
++@MainActor
++enum ThemeFill {
++    /// Draws into a flipped view's `rect`: a vertical blend for one colour, a diagonal one for several.
++    static func draw(_ theme: SpaceTheme, in rect: NSRect, appearance: NSAppearance) {
++        let tints = theme.stops.map { SidebarStyle.tint(NSColor(hex: $0.color), appearance: appearance, intensity: theme.intensity) }
++        if tints.count == 1 {
++            NSGradient(starting: tints[0].top, ending: tints[0].bottom)?.draw(in: rect, angle: -90)
++        } else {
++            NSGradient(colors: tints.map { $0.top.blended(withFraction: 0.5, of: $0.bottom) ?? $0.top })?.draw(in: rect, angle: -45)
++        }
++        drawGrain(theme.grain, in: rect)
++    }
++
++    /// The card's empty state sits a little above the tint.
++    static func drawLifted(_ theme: SpaceTheme, in rect: NSRect, appearance: NSAppearance) {
++        draw(theme, in: rect, appearance: appearance)
++        (appearance.isDark ? NSColor.white : NSColor.black).withAlphaComponent(0.08).setFill()
++        rect.fill(using: .sourceOver)
++    }
++
++    static func drawGrain(_ amount: Double, in rect: NSRect) {
++        guard amount > 0 else { return }
++        NSGraphicsContext.saveGraphicsState()
++        NSGraphicsContext.current?.cgContext.setAlpha(CGFloat(amount) * 0.35)
++        NSColor(patternImage: noise).setFill()
++        rect.fill(using: .sourceOver)
++        NSGraphicsContext.restoreGraphicsState()
++    }
++
++    private static let noise: NSImage = {
++        let size = 128
++        var generator = SystemRandomNumberGenerator()
++        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
++                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
++                                   bytesPerRow: 0, bitsPerPixel: 0)!
++        for x in 0..<size {
++            for y in 0..<size {
++                let level = CGFloat.random(in: 0...1, using: &generator)
++                rep.setColor(NSColor(white: level, alpha: 0.5), atX: x, y: y)
++            }
++        }
++        let image = NSImage(size: NSSize(width: size, height: size))
++        image.addRepresentation(rep)
++        return image
++    }()
 +}
