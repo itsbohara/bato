@@ -3910,8 +3910,9 @@ public final class ContentCardFrameView: NSView {
 
     /// One card normally; one per pane while a pair is displayed.
     private var cardPaths: [NSBezierPath] {
-        let radius = paneCards.isEmpty ? Self.cornerRadius : SplitPaneChrome.paneCornerRadius
-        return (paneCards.isEmpty ? [cardRect] : paneCards).map {
+        let single = paneCards.isEmpty || blanksPages
+        let radius = single ? Self.cornerRadius : SplitPaneChrome.paneCornerRadius
+        return (single ? [cardRect] : paneCards).map {
             NSBezierPath(roundedRect: $0, xRadius: radius, yRadius: radius)
         }
     }
