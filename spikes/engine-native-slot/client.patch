@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,87 @@
+@@ -2313,6 +2317,100 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -318,6 +318,19 @@
 +      "tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SpaceThemePicker.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift",
++      "tests/cefsimple/bato/BatoRuntime/PeekSession.swift",
++      "tests/cefsimple/bato/BatoImport/BookmarksHTMLReader.swift",
++      "tests/cefsimple/bato/BatoImport/BrowserDetection.swift",
++      "tests/cefsimple/bato/BatoImport/BrowserImportPlan.swift",
++      "tests/cefsimple/bato/BatoImport/BrowserImporter.swift",
++      "tests/cefsimple/bato/BatoImport/ChromiumProfileWriter.swift",
++      "tests/cefsimple/bato/BatoImport/ChromiumReader.swift",
++      "tests/cefsimple/bato/BatoImport/GeckoReader.swift",
++      "tests/cefsimple/bato/BatoImport/ImportModel.swift",
++      "tests/cefsimple/bato/BatoImport/SQLiteSnapshot.swift",
++      "tests/cefsimple/bato/BatoImport/SafariReader.swift",
++      "tests/cefsimple/bato/BatoCore/SplitDropZones.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -336,7 +349,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2421,19 @@
+@@ -2336,12 +2434,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2078,7 +2091,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,58 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -2103,11 +2116,12 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift']),
++                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
-+                                           'ArcSourceReader.swift', 'ImportTransaction.swift']),
++                                           'ArcSourceReader.swift', 'ImportTransaction.swift',
++                                           'BookmarksHTMLReader.swift', 'BrowserDetection.swift', 'BrowserImportPlan.swift', 'BrowserImporter.swift', 'ChromiumProfileWriter.swift', 'ChromiumReader.swift', 'GeckoReader.swift', 'ImportModel.swift', 'SQLiteSnapshot.swift', 'SafariReader.swift']),
 +                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift', 'UBlockListsChoice.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
@@ -2116,7 +2130,7 @@
 +                                              'ArchiveController.swift', 'ArchiveSheet.swift', 'UBlockOffer.swift',
 +                                              'AppearanceWatcher.swift', 'SwitcherPopover.swift',
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
-+                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift',
++                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift', 'SplitDropOverlay.swift',
 +                                              'TabSwitcherPanel.swift', 'CreateSpacePage.swift',
 +                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
@@ -7844,7 +7858,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4109 @@
+@@ -0,0 +1,4142 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -7953,6 +7967,17 @@
 +            _ = self.runtime.updateSplitRatio(split.id, ratio: ratio)
 +        }
 +        frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
++        frame.splitDrop.onDrop = { [weak self] id, side in
++            guard let self else { return false }
++            if self.isUnsplitSelection(id) {
++                // The page stays on its side; the other pane opens a new tab.
++                DispatchQueue.main.async { self.addSplit(side == .left ? .right : .left) }
++                return true
++            }
++            guard self.runtime.state.canCreateSplit(with: id) else { return false }
++            self.perform { self.runtime.createSplit(with: id, side: side) }
++            return true
++        }
 +        cardFrames.add(frame)
 +        return frame
 +    }
@@ -8004,6 +8029,11 @@
 +    }
 +
 +    /// Opens the command bar to choose what the new pane on `side` shows (Add Right Split and friends).
++    private func isUnsplitSelection(_ id: UUID) -> Bool {
++        let state = runtime.state
++        return id == state.currentWorkspace.activeEntryID && state.canSplitSelection && state.split(containingEntry: id) == nil
++    }
++
 +    public func addSplit(_ side: SplitSide) {
 +        guard hasStarted, runtime.supportsSplits, runtime.state.canSplitSelection else { return }
 +        showCommandBar(splittingTo: side)
@@ -8620,7 +8650,15 @@
 +        peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 +
 +        entries.slotViews = { [weak self] in self?.dropSlotViews ?? [] }
-+        entryDragSource.onEnded = { [weak self] in self?.entries.setFavoritesZone(visible: false) }
++        entryDragSource.onBegan = { [weak self] id in
++            guard let self, self.runtime.supportsSplits,
++                  self.runtime.state.canCreateSplit(with: id) || self.isUnsplitSelection(id) else { return }
++            self.cardFrames.allObjects.forEach { $0.beginSplitDrop() }
++        }
++        entryDragSource.onEnded = { [weak self] in
++            self?.entries.setFavoritesZone(visible: false)
++            self?.cardFrames.allObjects.forEach { $0.splitDrop.disarm() }
++        }
 +        entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
 +        entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
 +        entries.orientation = .vertical
@@ -11420,6 +11458,12 @@
 +    public static let emptyHint = "Press ⌘T to open a tab"
 +    var onShowSidebar: (() -> Void)?
 +    private let showSidebarButton = NSButton(frame: .zero)
++    let splitDrop = SplitDropOverlay(frame: .zero)
++
++    func beginSplitDrop() {
++        splitDrop.cardRect = cardRect
++        splitDrop.arm()
++    }
 +
 +    /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
 +    static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
@@ -11435,6 +11479,8 @@
 +        layer?.zPosition = 1000
 +        configureShowSidebarButton()
 +        configureSplitButton()
++        splitDrop.frame = bounds
++        addSubview(splitDrop)
 +        AppearanceWatcher.start()
 +        NotificationCenter.default.addObserver(self, selector: #selector(redraw),
 +                                               name: AppearanceWatcher.didChange, object: nil)
@@ -11449,6 +11495,7 @@
 +    public override var isFlipped: Bool { true }
 +    /// The empty card covers Chrome's toolbar and blank page, so it must swallow their clicks too.
 +    public override func hitTest(_ point: NSPoint) -> NSView? {
++        if splitDrop.isArmed, !isHidden, cardRect.contains(convert(point, from: superview)) { return splitDrop }
 +        guard showsEmptyState, !isHidden, cardRect.contains(convert(point, from: superview)) else { return nil }
 +        return self
 +    }
@@ -13311,7 +13358,7 @@
 +}
 +
 +/// Name-based identifiers: the same file, item and salt always map to the same UUID.
-+private struct IdentityFactory {
++struct IdentityFactory {
 +    let digest: String
 +    let salt: String
 +
@@ -13457,7 +13504,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoImport/ImportTransaction.swift
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,30 @@
 +import BatoCore
 +import BatoPersistence
 +import Foundation
@@ -13474,8 +13521,12 @@
 +
 +    /// A failure leaves the committed document byte-identical and the store unchanged.
 +    public static func apply(_ plan: ImportPlan, to store: OrganizationStore<BrowserState>) throws -> Applied {
-+        let snapshot = try store.saveWithSnapshot(plan.state, named: snapshotName)
-+        return Applied(state: plan.state, snapshot: snapshot)
++        try apply(plan.state, to: store)
++    }
++
++    public static func apply(_ state: BrowserState, to store: OrganizationStore<BrowserState>) throws -> Applied {
++        let snapshot = try store.saveWithSnapshot(state, named: snapshotName)
++        return Applied(state: state, snapshot: snapshot)
 +    }
 +
 +    /// Undo is available only while nothing else has been saved since the import: restoring over
@@ -18790,7 +18841,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarDragDrop.swift
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,352 @@
 +import AppKit
 +import BatoCore
 +
@@ -19100,6 +19151,7 @@
 +        context == .withinApplication ? .move : []
 +    }
 +
++    var onBegan: ((UUID) -> Void)?
 +    var onEnded: (() -> Void)?
 +
 +    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
@@ -19118,6 +19170,7 @@
 +        row.beginDraggingSession(with: [dragging], event: event, source: self)
 +        row.alphaValue = 0.35
 +        draggedRow = row
++        onBegan?(entryID)
 +    }
 +
 +    private static func liftedImage(of row: NSView, margin: CGFloat) -> NSImage {
@@ -21294,4 +21347,1494 @@
 +        image.addRepresentation(rep)
 +        return image
 +    }()
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/BookmarksHTMLReader.swift
+@@ -0,0 +1,73 @@
++import Foundation
++
++/// The Netscape bookmarks HTML every browser exports. Used for Orion, whose own data format is not
++/// documented, and for any browser the user prefers to export from. The toolbar folder (marked
++/// `PERSONAL_TOOLBAR_FOLDER`) becomes Favorites.
++enum BookmarksHTMLReader {
++    static let maxBytes = 64 * 1024 * 1024
++
++    static func read(_ url: URL) throws -> (favorites: [ImportedPage], tree: [BookmarkNode]) {
++        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size <= maxBytes,
++              let data = try? Data(contentsOf: url) else { throw ImportReadError.unreadable }
++        return parse(String(decoding: data, as: UTF8.self))
++    }
++
++    static func parse(_ html: String) -> (favorites: [ImportedPage], tree: [BookmarkNode]) {
++        struct Level {
++            var name: String
++            var isToolbar: Bool
++            var nodes: [BookmarkNode] = []
++        }
++        var stack = [Level(name: "", isToolbar: false)]
++        var pending: Level?
++        var favorites: [ImportedPage] = []
++        let tag = try! NSRegularExpression(pattern: #"<(/?)(DL|H3|A)\b([^>]*)>([^<]*)"#, options: .caseInsensitive)
++        let nsHTML = html as NSString
++        for match in tag.matches(in: html, range: NSRange(location: 0, length: nsHTML.length)) {
++            let closing = nsHTML.substring(with: match.range(at: 1)) == "/"
++            let name = nsHTML.substring(with: match.range(at: 2)).uppercased()
++            let attributes = nsHTML.substring(with: match.range(at: 3))
++            let text = decode(nsHTML.substring(with: match.range(at: 4)))
++            switch (name, closing) {
++            case ("H3", false):
++                pending = Level(name: text, isToolbar: attributes.uppercased().contains("PERSONAL_TOOLBAR_FOLDER=\"TRUE\""))
++            case ("DL", false):
++                if let level = pending {
++                    stack.append(level)
++                    pending = nil
++                }
++            case ("DL", true):
++                guard stack.count > 1 else { continue }
++                let level = stack.removeLast()
++                if level.isToolbar {
++                    for node in level.nodes {
++                        if case .page(let page) = node { favorites.append(page) } else { stack[stack.count - 1].nodes.append(node) }
++                    }
++                } else if !level.nodes.isEmpty {
++                    stack[stack.count - 1].nodes.append(.folder(name: level.name, children: level.nodes))
++                }
++            case ("A", false):
++                guard let href = attribute("HREF", in: attributes), let link = URL(string: decode(href)), link.isWebURL else { continue }
++                stack[stack.count - 1].nodes.append(.page(ImportedPage(title: text, url: link)))
++            default: break
++            }
++        }
++        while stack.count > 1 {
++            let level = stack.removeLast()
++            if !level.nodes.isEmpty { stack[stack.count - 1].nodes.append(.folder(name: level.name, children: level.nodes)) }
++        }
++        return (favorites, stack[0].nodes)
++    }
++
++    private static func attribute(_ name: String, in attributes: String) -> String? {
++        guard let range = attributes.range(of: "\(name)=\"", options: .caseInsensitive),
++              let end = attributes[range.upperBound...].firstIndex(of: "\"") else { return nil }
++        return String(attributes[range.upperBound..<end])
++    }
++
++    private static func decode(_ text: String) -> String {
++        text.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<")
++            .replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"")
++            .replacingOccurrences(of: "&#39;", with: "'")
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/BrowserDetection.swift
+@@ -0,0 +1,159 @@
++import Foundation
++
++public struct DetectedProfile: Equatable, Sendable {
++    /// Stable within one browser: the profile directory name.
++    public var id: String
++    public var name: String
++    public var directory: URL
++}
++
++public struct DetectedBrowser: Equatable, Sendable {
++    public var source: ImportSource
++    public var profiles: [DetectedProfile]
++    /// What a reader exists for. Counts and permission state come from `BrowserImporter.counts`.
++    public var supportedItems: [ImportItem]
++    /// Content-free limits worth showing under the browser's name.
++    public var notes: [String]
++
++    /// "Favorites, bookmarks, history" for the browser row.
++    public var subtitle: String {
++        let names: [ImportItem: String] = [.favorites: "Favorites", .bookmarks: "bookmarks", .history: "history",
++                                           .spaces: "Spaces"]
++        let list = supportedItems.compactMap { names[$0] }
++        return list.isEmpty ? "Nothing to import yet" : list.joined(separator: ", ")
++    }
++}
++
++/// Finds installed browsers and their profile lists. Only the profile list files (Chromium
++/// `Local State`, Gecko `profiles.ini`) are read, never browsing content. Safari is reported when its
++/// app exists, since its data folder is protected and cannot be listed without Full Disk Access.
++public struct BrowserDetector: Sendable {
++    public var home: URL
++    public var applicationDirectories: [URL]
++
++    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
++                applicationDirectories: [URL] = [URL(fileURLWithPath: "/Applications"),
++                                                 URL(fileURLWithPath: "/System/Cryptexes/App/System/Applications"),
++                                                 FileManager.default.homeDirectoryForCurrentUser
++                                                     .appendingPathComponent("Applications")]) {
++        self.home = home
++        self.applicationDirectories = applicationDirectories
++    }
++
++    public func detect() -> [DetectedBrowser] {
++        ImportSource.allCases.compactMap(detect)
++    }
++
++    public func detect(_ source: ImportSource) -> DetectedBrowser? {
++        let fileManager = FileManager.default
++        let root = BrowserLocations.dataRoot(source, home: home)
++        let installed = BrowserLocations.appNames(source).contains { name in
++            applicationDirectories.contains { fileManager.fileExists(atPath: $0.appendingPathComponent(name).path) }
++        }
++        let hasData = source != .safari && fileManager.fileExists(atPath: root.path)
++        guard installed || hasData else { return nil }
++        let profiles: [DetectedProfile]
++        switch source {
++        case _ where source.isChromium: profiles = chromiumProfiles(root)
++        case _ where source.isGecko: profiles = geckoProfiles(root)
++        case .safari: profiles = [DetectedProfile(id: "Default", name: "Safari", directory: root)]
++        default: profiles = hasData ? [DetectedProfile(id: "Default", name: "Orion", directory: root)] : []
++        }
++        return DetectedBrowser(source: source, profiles: profiles, supportedItems: BrowserLocations.supportedItems(source),
++                               notes: BrowserLocations.notes(source))
++    }
++
++    private func chromiumProfiles(_ root: URL) -> [DetectedProfile] {
++        let fileManager = FileManager.default
++        var named: [(String, String)] = []
++        if let data = try? Data(contentsOf: root.appendingPathComponent("Local State")),
++           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++           let cache = (object["profile"] as? [String: Any])?["info_cache"] as? [String: Any] {
++            named = cache.keys.sorted { Self.profileOrder($0, $1) }.map { key in
++                (key, ((cache[key] as? [String: Any])?["name"] as? String) ?? key)
++            }
++        }
++        if named.isEmpty, fileManager.fileExists(atPath: root.appendingPathComponent("Default").path) {
++            named = [("Default", "Default")]
++        }
++        return named.filter { fileManager.fileExists(atPath: root.appendingPathComponent($0.0).path) }
++            .map { DetectedProfile(id: $0.0, name: $0.1, directory: root.appendingPathComponent($0.0)) }
++    }
++
++    /// Default first, then Profile 1, Profile 2, ... numerically.
++    private static func profileOrder(_ left: String, _ right: String) -> Bool {
++        if left == "Default" || right == "Default" { return left == "Default" && right != "Default" }
++        return left.localizedStandardCompare(right) == .orderedAscending
++    }
++
++    private func geckoProfiles(_ root: URL) -> [DetectedProfile] {
++        guard let text = try? String(contentsOf: root.appendingPathComponent("profiles.ini"), encoding: .utf8) else { return [] }
++        var sections: [[String: String]] = []
++        for line in text.split(whereSeparator: \.isNewline) {
++            let trimmed = line.trimmingCharacters(in: .whitespaces)
++            if trimmed.hasPrefix("[") { sections.append(["section": trimmed]) }
++            else if let equals = trimmed.firstIndex(of: "="), !sections.isEmpty {
++                sections[sections.count - 1][String(trimmed[..<equals])] = String(trimmed[trimmed.index(after: equals)...])
++            }
++        }
++        let profiles = sections.compactMap { section -> (DetectedProfile, Bool)? in
++            guard section["section"]?.hasPrefix("[Profile") == true, let path = section["Path"] else { return nil }
++            let directory = section["IsRelative"] == "0" ? URL(fileURLWithPath: path)
++                : root.appendingPathComponent(path)
++            guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
++            return (DetectedProfile(id: directory.lastPathComponent, name: section["Name"] ?? path, directory: directory),
++                    section["Default"] == "1")
++        }
++        return profiles.filter(\.1).map(\.0) + profiles.filter { !$0.1 }.map(\.0)
++    }
++}
++
++enum BrowserLocations {
++    static func dataRoot(_ source: ImportSource, home: URL) -> URL {
++        let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
++        switch source {
++        case .chrome: return support.appendingPathComponent("Google/Chrome")
++        case .brave: return support.appendingPathComponent("BraveSoftware/Brave-Browser")
++        case .edge: return support.appendingPathComponent("Microsoft Edge")
++        case .dia: return support.appendingPathComponent("Dia/User Data")
++        case .arc: return support.appendingPathComponent("Arc/User Data")
++        case .safari: return home.appendingPathComponent("Library/Safari")
++        case .firefox: return support.appendingPathComponent("Firefox")
++        case .zen: return support.appendingPathComponent("zen")
++        case .orion: return support.appendingPathComponent("Orion")
++        }
++    }
++
++    static func arcSidebarFile(home: URL) -> URL {
++        home.appendingPathComponent("Library/Application Support/Arc/StorableSidebar.json")
++    }
++
++    static func appNames(_ source: ImportSource) -> [String] {
++        switch source {
++        case .edge: ["Microsoft Edge.app"]
++        case .brave: ["Brave Browser.app"]
++        case .chrome: ["Google Chrome.app"]
++        default: ["\(source.displayName).app"]
++        }
++    }
++
++    static func supportedItems(_ source: ImportSource) -> [ImportItem] {
++        switch source {
++        case .arc: [.favorites, .spaces, .history]
++        case .zen: [.favorites, .spaces, .bookmarks, .history]
++        case .orion: []
++        default: [.favorites, .bookmarks, .history]
++        }
++    }
++
++    static func notes(_ source: ImportSource) -> [String] {
++        switch source {
++        case .arc: ["Arc keeps bookmarks in Spaces, so Spaces carry the pinned items."]
++        case .dia: ["Dia's own sidebar and pinned tabs have no documented file format; bookmarks and history are read."]
++        case .safari: ["Needs Full Disk Access."]
++        case .zen: ["Workspaces and pinned tabs are read from Zen's places database."]
++        case .orion: ["Orion's data format is not documented; export bookmarks from Orion to an HTML file instead."]
++        default: []
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/BrowserImportPlan.swift
+@@ -0,0 +1,99 @@
++import BatoCore
++import BatoPersistence
++import CryptoKit
++import Foundation
++
++public struct BrowserImportPreview: Equatable, Sendable {
++    public var favoritesToAdd: Int
++    /// Favorites already in the Profile (same address) or repeated in the source.
++    public var favoritesSkipped: Int
++    public var bookmarks: Int
++    public var historyPages: Int
++    /// Spaces the import adds, and those skipped because an earlier import already added them.
++    public var spaces: ImportSummary?
++    public var spacesAlreadyImported: Int
++}
++
++/// What "Bring everything over" would change, validated and ready to apply. Nothing is written until
++/// `apply`. Favorites, Spaces, pinned items and folders go through the organization transaction;
++/// bookmarks and history are staged for the Profile's Chromium data (see `PendingBrowserData`).
++public struct BrowserImportPlan: Sendable {
++    public var state: BrowserState
++    public var preview: BrowserImportPreview
++    public var pending: PendingBrowserData?
++    public var targetProfileID: UUID
++    public var warnings: [ImportWarning]
++
++    /// - Parameters:
++    ///   - targetProfileID: the existing Profile that receives Favorites, bookmarks and history.
++    ///   - idSalt: changes every derived identifier so a deliberate second import adds copies.
++    public static func make(_ snapshot: BrowserSnapshot, items: Set<ImportItem>, into existing: BrowserState,
++                            targetProfileID: UUID, idSalt: String = "") throws -> BrowserImportPlan {
++        try existing.validate()
++        guard let profileIndex = existing.profiles.firstIndex(where: { $0.id == targetProfileID }) else {
++            throw BrowserStateError.missingProfile
++        }
++        let ids = IdentityFactory(digest: "browser-import|\(snapshot.source.rawValue)|\(snapshot.profileID)", salt: idSalt)
++        var state = existing
++        var added = 0, skipped = 0
++
++        if items.contains(.favorites) {
++            var known = Set(state.profiles[profileIndex].favorites.flatMap { [$0.savedURL, $0.lastURL].compactMap { $0?.duplicateKey } })
++            var knownIDs = Set(state.profiles[profileIndex].favorites.map(\.id))
++            for page in snapshot.favorites {
++                let key = page.url.duplicateKey
++                let id = ids.id("favorite", key)
++                guard BrowserState.isValidPageURL(page.url), known.insert(key).inserted, knownIDs.insert(id).inserted else {
++                    skipped += 1
++                    continue
++                }
++                state.profiles[profileIndex].favorites.append(PageEntry(
++                    id: id, title: page.title.isEmpty ? page.url.host ?? page.url.absoluteString : page.title,
++                    savedURL: page.url, lastURL: page.url, kind: .favorite))
++                added += 1
++            }
++        }
++
++        var summary: ImportSummary?
++        var alreadyImported = 0
++        var warnings: [ImportWarning] = []
++        if items.contains(.spaces), let staging = snapshot.spaces {
++            let done = ImportPlan.alreadyImportedSpaceIDs(staging, in: state, idSalt: idSalt)
++            alreadyImported = done.count
++            if done.count < staging.spaces.count {
++                let plan = try ImportPlan.make(staging, options: ImportOptions(excludedSpaceIDs: done, idSalt: idSalt), into: state)
++                state = plan.state
++                summary = plan.summary
++                warnings = plan.warnings
++            }
++        }
++        try state.validate()
++
++        let bookmarks = items.contains(.bookmarks) ? snapshot.bookmarks : []
++        let history = items.contains(.history) ? snapshot.history : []
++        let pending = bookmarks.isEmpty && history.isEmpty ? nil : PendingBrowserData(
++            batchID: String(ids.id("batch", "pending").uuidString.prefix(8)).lowercased(),
++            source: snapshot.source, bookmarks: bookmarks, history: history)
++        return BrowserImportPlan(
++            state: state,
++            preview: BrowserImportPreview(favoritesToAdd: added, favoritesSkipped: skipped,
++                                          bookmarks: bookmarks.reduce(0) { $0 + $1.pageCount }, historyPages: history.count,
++                                          spaces: summary, spacesAlreadyImported: alreadyImported),
++            pending: pending, targetProfileID: targetProfileID, warnings: warnings)
++    }
++
++    public struct Applied: Sendable {
++        public var organization: ImportTransaction.Applied
++        /// Bookmarks and history wait for the Profile's engine to be idle; see `PendingImportStore.applyPending`.
++        public var stagedForNextLaunch: Bool
++    }
++
++    /// Saves the organization as one transaction with a pre-import snapshot, then stages bookmarks and
++    /// history. Staging happens only after the organization save succeeded, so a failed save leaves
++    /// nothing behind; re-applying the same plan changes nothing further.
++    public func apply(to store: OrganizationStore<BrowserState>, pending pendingStore: PendingImportStore) throws -> Applied {
++        let organization = try ImportTransaction.apply(state, to: store)
++        if let pending { try pendingStore.stage(pending, profileKey: targetProfileID.uuidString) }
++        return Applied(organization: organization, stagedForNextLaunch: pending != nil)
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/BrowserImporter.swift
+@@ -0,0 +1,144 @@
++import Foundation
++
++/// Read side of "Bring everything over": counts for the toggle subtitles, then the full snapshot.
++/// Everything is read-only against the browser's data: SQLite files are copied to a temp directory
++/// first, JSON/plist files are read directly. Passwords, cookies and form data are never read.
++public struct BrowserImporter: Sendable {
++    public var home: URL
++
++    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
++        self.home = home
++    }
++
++    public var detector: BrowserDetector { BrowserDetector(home: home) }
++
++    /// Cheap counts per supported item for the subtitles ("Favorites - 48 sites", "History - 2,019 pages").
++    /// A blocked Safari folder yields `.needsFullDiskAccess` for every item instead of an error.
++    public func counts(_ source: ImportSource, profile: DetectedProfile) -> [ImportItem: ItemAvailability] {
++        let items = BrowserLocations.supportedItems(source)
++        if source == .safari, !SafariReader.hasFullDiskAccess(folder: profile.directory) {
++            return Dictionary(uniqueKeysWithValues: items.map { ($0, .needsFullDiskAccess) })
++        }
++        var result: [ImportItem: ItemAvailability] = [:]
++        let marks = bookmarkSet(source, profile)
++        let staging = spacesStaging(source, profile)
++        for item in items {
++            switch item {
++            case .favorites:
++                result[item] = availability(source, favoritesCount(source, marks: marks, staging: staging))
++            case .bookmarks:
++                result[item] = availability(source, marks?.map { $0.tree.reduce(0) { $0 + $1.pageCount } })
++            case .spaces:
++                result[item] = availability(source, staging?.map { $0?.spaces.count ?? 0 })
++            case .history:
++                result[item] = availability(source, Result { try historyCount(source, profile) }.mapError(asReadError))
++            }
++        }
++        return result
++    }
++
++    /// Reads the selected items. Throws `ImportReadError.permissionDenied` for a blocked Safari folder.
++    public func read(_ source: ImportSource, profile: DetectedProfile, items: Set<ImportItem>) throws -> BrowserSnapshot {
++        var snapshot = BrowserSnapshot(source: source, profileID: profile.id)
++        snapshot.notes = BrowserLocations.notes(source)
++        do {
++            // Arc keeps nothing in Chromium bookmarks; its Favorites live in the sidebar file.
++            if source != .arc, items.contains(.favorites) || items.contains(.bookmarks) {
++                let marks = try bookmarkTree(source, profile)
++                if items.contains(.favorites) { snapshot.favorites = marks.favorites }
++                if items.contains(.bookmarks) { snapshot.bookmarks = marks.tree }
++            }
++            if items.contains(.favorites) || items.contains(.spaces), source == .arc || source == .zen {
++                if var staging = try spacesStagingThrowing(source, profile) {
++                    if items.contains(.favorites) { snapshot.favorites += mergedFavorites(staging) }
++                    staging.profiles = staging.profiles.map { ArcProfile(key: $0.key, name: $0.name, favorites: []) }
++                    if items.contains(.spaces) { snapshot.spaces = staging }
++                }
++            }
++            if items.contains(.history) { snapshot.history = try history(source, profile) }
++        } catch let error as ImportReadError {
++            throw source == .safari ? error : (error == .permissionDenied ? .unreadable : error)
++        }
++        snapshot.favorites = unique(snapshot.favorites)
++        return snapshot
++    }
++
++    /// Reads a bookmarks HTML export the user chose (the route for Orion).
++    public func readBookmarksHTML(_ file: URL, source: ImportSource) throws -> BrowserSnapshot {
++        let marks = try BookmarksHTMLReader.read(file)
++        var snapshot = BrowserSnapshot(source: source, profileID: "export")
++        snapshot.favorites = unique(marks.favorites)
++        snapshot.bookmarks = marks.tree
++        return snapshot
++    }
++
++    private func favoritesCount(_ source: ImportSource, marks: Result<Marks, ImportReadError>?,
++                                staging: Result<ArcStaging?, ImportReadError>?) -> Result<Int, ImportReadError>? {
++        let essentials = staging?.map { $0.map { mergedFavorites($0).count } ?? 0 }
++        switch source {
++        case .arc: return essentials
++        case .zen: return marks?.map { $0.favorites.count + ((try? essentials?.get()) ?? 0) }
++        default: return marks?.map { $0.favorites.count }
++        }
++    }
++
++    typealias Marks = (favorites: [ImportedPage], tree: [BookmarkNode])
++
++    private func bookmarkSet(_ source: ImportSource, _ profile: DetectedProfile) -> Result<Marks, ImportReadError>? {
++        guard source != .arc, !BrowserLocations.supportedItems(source).filter({ $0 == .favorites || $0 == .bookmarks }).isEmpty else { return nil }
++        return Result { try bookmarkTree(source, profile) }.mapError(asReadError)
++    }
++
++    private func spacesStaging(_ source: ImportSource, _ profile: DetectedProfile) -> Result<ArcStaging?, ImportReadError>? {
++        guard source == .arc || source == .zen else { return nil }
++        return Result { try spacesStagingThrowing(source, profile) }.mapError(asReadError)
++    }
++
++    private func bookmarkTree(_ source: ImportSource, _ profile: DetectedProfile) throws -> Marks {
++        if source.isChromium { return try ChromiumReader.bookmarks(profile: profile.directory) }
++        if source.isGecko { return try GeckoReader.bookmarks(profile: profile.directory) }
++        if source == .safari { return try SafariReader.bookmarks(folder: profile.directory) }
++        throw ImportReadError.unsupported("\(source.displayName) bookmarks need an HTML export.")
++    }
++
++    private func spacesStagingThrowing(_ source: ImportSource, _ profile: DetectedProfile) throws -> ArcStaging? {
++        if source == .zen { return try GeckoReader.zenSpaces(profile: profile.directory, profileID: profile.id) }
++        let file = BrowserLocations.arcSidebarFile(home: home)
++        guard FileManager.default.fileExists(atPath: file.path) else { throw ImportReadError.unreadable }
++        do { return try ArcSidebarParser.parse(ArcSourceReader.read(file).data) } catch { throw ImportReadError.unreadable }
++    }
++
++    private func historyCount(_ source: ImportSource, _ profile: DetectedProfile) throws -> Int {
++        if source.isChromium { return try ChromiumReader.historyCount(profile: profile.directory) }
++        if source.isGecko { return try GeckoReader.historyCount(profile: profile.directory) }
++        if source == .safari { return try SafariReader.historyCount(folder: profile.directory) }
++        throw ImportReadError.unreadable
++    }
++
++    private func history(_ source: ImportSource, _ profile: DetectedProfile) throws -> [ImportedHistoryEntry] {
++        if source.isChromium { return try ChromiumReader.history(profile: profile.directory) }
++        if source.isGecko { return try GeckoReader.history(profile: profile.directory) }
++        if source == .safari { return try SafariReader.history(folder: profile.directory) }
++        throw ImportReadError.unreadable
++    }
++
++    private func mergedFavorites(_ staging: ArcStaging) -> [ImportedPage] {
++        unique(staging.profiles.flatMap(\.favorites).map { ImportedPage(title: $0.title, url: $0.url) })
++    }
++
++    private func unique(_ pages: [ImportedPage]) -> [ImportedPage] {
++        var seen = Set<String>()
++        return pages.filter { seen.insert($0.url.duplicateKey).inserted }
++    }
++
++    private func asReadError(_ error: Error) -> ImportReadError { error as? ImportReadError ?? .unreadable }
++
++    private func availability(_ source: ImportSource, _ result: Result<Int, ImportReadError>?) -> ItemAvailability {
++        switch result {
++        case .success(let count): .available(count)
++        case .failure(.permissionDenied): source == .safari ? .needsFullDiskAccess : .missing
++        case .failure(.unsupported(let note)): .unsupported(note)
++        case .failure, .none: .missing
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/ChromiumProfileWriter.swift
+@@ -0,0 +1,247 @@
++import Darwin
++import Foundation
++
++/// Bookmarks and history staged for a Bato Profile's Chromium profile directory.
++///
++/// Bato's pages run in Chromium profiles and Bato keeps no history of its own, so imported history
++/// and bookmarks must end up in the profile's `History` database and `Bookmarks` file. Chromium holds
++/// those open (exclusive lock) and rewrites `Bookmarks` from memory on exit, so they can only be written
++/// while the engine is not using the profile. The plan therefore stages them here, and
++/// `ChromiumProfileWriter` applies them at the next launch before the engine starts.
++public struct PendingBrowserData: Codable, Equatable, Sendable {
++    public static let schemaVersion = 1
++
++    public var schemaVersion = PendingBrowserData.schemaVersion
++    /// Same source and Profile always yield the same batch, so re-staging replaces rather than duplicates.
++    public var batchID: String
++    public var source: ImportSource
++    public var bookmarks: [BookmarkNode]
++    public var history: [ImportedHistoryEntry]
++
++    public var isEmpty: Bool { bookmarks.isEmpty && history.isEmpty }
++}
++
++/// One JSON file per Profile and batch under `<state>/import-pending`.
++public struct PendingImportStore: Sendable {
++    public var directory: URL
++
++    public init(directory: URL) {
++        self.directory = directory
++    }
++
++    private func file(_ profileKey: String, _ batchID: String) -> URL {
++        directory.appendingPathComponent("\(profileKey).\(batchID).json")
++    }
++
++    public func stage(_ data: PendingBrowserData, profileKey: String) throws {
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        try JSONEncoder().encode(data).write(to: file(profileKey, data.batchID), options: .atomic)
++    }
++
++    public func pending(profileKey: String) -> [PendingBrowserData] {
++        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
++        return names.filter { $0.hasPrefix("\(profileKey).") && $0.hasSuffix(".json") }.sorted().compactMap {
++            try? JSONDecoder().decode(PendingBrowserData.self, from: Data(contentsOf: directory.appendingPathComponent($0)))
++        }
++    }
++
++    public func discard(_ data: PendingBrowserData, profileKey: String) {
++        try? FileManager.default.removeItem(at: file(profileKey, data.batchID))
++    }
++}
++
++public enum ChromiumWriteError: Error, Equatable, LocalizedError {
++    case engineRunning
++    case unreadableBookmarks
++    case writeFailed
++
++    public var errorDescription: String? {
++        switch self {
++        case .engineRunning: "The browser engine is using this Profile. History and bookmarks are imported at the next launch."
++        case .unreadableBookmarks: "The Profile's bookmarks file could not be read, so it was left alone."
++        case .writeFailed: "The Profile's history or bookmarks could not be written."
++        }
++    }
++}
++
++public struct ChromiumWriteResult: Equatable, Sendable {
++    public var bookmarksAdded = 0
++    public var historyAdded = 0
++    public var historySkippedExisting = 0
++    /// The History database does not exist yet (the Profile has never run) or has an unexpected layout.
++    /// Nothing was written for history; keep the data staged and retry after the Profile has run once.
++    public var historyDeferred = false
++}
++
++public enum ChromiumProfileWriter {
++    /// Chromium's PageTransition LINK | CHAIN_START | CHAIN_END.
++    private static let linkTransition: Int64 = 0x3000_0000
++    private static let epochOffsetSeconds = 11_644_473_600.0
++    static let batchKey = "bato_import_batch"
++
++    /// Chromium locks its user data directory with a `SingletonLock` symlink to "host-pid".
++    /// A lock whose process is gone is stale and does not count.
++    public static func isInUse(userDataDirectory: URL) -> Bool {
++        guard let target = try? FileManager.default.destinationOfSymbolicLink(
++            atPath: userDataDirectory.appendingPathComponent("SingletonLock").path),
++              let pid = target.split(separator: "-").last.flatMap({ pid_t($0) }) else { return false }
++        return kill(pid, 0) == 0 || errno == EPERM
++    }
++
++    /// Writes into a profile no browser has open. History already present is never modified: a URL
++    /// that exists keeps its own counts and the import only adds the ones missing.
++    public static func apply(_ data: PendingBrowserData, profileDirectory: URL, userDataDirectory: URL) throws -> ChromiumWriteResult {
++        guard !isInUse(userDataDirectory: userDataDirectory) else { throw ChromiumWriteError.engineRunning }
++        var result = ChromiumWriteResult()
++        result.bookmarksAdded = try writeBookmarks(data, profileDirectory: profileDirectory)
++        if !data.history.isEmpty { try writeHistory(data.history, profileDirectory: profileDirectory, into: &result) }
++        return result
++    }
++
++    private static func chromiumTime(_ date: Date) -> Int64 {
++        Int64((date.timeIntervalSince1970 + epochOffsetSeconds) * 1_000_000)
++    }
++
++    // MARK: History
++
++    private static func writeHistory(_ entries: [ImportedHistoryEntry], profileDirectory: URL,
++                                     into result: inout ChromiumWriteResult) throws {
++        let file = profileDirectory.appendingPathComponent("History")
++        guard FileManager.default.fileExists(atPath: file.path) else { result.historyDeferred = true; return }
++        let database: SQLiteDatabase
++        do { database = try SQLiteDatabase.open(file) } catch { throw ChromiumWriteError.writeFailed }
++        let urlColumns: Set<String>, visitColumns: Set<String>
++        do {
++            urlColumns = try database.columns(of: "urls")
++            visitColumns = try database.columns(of: "visits")
++        } catch { throw ChromiumWriteError.writeFailed }
++        guard urlColumns.isSuperset(of: ["id", "url", "title", "visit_count", "typed_count", "last_visit_time", "hidden"]),
++              visitColumns.isSuperset(of: ["url", "visit_time", "transition"]) else {
++            result.historyDeferred = true
++            return
++        }
++        do {
++            try database.execute("BEGIN IMMEDIATE")
++            for entry in entries {
++                let url = entry.url.absoluteString
++                if try !database.rows("SELECT 1 FROM urls WHERE url = ?", [.text(url)]).isEmpty {
++                    result.historySkippedExisting += 1
++                    continue
++                }
++                let time = chromiumTime(entry.lastVisit)
++                try database.execute("""
++                    INSERT INTO urls(url, title, visit_count, typed_count, last_visit_time, hidden) VALUES (?, ?, ?, 0, ?, 0)
++                    """, [.text(url), .text(entry.title), .int(Int64(max(entry.visitCount, 1))), .int(time)])
++                try database.execute("""
++                    INSERT INTO visits(url, visit_time, transition) VALUES ((SELECT id FROM urls WHERE url = ?), ?, ?)
++                    """, [.text(url), .int(time), .int(linkTransition)])
++                result.historyAdded += 1
++            }
++            try database.execute("COMMIT")
++        } catch {
++            try? database.execute("ROLLBACK")
++            result.historyAdded = 0
++            result.historySkippedExisting = 0
++            throw ChromiumWriteError.writeFailed
++        }
++    }
++
++    // MARK: Bookmarks
++
++    private static func writeBookmarks(_ data: PendingBrowserData, profileDirectory: URL) throws -> Int {
++        guard !data.bookmarks.isEmpty else { return 0 }
++        let file = profileDirectory.appendingPathComponent("Bookmarks")
++        var document: [String: Any]
++        if FileManager.default.fileExists(atPath: file.path) {
++            guard let bytes = try? Data(contentsOf: file),
++                  let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
++                  object["roots"] is [String: Any] else { throw ChromiumWriteError.unreadableBookmarks }
++            document = object
++        } else {
++            document = skeleton()
++        }
++        var roots = document["roots"] as! [String: Any]
++        var other = (roots["other"] as? [String: Any]) ?? skeletonRoot(id: "2", name: "Other bookmarks", type: "other")
++        var children = other["children"] as? [[String: Any]] ?? []
++        if children.contains(where: { ($0["meta_info"] as? [String: String])?[batchKey] == data.batchID }) { return 0 }
++
++        var nextID = maxID(in: roots) + 1
++        let now = String(chromiumTime(Date()))
++        func convert(_ node: BookmarkNode) -> [String: Any] {
++            let id = String(nextID)
++            nextID += 1
++            switch node {
++            case .page(let page):
++                return ["type": "url", "id": id, "guid": UUID().uuidString.lowercased(), "name": page.title.isEmpty ? page.url.host ?? "" : page.title,
++                        "url": page.url.absoluteString, "date_added": now, "date_last_used": "0"]
++            case .folder(let name, let inner):
++                var folder: [String: Any] = ["type": "folder", "id": id, "guid": UUID().uuidString.lowercased(), "name": name,
++                                             "date_added": now, "date_last_used": "0", "date_modified": now]
++                folder["children"] = inner.map(convert)
++                return folder
++            }
++        }
++        var wrapper = convert(.folder(name: "Imported from \(data.source.displayName)", children: data.bookmarks))
++        wrapper["meta_info"] = [batchKey: data.batchID]
++        children.append(wrapper)
++        other["children"] = children
++        roots["other"] = other
++        document["roots"] = roots
++        document.removeValue(forKey: "checksum")
++
++        do {
++            if FileManager.default.fileExists(atPath: file.path) {
++                let backup = profileDirectory.appendingPathComponent("Bookmarks.bato-pre-import")
++                try? FileManager.default.removeItem(at: backup)
++                try FileManager.default.copyItem(at: file, to: backup)
++            }
++            try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
++            try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]).write(to: file, options: .atomic)
++        } catch { throw ChromiumWriteError.writeFailed }
++        return data.bookmarks.reduce(0) { $0 + $1.pageCount }
++    }
++
++    private static func skeletonRoot(id: String, name: String, type: String) -> [String: Any] {
++        ["type": "folder", "id": id, "guid": UUID().uuidString.lowercased(), "name": name, "children": [] as [Any],
++         "date_added": String(chromiumTime(Date())), "date_modified": "0"]
++    }
++
++    private static func skeleton() -> [String: Any] {
++        ["version": 1, "roots": ["bookmark_bar": skeletonRoot(id: "1", name: "Bookmarks bar", type: "bookmark_bar"),
++                                 "other": skeletonRoot(id: "2", name: "Other bookmarks", type: "other"),
++                                 "synced": skeletonRoot(id: "3", name: "Mobile bookmarks", type: "synced")]]
++    }
++
++    private static func maxID(in value: Any) -> Int {
++        if let dictionary = value as? [String: Any] {
++            let own = (dictionary["id"] as? String).flatMap(Int.init) ?? 0
++            return dictionary.values.map { maxID(in: $0) }.max().map { max($0, own) } ?? own
++        }
++        if let array = value as? [Any] { return array.map { maxID(in: $0) }.max() ?? 0 }
++        return 0
++    }
++}
++
++public extension PendingImportStore {
++    struct Outcome: Equatable, Sendable {
++        public var batchID: String
++        public var result: ChromiumWriteResult?
++        public var error: ChromiumWriteError?
++    }
++
++    /// Call at launch for a Profile, before its engine context starts. A batch is discarded once its
++    /// bookmarks and history are fully written; an engine-in-use or deferred batch stays staged.
++    func applyPending(profileKey: String, profileDirectory: URL, userDataDirectory: URL) -> [Outcome] {
++        pending(profileKey: profileKey).map { data in
++            do {
++                let result = try ChromiumProfileWriter.apply(data, profileDirectory: profileDirectory, userDataDirectory: userDataDirectory)
++                if !result.historyDeferred { discard(data, profileKey: profileKey) }
++                return Outcome(batchID: data.batchID, result: result, error: nil)
++            } catch let error as ChromiumWriteError {
++                return Outcome(batchID: data.batchID, result: nil, error: error)
++            } catch {
++                return Outcome(batchID: data.batchID, result: nil, error: .writeFailed)
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/ChromiumReader.swift
+@@ -0,0 +1,58 @@
++import Foundation
++
++/// Chrome, Brave, Edge, Dia and Arc's Chromium profile: `Bookmarks` JSON and `History` SQLite.
++enum ChromiumReader {
++    private static let epochOffsetSeconds = 11_644_473_600.0
++    private static let historyFilter = "hidden = 0 AND visit_count > 0 AND (url LIKE 'http://%' OR url LIKE 'https://%')"
++
++    static func historyCount(profile: URL) throws -> Int {
++        try SQLiteDatabase.copyOf(profile.appendingPathComponent("History")).scalarInt("SELECT COUNT(*) FROM urls WHERE \(historyFilter)")
++    }
++
++    static func history(profile: URL) throws -> [ImportedHistoryEntry] {
++        let database = try SQLiteDatabase.copyOf(profile.appendingPathComponent("History"))
++        let rows = try database.rows("SELECT url, title, visit_count, last_visit_time FROM urls WHERE \(historyFilter) ORDER BY last_visit_time DESC")
++        return rows.compactMap { row in
++            guard let text = row[0].text, let url = URL(string: text), url.isWebURL else { return nil }
++            let micros = row[3].double ?? 0
++            return ImportedHistoryEntry(url: url, title: row[1].text ?? "", visitCount: Int(row[2].int ?? 1),
++                                        lastVisit: Date(timeIntervalSince1970: micros / 1_000_000 - epochOffsetSeconds))
++        }
++    }
++
++    /// Bookmarks-bar pages become Favorites; the rest of the tree stays as bookmarks.
++    static func bookmarks(profile: URL) throws -> (favorites: [ImportedPage], tree: [BookmarkNode]) {
++        let url = profile.appendingPathComponent("Bookmarks")
++        let data: Data
++        do { data = try Data(contentsOf: url) } catch { throw ImportReadError.unreadable }
++        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let roots = object["roots"] as? [String: Any] else { throw ImportReadError.unreadable }
++        var favorites: [ImportedPage] = []
++        var tree: [BookmarkNode] = []
++        if let bar = roots["bookmark_bar"] as? [String: Any] {
++            var barRest: [BookmarkNode] = []
++            for child in nodes(bar["children"]) {
++                if case .page(let page) = child { favorites.append(page) } else { barRest.append(child) }
++            }
++            if !barRest.isEmpty { tree.append(.folder(name: "Bookmarks Bar", children: barRest)) }
++        }
++        for (key, name) in [("other", "Other Bookmarks"), ("synced", "Mobile Bookmarks")] {
++            guard let root = roots[key] as? [String: Any] else { continue }
++            let children = nodes(root["children"])
++            if !children.isEmpty { tree.append(.folder(name: name, children: children)) }
++        }
++        return (favorites, tree)
++    }
++
++    private static func nodes(_ raw: Any?) -> [BookmarkNode] {
++        (raw as? [[String: Any]] ?? []).compactMap { node in
++            let name = (node["name"] as? String) ?? ""
++            if node["type"] as? String == "folder" {
++                let children = nodes(node["children"])
++                return children.isEmpty ? nil : .folder(name: name, children: children)
++            }
++            guard let text = node["url"] as? String, let url = URL(string: text), url.isWebURL else { return nil }
++            return .page(ImportedPage(title: name, url: url))
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/GeckoReader.swift
+@@ -0,0 +1,163 @@
++import BatoCore
++import Foundation
++
++/// Firefox and Zen: bookmarks and history from `places.sqlite`. Zen also keeps workspaces
++/// (`zen_workspaces`) and pinned tabs/Essentials (`zen_pins`) in that database; those table and
++/// column names are from Zen's public source and are read defensively, so an unfamiliar layout yields
++/// no Spaces rather than an error.
++enum GeckoReader {
++    private static let historyFilter = "visit_count > 0 AND hidden = 0 AND (url LIKE 'http://%' OR url LIKE 'https://%')"
++
++    static func places(_ profile: URL) -> URL { profile.appendingPathComponent("places.sqlite") }
++
++    static func historyCount(profile: URL) throws -> Int {
++        try SQLiteDatabase.copyOf(places(profile)).scalarInt("SELECT COUNT(*) FROM moz_places WHERE \(historyFilter)")
++    }
++
++    static func history(profile: URL) throws -> [ImportedHistoryEntry] {
++        let database = try SQLiteDatabase.copyOf(places(profile))
++        let rows = try database.rows("SELECT url, title, visit_count, last_visit_date FROM moz_places WHERE \(historyFilter) ORDER BY last_visit_date DESC")
++        return rows.compactMap { row in
++            guard let text = row[0].text, let url = URL(string: text), url.isWebURL else { return nil }
++            return ImportedHistoryEntry(url: url, title: row[1].text ?? "", visitCount: Int(row[2].int ?? 1),
++                                        lastVisit: Date(timeIntervalSince1970: (row[3].double ?? 0) / 1_000_000))
++        }
++    }
++
++    /// Toolbar pages become Favorites (Zen: Essentials are added by `zen`).
++    static func bookmarks(profile: URL) throws -> (favorites: [ImportedPage], tree: [BookmarkNode]) {
++        let database = try SQLiteDatabase.copyOf(places(profile))
++        let rows = try database.rows("""
++            SELECT b.id, b.parent, b.type, b.title, p.url, b.guid FROM moz_bookmarks b
++            LEFT JOIN moz_places p ON p.id = b.fk ORDER BY b.parent, b.position
++            """)
++        var children: [Int64: [[SQLValue]]] = [:]
++        var rootsByGUID: [String: Int64] = [:]
++        for row in rows {
++            children[row[1].int ?? -1, default: []].append(row)
++            if let guid = row[5].text, guid.hasSuffix("_") { rootsByGUID[guid] = row[0].int ?? -1 }
++        }
++        func nodes(_ parent: Int64, depth: Int = 0) -> [BookmarkNode] {
++            guard depth < 32 else { return [] }
++            return (children[parent] ?? []).compactMap { row in
++                switch row[2].int {
++                case 2:
++                    let inner = nodes(row[0].int ?? -1, depth: depth + 1)
++                    return inner.isEmpty ? nil : .folder(name: row[3].text ?? "", children: inner)
++                case 1:
++                    guard let text = row[4].text, let url = URL(string: text), url.isWebURL else { return nil }
++                    return .page(ImportedPage(title: row[3].text ?? "", url: url))
++                default: return nil
++                }
++            }
++        }
++        var favorites: [ImportedPage] = []
++        var tree: [BookmarkNode] = []
++        if let toolbar = rootsByGUID["toolbar_____"] {
++            var rest: [BookmarkNode] = []
++            for node in nodes(toolbar) {
++                if case .page(let page) = node { favorites.append(page) } else { rest.append(node) }
++            }
++            if !rest.isEmpty { tree.append(.folder(name: "Bookmarks Toolbar", children: rest)) }
++        }
++        for (guid, name) in [("menu________", "Bookmarks Menu"), ("unfiled_____", "Other Bookmarks"),
++                             ("mobile______", "Mobile Bookmarks")] {
++            guard let root = rootsByGUID[guid] else { continue }
++            let inner = nodes(root)
++            if !inner.isEmpty { tree.append(.folder(name: name, children: inner)) }
++        }
++        return (favorites, tree)
++    }
++
++    /// Zen workspaces as Spaces with their pinned tabs and folders; Essentials become Favorites.
++    /// Nil when the database has no workspaces table.
++    static func zenSpaces(profile: URL, profileID: String) throws -> ArcStaging? {
++        let database = try SQLiteDatabase.copyOf(places(profile))
++        guard try database.hasTable("zen_workspaces") else { return nil }
++        let workspaceColumns = try database.columns(of: "zen_workspaces")
++        guard workspaceColumns.isSuperset(of: ["uuid", "name"]) else { return nil }
++        let container = workspaceColumns.contains("container_id") ? "container_id" : "0"
++        let order = workspaceColumns.contains("position") ? "position" : "id"
++        let workspaces = try database.rows("SELECT uuid, name, \(container) FROM zen_workspaces ORDER BY \(order)")
++
++        var pins: [ZenPin] = []
++        if try database.hasTable("zen_pins") {
++            let pinColumns = try database.columns(of: "zen_pins")
++            if pinColumns.isSuperset(of: ["uuid", "title", "url", "workspace_uuid"]) {
++                let select = ["uuid", "title", "url", "workspace_uuid",
++                              pinColumns.contains("container_id") ? "container_id" : "0",
++                              pinColumns.contains("is_essential") ? "is_essential" : "0",
++                              pinColumns.contains("is_group") ? "is_group" : "0",
++                              pinColumns.contains("folder_parent_uuid") ? "folder_parent_uuid" : "NULL"]
++                let sort = pinColumns.contains("position") ? "position" : "id"
++                pins = try database.rows("SELECT \(select.joined(separator: ", ")) FROM zen_pins ORDER BY \(sort)").compactMap(ZenPin.init)
++            }
++        }
++
++        func profileKey(_ container: Int64) -> String { "zen-container-\(container)" }
++        var profiles: [String: ArcProfile] = [:]
++        func ensureProfile(_ container: Int64) {
++            let key = profileKey(container)
++            if profiles[key] == nil {
++                profiles[key] = ArcProfile(key: key, name: container == 0 ? "Zen" : "Zen (container \(container))", favorites: [])
++            }
++        }
++        var spaces: [ArcSpace] = []
++        for row in workspaces {
++            guard let uuid = row[0].text else { continue }
++            let container = row[2].int ?? 0
++            ensureProfile(container)
++            spaces.append(ArcSpace(id: uuid, title: cleanName(row[1].text, fallback: "Zen workspace"), profileKey: profileKey(container),
++                                   colorHex: nil, pinned: zenNodes(pins, workspace: uuid, parent: nil, depth: 1), today: []))
++        }
++        var seenFavorites = Set<String>()
++        for pin in pins where pin.isEssential && !pin.isGroup {
++            guard let url = pin.url else { continue }
++            ensureProfile(pin.container)
++            guard seenFavorites.insert("\(pin.container)|\(url.duplicateKey)").inserted else { continue }
++            profiles[profileKey(pin.container)]?.favorites.append(ArcPage(id: pin.uuid, title: pin.title, url: url))
++        }
++        guard !spaces.isEmpty else { return nil }
++        return ArcStaging(sourceDigest: "zen:\(profileID)", profiles: profiles.keys.sorted().compactMap { profiles[$0] },
++                          spaces: spaces, warnings: [])
++    }
++
++    private struct ZenPin {
++        var uuid: String, title: String, url: URL?, workspace: String, container: Int64
++        var isEssential: Bool, isGroup: Bool, parent: String?
++
++        init?(_ row: [SQLValue]) {
++            guard let uuid = row[0].text else { return nil }
++            self.uuid = uuid
++            url = row[2].text.flatMap(URL.init(string:)).flatMap { $0.isWebURL ? $0 : nil }
++            title = cleanName(row[1].text, fallback: url?.host ?? "Pinned tab")
++            workspace = row[3].text ?? ""
++            container = row[4].int ?? 0
++            isEssential = (row[5].int ?? 0) != 0
++            isGroup = (row[6].int ?? 0) != 0
++            parent = row[7].text.flatMap { $0.isEmpty ? nil : $0 }
++        }
++    }
++
++    /// Folders deeper than Bato allows are hoisted into their nearest allowed ancestor.
++    private static func zenNodes(_ pins: [ZenPin], workspace: String, parent: String?, depth: Int,
++                                 visited: Set<String> = []) -> [ArcNode] {
++        pins.filter { $0.workspace == workspace && !$0.isEssential && $0.parent == parent && !visited.contains($0.uuid) }
++            .flatMap { pin -> [ArcNode] in
++                let nextVisited = visited.union([pin.uuid])
++                if pin.isGroup {
++                    let inner = zenNodes(pins, workspace: workspace, parent: pin.uuid,
++                                         depth: min(depth + 1, BrowserState.maxFolderDepth + 1), visited: nextVisited)
++                    return depth > BrowserState.maxFolderDepth ? inner
++                        : [.folder(ArcFolder(id: pin.uuid, name: cleanName(pin.title, fallback: "Folder"), children: inner))]
++                }
++                return pin.url.map { [.page(ArcPage(id: pin.uuid, title: pin.title, url: $0))] } ?? []
++            }
++    }
++}
++
++func cleanName(_ raw: String?, fallback: String) -> String {
++    let scalars = (raw ?? "").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
++    let text = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
++    return text.isEmpty ? fallback : String(text.prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/ImportModel.swift
+@@ -0,0 +1,115 @@
++import Foundation
++
++/// Browsers the onboarding "Bring everything over" step can read from.
++public enum ImportSource: String, CaseIterable, Codable, Sendable {
++    case dia, arc, chrome, brave, edge, safari, firefox, zen, orion
++
++    public var displayName: String {
++        switch self {
++        case .dia: "Dia"
++        case .arc: "Arc"
++        case .chrome: "Chrome"
++        case .brave: "Brave"
++        case .edge: "Edge"
++        case .safari: "Safari"
++        case .firefox: "Firefox"
++        case .zen: "Zen"
++        case .orion: "Orion"
++        }
++    }
++
++    var isChromium: Bool { [.dia, .arc, .chrome, .brave, .edge].contains(self) }
++    var isGecko: Bool { self == .firefox || self == .zen }
++}
++
++public enum ImportItem: String, CaseIterable, Codable, Sendable {
++    /// Arc Favorites, Zen Essentials, or the bookmarks bar of every other browser.
++    case favorites
++    /// Every other bookmark, with its folders.
++    case bookmarks
++    case history
++    /// Arc Spaces with pinned items and folders, Zen workspaces with pinned tabs.
++    case spaces
++}
++
++public enum ItemAvailability: Equatable, Sendable {
++    case available(Int)
++    /// macOS blocks reading this data until the app has Full Disk Access.
++    case needsFullDiskAccess
++    case unsupported(String)
++    case missing
++}
++
++public struct ImportedPage: Codable, Equatable, Sendable {
++    public var title: String
++    public var url: URL
++}
++
++public indirect enum BookmarkNode: Codable, Equatable, Sendable {
++    case page(ImportedPage)
++    case folder(name: String, children: [BookmarkNode])
++
++    public var pageCount: Int {
++        switch self {
++        case .page: 1
++        case .folder(_, let children): children.reduce(0) { $0 + $1.pageCount }
++        }
++    }
++}
++
++public struct ImportedHistoryEntry: Codable, Equatable, Sendable {
++    public var url: URL
++    public var title: String
++    public var visitCount: Int
++    public var lastVisit: Date
++}
++
++/// The versioned intermediate model every reader produces and every apply path consumes.
++/// It holds no passwords, cookies or form data.
++public struct BrowserSnapshot: Sendable {
++    public static let schemaVersion = 1
++
++    public var source: ImportSource
++    public var profileID: String
++    public var favorites: [ImportedPage] = []
++    public var bookmarks: [BookmarkNode] = []
++    public var history: [ImportedHistoryEntry] = []
++    /// Spaces, pinned items, folders and per-profile Favorites (Arc, Zen).
++    public var spaces: ArcStaging?
++    /// Content-free, human-readable limits of what was read.
++    public var notes: [String] = []
++
++    public var bookmarkCount: Int { bookmarks.reduce(0) { $0 + $1.pageCount } }
++}
++
++public enum ImportReadError: Error, Equatable, LocalizedError {
++    case permissionDenied
++    case unreadable
++    case unsupported(String)
++
++    public var errorDescription: String? {
++        switch self {
++        case .permissionDenied: "macOS blocked reading this browser's data."
++        case .unreadable: "The browser's data could not be read."
++        case .unsupported(let note): note
++        }
++    }
++}
++
++extension URL {
++    var isWebURL: Bool {
++        guard let scheme = scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
++        return host?.isEmpty == false && user == nil && password == nil
++    }
++
++    /// Key for duplicate detection: scheme and host case-insensitive, no fragment, no trailing slash.
++    var duplicateKey: String {
++        guard var parts = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return absoluteString }
++        parts.scheme = parts.scheme?.lowercased()
++        parts.host = parts.host?.lowercased()
++        parts.fragment = nil
++        var text = parts.string ?? absoluteString
++        if text.hasSuffix("/") { text.removeLast() }
++        return text
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/SQLiteSnapshot.swift
+@@ -0,0 +1,134 @@
++import Foundation
++import SQLite3
++
++enum SQLValue: Equatable {
++    case int(Int64), double(Double), text(String), blob(Data), null
++
++    var int: Int64? {
++        switch self {
++        case .int(let value): value
++        case .double(let value): Int64(value)
++        default: nil
++        }
++    }
++    var double: Double? {
++        switch self {
++        case .int(let value): Double(value)
++        case .double(let value): value
++        default: nil
++        }
++    }
++    var text: String? { if case .text(let value) = self { value } else { nil } }
++}
++
++private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
++
++/// Thin wrapper over the system libsqlite3. `copyOf` never opens the browser's own file: the
++/// database (and its -wal/-shm companions) is copied to a private temp directory first, because the
++/// original is locked while the browser runs, and the copy is opened read-only and deleted on close.
++final class SQLiteDatabase {
++    private var handle: OpaquePointer?
++    private let cleanup: URL?
++
++    static func copyOf(_ source: URL) throws -> SQLiteDatabase {
++        let fileManager = FileManager.default
++        let directory = fileManager.temporaryDirectory.appendingPathComponent("bato-import-\(UUID().uuidString)")
++        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
++                                        attributes: [.posixPermissions: 0o700])
++        do {
++            let target = directory.appendingPathComponent("db.sqlite")
++            try copy(source, to: target)
++            for suffix in ["-wal", "-shm"] where fileManager.fileExists(atPath: source.path + suffix) {
++                try? copy(URL(fileURLWithPath: source.path + suffix), to: URL(fileURLWithPath: target.path + suffix))
++            }
++            return try SQLiteDatabase(path: target.path, readOnly: true, cleanup: directory)
++        } catch {
++            try? fileManager.removeItem(at: directory)
++            throw error
++        }
++    }
++
++    /// Read-write, for a database no browser has open. Creates the file when `create` is set.
++    static func open(_ url: URL, create: Bool = false) throws -> SQLiteDatabase {
++        try SQLiteDatabase(path: url.path, readOnly: false, create: create, cleanup: nil)
++    }
++
++    private static func copy(_ source: URL, to target: URL) throws {
++        do {
++            try FileManager.default.copyItem(at: source, to: target)
++        } catch {
++            let nsError = error as NSError
++            let posix = nsError.domain == NSPOSIXErrorDomain ? nsError.code
++                : (nsError.userInfo[NSUnderlyingErrorKey] as? NSError)?.code
++            if nsError.code == NSFileReadNoPermissionError || posix == Int(EPERM) || posix == Int(EACCES) {
++                throw ImportReadError.permissionDenied
++            }
++            throw ImportReadError.unreadable
++        }
++    }
++
++    private init(path: String, readOnly: Bool, create: Bool = false, cleanup: URL?) throws {
++        self.cleanup = cleanup
++        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0)
++        guard sqlite3_open_v2(path, &handle, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
++            sqlite3_close(handle)
++            if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
++            throw ImportReadError.unreadable
++        }
++        sqlite3_busy_timeout(handle, 2_000)
++    }
++
++    deinit {
++        sqlite3_close(handle)
++        if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
++    }
++
++    func execute(_ sql: String, _ bindings: [SQLValue] = []) throws {
++        _ = try rows(sql, bindings)
++    }
++
++    func rows(_ sql: String, _ bindings: [SQLValue] = []) throws -> [[SQLValue]] {
++        var statement: OpaquePointer?
++        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw ImportReadError.unreadable }
++        defer { sqlite3_finalize(statement) }
++        for (offset, value) in bindings.enumerated() {
++            let index = Int32(offset + 1)
++            switch value {
++            case .int(let number): sqlite3_bind_int64(statement, index, number)
++            case .double(let number): sqlite3_bind_double(statement, index, number)
++            case .text(let text): sqlite3_bind_text(statement, index, text, -1, transient)
++            case .blob(let data):
++                _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32(data.count), transient) }
++            case .null: sqlite3_bind_null(statement, index)
++            }
++        }
++        var result: [[SQLValue]] = []
++        while true {
++            let step = sqlite3_step(statement)
++            if step == SQLITE_DONE { return result }
++            guard step == SQLITE_ROW else { throw ImportReadError.unreadable }
++            result.append((0..<sqlite3_column_count(statement)).map { column in
++                switch sqlite3_column_type(statement, column) {
++                case SQLITE_INTEGER: .int(sqlite3_column_int64(statement, column))
++                case SQLITE_FLOAT: .double(sqlite3_column_double(statement, column))
++                case SQLITE_TEXT: .text(String(cString: sqlite3_column_text(statement, column)))
++                case SQLITE_BLOB:
++                    .blob(Data(bytes: sqlite3_column_blob(statement, column), count: Int(sqlite3_column_bytes(statement, column))))
++                default: .null
++                }
++            })
++        }
++    }
++
++    func scalarInt(_ sql: String) throws -> Int {
++        Int(try rows(sql).first?.first?.int ?? 0)
++    }
++
++    func hasTable(_ name: String) throws -> Bool {
++        try !rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [.text(name)]).isEmpty
++    }
++
++    func columns(of table: String) throws -> Set<String> {
++        Set(try rows("PRAGMA table_info(\(table))").compactMap { $0[1].text })
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/SafariReader.swift
+@@ -0,0 +1,86 @@
++import Foundation
++
++/// Safari's `Bookmarks.plist` and `History.db`. Both live in a folder macOS protects, so reads fail
++/// with a permission error until the app has Full Disk Access.
++enum SafariReader {
++    private static let webFilter = "url LIKE 'http://%' OR url LIKE 'https://%'"
++
++    static func historyCount(folder: URL) throws -> Int {
++        try SQLiteDatabase.copyOf(folder.appendingPathComponent("History.db"))
++            .scalarInt("SELECT COUNT(*) FROM history_items WHERE \(webFilter)")
++    }
++
++    static func history(folder: URL) throws -> [ImportedHistoryEntry] {
++        let database = try SQLiteDatabase.copyOf(folder.appendingPathComponent("History.db"))
++        let rows = try database.rows("""
++            SELECT i.url, v.title, i.visit_count, v.visit_time FROM history_items i
++            JOIN history_visits v ON v.history_item = i.id
++            WHERE (i.url LIKE 'http://%' OR i.url LIKE 'https://%')
++              AND v.visit_time = (SELECT MAX(visit_time) FROM history_visits WHERE history_item = i.id)
++            GROUP BY i.id ORDER BY v.visit_time DESC
++            """)
++        return rows.compactMap { row in
++            guard let text = row[0].text, let url = URL(string: text), url.isWebURL else { return nil }
++            return ImportedHistoryEntry(url: url, title: row[1].text ?? "", visitCount: Int(row[2].int ?? 1),
++                                        lastVisit: Date(timeIntervalSinceReferenceDate: row[3].double ?? 0))
++        }
++    }
++
++    /// Bookmarks-bar leaves become Favorites. The Reading List is skipped.
++    static func bookmarks(folder: URL) throws -> (favorites: [ImportedPage], tree: [BookmarkNode]) {
++        let data: Data
++        do { data = try Data(contentsOf: folder.appendingPathComponent("Bookmarks.plist")) } catch {
++            throw classify(error)
++        }
++        guard let root = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
++            throw ImportReadError.unreadable
++        }
++        var favorites: [ImportedPage] = []
++        var tree: [BookmarkNode] = []
++        for child in root["Children"] as? [[String: Any]] ?? [] {
++            switch child["Title"] as? String {
++            case "BookmarksBar":
++                var rest: [BookmarkNode] = []
++                for node in nodes(child["Children"]) {
++                    if case .page(let page) = node { favorites.append(page) } else { rest.append(node) }
++                }
++                if !rest.isEmpty { tree.append(.folder(name: "Favorites", children: rest)) }
++            case "BookmarksMenu":
++                let children = nodes(child["Children"])
++                if !children.isEmpty { tree.append(.folder(name: "Bookmarks Menu", children: children)) }
++            default: break
++            }
++        }
++        return (favorites, tree)
++    }
++
++    /// Whether the importer may read Safari's folder, without reading any content.
++    static func hasFullDiskAccess(folder: URL) -> Bool {
++        let descriptor = open(folder.appendingPathComponent("Bookmarks.plist").path, O_RDONLY)
++        if descriptor >= 0 { close(descriptor); return true }
++        return errno != EPERM && errno != EACCES
++    }
++
++    static func classify(_ error: Error) -> ImportReadError {
++        let nsError = error as NSError
++        let posix = nsError.domain == NSPOSIXErrorDomain ? nsError.code
++            : (nsError.userInfo[NSUnderlyingErrorKey] as? NSError)?.code
++        return nsError.code == NSFileReadNoPermissionError || posix == Int(EPERM) || posix == Int(EACCES)
++            ? .permissionDenied : .unreadable
++    }
++
++    private static func nodes(_ raw: Any?) -> [BookmarkNode] {
++        (raw as? [[String: Any]] ?? []).compactMap { node in
++            switch node["WebBookmarkType"] as? String {
++            case "WebBookmarkTypeList":
++                let children = nodes(node["Children"])
++                return children.isEmpty ? nil : .folder(name: (node["Title"] as? String) ?? "", children: children)
++            case "WebBookmarkTypeLeaf":
++                guard let text = node["URLString"] as? String, let url = URL(string: text), url.isWebURL else { return nil }
++                let title = ((node["URIDictionary"] as? [String: Any])?["title"] as? String) ?? ""
++                return .page(ImportedPage(title: title, url: url))
++            default: return nil
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/SplitDropZones.swift
+@@ -0,0 +1,35 @@
++import CoreGraphics
++
++/// The two drop areas offered over the page card while a sidebar tab is dragged. They sit at the card's
++/// leading and trailing edges, small while the pointer is still in the sidebar and larger once it is over the page.
++public enum SplitDropZones {
++    public static let sides: [SplitSide] = [.left, .right]
++    public static let armedSize = CGSize(width: 194, height: 327)
++    public static let expandedSize = CGSize(width: 313, height: 520)
++    public static let edgeInset: CGFloat = 24
++    public static let cornerRadius: CGFloat = 20
++    /// The targeted zone grows about its centre by this factor.
++    public static let hoverScale: CGFloat = 1.15
++
++    /// A zone never takes more than this share of the card, so a narrow window still has page between them.
++    private static let maxWidthShare: CGFloat = 0.38
++    private static let maxHeightShare: CGFloat = 0.8
++
++    public static func frame(of side: SplitSide, in card: CGRect, expanded: Bool, hovered: Bool = false) -> CGRect? {
++        guard sides.contains(side) else { return nil }
++        let base = expanded ? expandedSize : armedSize
++        let size = CGSize(width: min(base.width, card.width * maxWidthShare),
++                          height: min(base.height, card.height * maxHeightShare))
++        let x = side == .left ? card.minX + edgeInset : card.maxX - edgeInset - size.width
++        let rest = CGRect(x: x, y: card.midY - size.height / 2, width: size.width, height: size.height)
++        guard hovered else { return rest }
++        let grown = CGSize(width: size.width * hoverScale, height: size.height * hoverScale)
++        return CGRect(x: rest.midX - grown.width / 2, y: rest.midY - grown.height / 2, width: grown.width, height: grown.height)
++    }
++
++    /// The side whose zone holds `point`, tested against the resting frames so growing on hover cannot flicker the target;
++    /// the page between the zones is not a target.
++    public static func side(at point: CGPoint, in card: CGRect, expanded: Bool) -> SplitSide? {
++        sides.first { frame(of: $0, in: card, expanded: expanded)?.contains(point) == true }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift
+@@ -0,0 +1,141 @@
++import AppKit
++import BatoCore
++
++/// Left and right drop areas shown over the page card while a sidebar tab is dragged. The page is a native
++/// engine view that never sees the drag, so this view sits above it and is the destination while armed.
++@MainActor
++final class SplitDropOverlay: NSView {
++    /// The page card in this view's flipped coordinates.
++    var cardRect: NSRect = .zero { didSet { layoutZones(animated: false) } }
++    var onDrop: ((UUID, SplitSide) -> Bool)?
++    private(set) var isArmed = false
++    private var expanded = false
++    private var hovered: SplitSide?
++    private var zones: [SplitSide: SplitDropZoneView] = [:]
++
++    override var isFlipped: Bool { true }
++
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        autoresizingMask = [.width, .height]
++        isHidden = true
++        registerForDraggedTypes([.batoEntry])
++        for side in SplitDropZones.sides {
++            let zone = SplitDropZoneView(side: side)
++            zones[side] = zone
++            addSubview(zone)
++        }
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    func arm() {
++        isArmed = true
++        expanded = false
++        hovered = nil
++        isHidden = false
++        layoutZones(animated: false)
++        zones.values.forEach { $0.alphaValue = 0 }
++        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; zones.values.forEach { $0.animator().alphaValue = 1 } }
++    }
++
++    func disarm() {
++        guard isArmed else { return }
++        isArmed = false
++        isHidden = true
++    }
++
++    private func layoutZones(animated: Bool) {
++        for (side, zone) in zones {
++            guard let frame = SplitDropZones.frame(of: side, in: cardRect, expanded: expanded, hovered: hovered == side) else { continue }
++            zone.isTargeted = hovered == side
++            if animated {
++                NSAnimationContext.runAnimationGroup { $0.duration = 0.2; zone.animator().frame = frame }
++            } else {
++                zone.frame = frame
++            }
++        }
++    }
++
++    private func entryID(_ sender: any NSDraggingInfo) -> UUID? {
++        sender.draggingPasteboard.string(forType: .batoEntry).flatMap(UUID.init(uuidString:))
++    }
++
++    private func update(_ sender: any NSDraggingInfo) -> NSDragOperation {
++        let point = convert(sender.draggingLocation, from: nil)
++        let (wasExpanded, wasHovered) = (expanded, hovered)
++        expanded = cardRect.contains(point)
++        hovered = SplitDropZones.side(at: point, in: cardRect, expanded: expanded)
++        if wasExpanded != expanded || wasHovered != hovered { layoutZones(animated: true) }
++        return hovered == nil ? [] : .move
++    }
++
++    private func collapse() {
++        hovered = nil
++        expanded = false
++        layoutZones(animated: true)
++    }
++
++    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
++    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
++    override func draggingExited(_ sender: (any NSDraggingInfo)?) { collapse() }
++    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { hovered != nil }
++    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
++        guard let id = entryID(sender), let side = hovered else { return false }
++        return onDrop?(id, side) ?? false
++    }
++}
++
++@MainActor
++private final class SplitDropZoneView: NSView {
++    var isTargeted = false {
++        didSet {
++            guard isTargeted != oldValue else { return }
++            let tint = isTargeted ? Self.targetAccent : NSColor.white.withAlphaComponent(0.6)
++            icon.contentTintColor = tint
++            label.textColor = tint
++            needsDisplay = true
++        }
++    }
++    private let icon = NSImageView()
++    private let label: NSTextField
++
++    private static let targetAccent = NSColor(srgbRed: 0.84, green: 0.50, blue: 0, alpha: 1)
++    private static let targetFill = NSColor(srgbRed: 0.24, green: 0.18, blue: 0.12, alpha: 0.96)
++
++    override var isFlipped: Bool { true }
++
++    init(side: SplitSide) {
++        label = NSTextField(labelWithString: side == .left ? "Add left split" : "Add right split")
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.shadowOpacity = 0.35
++        layer?.shadowRadius = 10
++        layer?.shadowOffset = CGSize(width: 0, height: -2)
++        icon.image = NSImage(systemSymbolName: side == .left ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled",
++                             accessibilityDescription: nil)
++        icon.contentTintColor = .white.withAlphaComponent(0.6)
++        label.font = .systemFont(ofSize: 13, weight: .semibold)
++        label.textColor = .white.withAlphaComponent(0.6)
++        [icon, label].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; addSubview($0) }
++        NSLayoutConstraint.activate([
++            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
++            icon.bottomAnchor.constraint(equalTo: centerYAnchor, constant: -4),
++            label.centerXAnchor.constraint(equalTo: centerXAnchor),
++            label.topAnchor.constraint(equalTo: centerYAnchor, constant: 8)
++        ])
++        setAccessibilityIdentifier("bato-split-drop-\(side.rawValue)")
++        setAccessibilityLabel(label.stringValue)
++    }
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let radius = SplitDropZones.cornerRadius
++        (isTargeted ? Self.targetFill : NSColor(white: 0.13, alpha: 0.96)).setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
++        let dashed = NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 8), xRadius: radius - 8, yRadius: radius - 8)
++        dashed.lineWidth = 1.5
++        dashed.setLineDash([5, 4], count: 2, phase: 0)
++        (isTargeted ? Self.targetAccent : NSColor.white.withAlphaComponent(0.4)).setStroke()
++        dashed.stroke()
++    }
 +}
