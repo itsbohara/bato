@@ -154,7 +154,7 @@ private extension Workspace {
 }
 
 /// Name-based identifiers: the same file, item and salt always map to the same UUID.
-private struct IdentityFactory {
+struct IdentityFactory {
     let digest: String
     let salt: String
 
