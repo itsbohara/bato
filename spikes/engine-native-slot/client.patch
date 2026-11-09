@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,100 @@
+@@ -2313,6 +2317,103 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -331,6 +331,9 @@
 +      "tests/cefsimple/bato/BatoImport/SafariReader.swift",
 +      "tests/cefsimple/bato/BatoCore/SplitDropZones.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift",
++      "tests/cefsimple/bato/BatoCore/Onboarding.swift",
++      "tests/cefsimple/bato/BatoImport/ImportSelection.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift",
 +    ]
 +    outputs = [ "$target_gen_dir/libBatoNativeSlot.dylib" ]
 +    args = [
@@ -349,7 +352,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2434,19 @@
+@@ -2336,12 +2437,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -372,7 +375,7 @@
        "AppKit.framework",
 --- /dev/null
 +++ b/cef/tests/cefsimple/native_slot_client.mm
-@@ -0,0 +1,1669 @@
+@@ -0,0 +1,1680 @@
 +#import <Cocoa/Cocoa.h>
 +#include <dlfcn.h>
 +#include <cctype>
@@ -440,6 +443,7 @@
 +// ProfileWindowReady(token, profile_key, ok): the requested window is bound (ok != 0) or failed.
 +using SwiftConfigureProfiles = void (*)(int (*)(const char*, int));
 +using SwiftProfileWindowReady = void (*)(uint64_t, const char*, int);
++using SwiftApplyPendingImport = void (*)(const char*, const char*);
 +
 +// Download hooks are optional Swift exports, resolved with dlsym at registration.
 +// DownloadsConfigure(snapshot, act): act(profile_key, id, action) with the Bato Profile key.
@@ -485,6 +489,7 @@
 +SwiftPeekLinkEligible g_swift_peek_link_eligible = nullptr;
 +SwiftPeekLinkRequested g_swift_peek_link_requested = nullptr;
 +SwiftProfileWindowReady g_swift_profile_ready = nullptr;
++SwiftApplyPendingImport g_swift_apply_pending_import = nullptr;
 +bool g_workspace_enabled = false;
 +int g_initial_browser_id = 0;
 +
@@ -1474,6 +1479,8 @@
 +        LogProfileRefusal("cache-root-unavailable");
 +        return 0;
 +      }
++      // Imported bookmarks and history are written while Chromium has not opened this directory.
++      if (g_swift_apply_pending_import) g_swift_apply_pending_import(key.c_str(), CacheRoot().c_str());
 +      CefRequestContextSettings settings;
 +      CefString(&settings.cache_path) = path;
 +      context = CefRequestContext::CreateContext(settings, nullptr);
@@ -2023,6 +2030,13 @@
 +                                 SelectWorkspacePage, CloseWorkspacePage,
 +                                 ActiveWorkspacePage, native_focus, WorkspaceCommandId,
 +                                 ScheduleWorkspaceSelection, sidebar_geometry, focus);
++    // CefInitialize has not run yet, so Chromium has not opened the launch Profile's History or Bookmarks.
++    g_swift_apply_pending_import = reinterpret_cast<SwiftApplyPendingImport>(
++        dlsym(RTLD_DEFAULT, "BatoSwiftWorkspaceApplyPendingImport"));
++    if (g_swift_apply_pending_import) {
++      g_swift_apply_pending_import(nullptr,
++          ResolvePath(command_line->GetSwitchValue("cache-path").ToString()).c_str());
++    }
 +    // Links that macOS hands the app while it starts arrive before any window exists.
 +    if (auto install_router = reinterpret_cast<void (*)()>(
 +            dlsym(RTLD_DEFAULT, "BatoSwiftInstallExternalURLRouter"))) {
@@ -2116,12 +2130,12 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift']),
++                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift', 'Onboarding.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
 +                                           'ArcSourceReader.swift', 'ImportTransaction.swift',
-+                                           'BookmarksHTMLReader.swift', 'BrowserDetection.swift', 'BrowserImportPlan.swift', 'BrowserImporter.swift', 'ChromiumProfileWriter.swift', 'ChromiumReader.swift', 'GeckoReader.swift', 'ImportModel.swift', 'SQLiteSnapshot.swift', 'SafariReader.swift']),
++                                           'BookmarksHTMLReader.swift', 'BrowserDetection.swift', 'BrowserImportPlan.swift', 'BrowserImporter.swift', 'ChromiumProfileWriter.swift', 'ChromiumReader.swift', 'GeckoReader.swift', 'ImportModel.swift', 'ImportSelection.swift', 'SQLiteSnapshot.swift', 'SafariReader.swift']),
 +                           ('BatoBlocking', ['BlockedCounters.swift', 'BlockingHostExports.swift', 'BlockingProfiles.swift', 'BlockingService.swift', 'BlockingSettings.swift', 'BlockingSettingsStore.swift', 'FilterListUpdater.swift', 'URLSessionListFetcher.swift', 'UBlockListsChoice.swift']),
 +                           ('BatoBrowserUI', ['NativeWorkspaceController.swift', 'CommandBarController.swift',
 +                                              'ArcImportController.swift', 'BlockingControls.swift',
@@ -2132,7 +2146,7 @@
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
 +                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift', 'SplitDropOverlay.swift',
 +                                              'TabSwitcherPanel.swift', 'CreateSpacePage.swift',
-+                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift'])]:
++                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift', 'OnboardingController.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -2310,12 +2324,14 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1422 @@
+@@ -0,0 +1,1461 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
 +import BatoBrowserUI
 +import BatoBlocking
++import BatoImport
++import BatoPersistence
 +
 +private typealias CreatePage = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
 +private typealias CommandID = @convention(c) (Int32) -> Int32
@@ -3303,6 +3319,7 @@
 +    private var pageMenuItem: NSMenuItem?
 +    private var spacesMenuItem: NSMenuItem?
 +    private var copyURLItems: [NSMenuItem] = []
++    private var onboardingItem: NSMenuItem?
 +    init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
 +         dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
 +         editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool,
@@ -3333,6 +3350,7 @@
 +    @objc private func nextSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: true) }
 +    @objc private func previousSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: false) }
 +    @objc private func newSpaceFromMenu() { workspaceHost.controller?.addSpace() }
++    @objc private func showOnboardingFromMenu() { workspaceHost.controller?.showOnboarding() }
 +
 +    /// Menu key equivalents reach Bato where the sidebar view's performKeyEquivalent does not
 +    /// while Chromium owns focus, so Control-1…9 live here. Rebuilt on every workspace change.
@@ -3417,6 +3435,13 @@
 +        }
 +        if let mainMenu = NSApp.mainMenu {
 +            installCopyURLItems(in: mainMenu)
++            if onboardingItem == nil, let help = mainMenu.items.first(where: { $0.title == "Help" })?.submenu {
++                let item = NSMenuItem(title: "Show Onboarding…", action: #selector(showOnboardingFromMenu), keyEquivalent: "")
++                item.target = self
++                help.addItem(.separator())
++                help.addItem(item)
++                onboardingItem = item
++            }
 +            if spacesMenuItem == nil {
 +                let item = NSMenuItem(title: "Spaces", action: nil, keyEquivalent: "")
 +                item.submenu = NSMenu(title: "Spaces")
@@ -3458,6 +3483,8 @@
 +        workspaceHost.controller?.onSpacesChanged = nil
 +        copyURLItems.forEach { $0.menu?.removeItem($0) }
 +        copyURLItems = []
++        if let onboardingItem { onboardingItem.menu?.removeItem(onboardingItem) }
++        onboardingItem = nil
 +        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
 +        keyMonitor = nil
 +        if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }
@@ -3678,6 +3705,32 @@
 +    precondition(Thread.isMainThread)
 +    guard let key, let profileID = UUID(uuidString: String(cString: key)) else { return }
 +    workspaceHost.engine?.windowRequestFinished(profileID: profileID, token: ok == 1 ? token : nil)
++}
++
++/// Writes imported bookmarks and history staged for a Profile into its Chromium directory. The engine calls it
++/// before it opens that Profile's context: a null key means the launch Profile, whose id comes from the saved
++/// organization. Anything that goes wrong is logged and the batch stays staged for the next launch.
++@_cdecl("BatoSwiftWorkspaceApplyPendingImport")
++@MainActor public func applyPendingImport(_ key: UnsafePointer<CChar>?, _ userDataDirectory: UnsafePointer<CChar>?) {
++    precondition(Thread.isMainThread)
++    guard let userDataDirectory, let stateDirectory = workspaceDirectory else { return }
++    let root = URL(fileURLWithPath: String(cString: userDataDirectory), isDirectory: true)
++    let profileKey: String
++    if let key {
++        guard let id = UUID(uuidString: String(cString: key)) else { return }
++        profileKey = id.uuidString
++    } else {
++        let store = OrganizationStore<BrowserState>(directory: stateDirectory, validate: { try $0.validate() })
++        guard let state = try? store.load(), let launch = state.launchProfileID else { return }
++        profileKey = launch.uuidString
++    }
++    let pending = PendingImportStore(directory: stateDirectory.appendingPathComponent("import-pending"))
++    for outcome in pending.applyBeforeEngineOpens(profileKey: profileKey, isLaunchProfile: key == nil, userDataDirectory: root) {
++        let result = outcome.result
++        fputs("{\"event\":\"import-pending-applied\",\"launch\":\(key == nil),\"batch\":\"\(outcome.batchID)\","
++              + "\"bookmarks\":\(result?.bookmarksAdded ?? 0),\"history\":\(result?.historyAdded ?? 0),"
++              + "\"deferred\":\(result?.historyDeferred ?? false),\"error\":\(outcome.error.map { "\"\($0)\"" } ?? "null")}\n", stderr)
++    }
 +}
 +
 +@_cdecl("BatoSwiftWorkspaceConfigureProfileDelete")
@@ -7858,10 +7911,11 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4142 @@
+@@ -0,0 +1,4216 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
++import BatoImport
 +import BatoPersistence
 +import BatoRuntime
 +
@@ -7924,6 +7978,8 @@
 +    private let organizationStore: OrganizationStore<BrowserState>
 +    private let recovery: RecoveryController
 +    private var arcImport: ArcImportController?
++    private var onboarding: OnboardingController?
++    private let stateDirectory: URL
 +    private var settingsWindow: SettingsWindowController?
 +    private let switcherPopover = SwitcherPopover()
 +    private lazy var archiveController = ArchiveController(
@@ -8062,6 +8118,7 @@
 +        let engine = try makeEngine(state.launchProfileID ?? state.currentWorkspace.profileID)
 +        organizationStore = store
 +        preferences = AppPreferencesStore(directory: directory)
++        stateDirectory = directory
 +        self.recovery = recovery
 +        runtime = try PageRuntime(state: state, engine: engine, commit: { try store.save($0) })
 +        runtime.snapshotCommit = { _ = try store.saveWithSnapshot($0, named: "pre-delete") }
@@ -8082,6 +8139,7 @@
 +    public func start() {
 +        guard !hasStarted else { return }
 +        hasStarted = true
++        NSApp.appearance = preferences.current().appearance.nsAppearance
 +        installTabSwitcherMonitor()
 +        sheetObserver = NotificationCenter.default.addObserver(
 +            forName: NSWindow.didEndSheetNotification, object: root.window, queue: .main) { [weak self] _ in
@@ -8101,7 +8159,76 @@
 +        recovery.confirmLaunchSoon()
 +        if let window = root.window { recovery.showNoticeIfNeeded(on: window) }
 +        archiveController.start()
-+        offerUBlockListsOnFirstRun()
++        if preferences.current().onboardingCompleted {
++            offerUBlockListsOnFirstRun()
++        } else {
++            DispatchQueue.main.async { [weak self] in self?.showOnboarding() }
++        }
++    }
++
++    /// `BATO_IMPORT_HOME` points detection and import at a synthetic home so the flow can be exercised without
++    /// reading the user's real browsers.
++    private static func browserImporter() -> BrowserImporter {
++        guard let path = ProcessInfo.processInfo.environment["BATO_IMPORT_HOME"], path.hasPrefix("/") else { return BrowserImporter() }
++        return BrowserImporter(home: URL(fileURLWithPath: path, isDirectory: true))
++    }
++
++    /// Opens the first-run card: on a fresh install, and from the Help menu afterwards.
++    public func showOnboarding() {
++        guard canOpenBrowserPage, let window = root.window else { return }
++        requestNativeFocus?()
++        let card = OnboardingController(parent: window, hooks: OnboardingHooks(
++            importer: Self.browserImporter(),
++            defaultSource: {
++                NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
++                    .flatMap { Bundle(url: $0)?.bundleIdentifier }.flatMap(ImportSource.init(bundleIdentifier:))
++            },
++            commitImport: { [weak self] snapshot, items in
++                self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
++            },
++            applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
++            finished: { [weak self] in
++                try? self?.preferences.update { $0.onboardingCompleted = true }
++                self?.onboarding = nil
++                self?.render()
++            }))
++        onboarding = card
++        card.show()
++    }
++
++    /// Same seam as the Arc import: one saved organization transaction, then the runtime adopts it; a runtime
++    /// refusal restores the pre-import snapshot. Bookmarks and history are staged only after the save.
++    private func commitBrowserImport(_ snapshot: BrowserSnapshot, items: Set<ImportItem>) -> Result<String, OnboardingImportFailure> {
++        let target = runtime.state.currentWorkspace.profileID
++        let plan: BrowserImportPlan
++        do { plan = try BrowserImportPlan.make(snapshot, items: items, into: runtime.state, targetProfileID: target) }
++        catch { return .failure(OnboardingImportFailure("This data couldn’t be prepared for import. Nothing was changed.")) }
++        let applied: BrowserImportPlan.Applied
++        do {
++            applied = try plan.apply(to: organizationStore,
++                                     pending: PendingImportStore(directory: stateDirectory.appendingPathComponent("import-pending")))
++        } catch let error as OrganizationStore<BrowserState>.StoreError {
++            return .failure(OnboardingImportFailure(error == .conflict
++                ? "Bato’s organization changed outside this window. Reopen Bato, then try again."
++                : "Changes couldn’t be saved. Nothing was changed."))
++        } catch { return .failure(OnboardingImportFailure("Changes couldn’t be saved. Nothing was changed.")) }
++        guard runtime.adoptSavedOrganization(applied.organization.state) else {
++            _ = try? ImportTransaction.undo(applied.organization, in: organizationStore)
++            return .failure(OnboardingImportFailure("Changes couldn’t be saved. Nothing was changed."))
++        }
++        let preview = plan.preview
++        var parts: [String] = []
++        if preview.favoritesToAdd > 0 { parts.append("\(preview.favoritesToAdd) Favorites") }
++        if let spaces = preview.spaces, spaces.workspaces > 0 { parts.append("\(spaces.workspaces) Spaces") }
++        if preview.bookmarks > 0 { parts.append("\(preview.bookmarks) bookmarks") }
++        if preview.historyPages > 0 { parts.append("\(preview.historyPages) history pages") }
++        return .success(parts.isEmpty ? "Everything was already here." : "Brought over " + parts.joined(separator: ", ") + ".")
++    }
++
++    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
++        try? preferences.update { $0.appearance = appearance }
++        NSApp.appearance = appearance.nsAppearance
++        if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
 +    }
 +
 +    /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
@@ -8288,7 +8415,7 @@
 +    }
 +
 +    private var canOpenBrowserPage: Bool {
-+        guard hasStarted, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
++        guard hasStarted, onboarding == nil, commandBar == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
 +        return true
 +    }
@@ -8332,7 +8459,7 @@
 +
 +    private func showCommandBar(query: String = "", error: String? = nil, navigating target: LivePage? = nil,
 +                                splittingTo side: SplitSide? = nil) {
-+        guard hasStarted, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
++        guard hasStarted, onboarding == nil, commandBar == nil, pendingCommandBarAction == nil, pageFinder == nil, workspaceEditor == nil, folderEditor == nil,
 +              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        runtime.endPeek()
 +        requestNativeFocus?()
@@ -16203,7 +16330,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,76 @@
 +import BatoCore
 +import Foundation
 +
@@ -16211,11 +16338,14 @@
 +    public var searchProvider: CommandBarSearchProvider = .default
 +    /// Sends what is typed in the command bar to the search provider for completions.
 +    public var searchSuggestions = true
++    public var appearance = AppAppearance.system
++    /// Set when the first-run card is finished or skipped.
++    public var onboardingCompleted = false
 +    public init() {}
 +}
 +
 +extension AppPreferences: Codable {
-+    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions }
++    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions, appearance, onboardingCompleted }
 +
 +    /// An unknown provider name, e.g. from a newer build, falls back to the default instead of dropping the file.
 +    public init(from decoder: any Decoder) throws {
@@ -16223,6 +16353,8 @@
 +        let name = try values.decodeIfPresent(String.self, forKey: .searchProvider)
 +        searchProvider = name.flatMap(CommandBarSearchProvider.init(rawValue:)) ?? .default
 +        searchSuggestions = try values.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
++        appearance = try values.decodeIfPresent(String.self, forKey: .appearance).flatMap(AppAppearance.init(rawValue:)) ?? .system
++        onboardingCompleted = try values.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
 +    }
 +}
 +
@@ -21276,7 +21408,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,82 @@
 +import AppKit
 +import BatoCore
 +
@@ -21347,6 +21479,17 @@
 +        image.addRepresentation(rep)
 +        return image
 +    }()
++}
++
++extension AppAppearance {
++    /// Nil follows the system.
++    var nsAppearance: NSAppearance? {
++        switch self {
++        case .system: nil
++        case .light: NSAppearance(named: .aqua)
++        case .dark: NSAppearance(named: .darkAqua)
++        }
++    }
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoImport/BookmarksHTMLReader.swift
@@ -21837,7 +21980,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoImport/ChromiumProfileWriter.swift
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,262 @@
 +import Darwin
 +import Foundation
 +
@@ -21930,8 +22073,11 @@
 +
 +    /// Writes into a profile no browser has open. History already present is never modified: a URL
 +    /// that exists keeps its own counts and the import only adds the ones missing.
-+    public static func apply(_ data: PendingBrowserData, profileDirectory: URL, userDataDirectory: URL) throws -> ChromiumWriteResult {
-+        guard !isInUse(userDataDirectory: userDataDirectory) else { throw ChromiumWriteError.engineRunning }
++    /// - Parameter lockIsOurs: the caller is the engine process itself and knows this Profile's context is not
++    ///   open yet, so the user data directory's own lock does not count as another browser using it.
++    public static func apply(_ data: PendingBrowserData, profileDirectory: URL, userDataDirectory: URL,
++                             lockIsOurs: Bool = false) throws -> ChromiumWriteResult {
++        guard lockIsOurs || !isInUse(userDataDirectory: userDataDirectory) else { throw ChromiumWriteError.engineRunning }
 +        var result = ChromiumWriteResult()
 +        result.bookmarksAdded = try writeBookmarks(data, profileDirectory: profileDirectory)
 +        if !data.history.isEmpty { try writeHistory(data.history, profileDirectory: profileDirectory, into: &result) }
@@ -22071,10 +22217,11 @@
 +
 +    /// Call at launch for a Profile, before its engine context starts. A batch is discarded once its
 +    /// bookmarks and history are fully written; an engine-in-use or deferred batch stays staged.
-+    func applyPending(profileKey: String, profileDirectory: URL, userDataDirectory: URL) -> [Outcome] {
++    func applyPending(profileKey: String, profileDirectory: URL, userDataDirectory: URL, lockIsOurs: Bool = false) -> [Outcome] {
 +        pending(profileKey: profileKey).map { data in
 +            do {
-+                let result = try ChromiumProfileWriter.apply(data, profileDirectory: profileDirectory, userDataDirectory: userDataDirectory)
++                let result = try ChromiumProfileWriter.apply(data, profileDirectory: profileDirectory,
++                                                             userDataDirectory: userDataDirectory, lockIsOurs: lockIsOurs)
 +                if !result.historyDeferred { discard(data, profileKey: profileKey) }
 +                return Outcome(batchID: data.batchID, result: result, error: nil)
 +            } catch let error as ChromiumWriteError {
@@ -22083,6 +22230,17 @@
 +                return Outcome(batchID: data.batchID, result: nil, error: .writeFailed)
 +            }
 +        }
++    }
++}
++
++public extension PendingImportStore {
++    /// The engine's directory layout: the launch Profile lives in `<root>/Default`, every other Profile in
++    /// `<root>/<key>`. The launch Profile is applied before the engine initializes, others right before their
++    /// context is created, so Chromium has not opened either one yet. Failures keep the batch staged.
++    func applyBeforeEngineOpens(profileKey: String, isLaunchProfile: Bool, userDataDirectory: URL) -> [Outcome] {
++        let profileDirectory = userDataDirectory.appendingPathComponent(isLaunchProfile ? "Default" : profileKey, isDirectory: true)
++        return applyPending(profileKey: profileKey, profileDirectory: profileDirectory,
++                            userDataDirectory: userDataDirectory, lockIsOurs: !isLaunchProfile)
 +    }
 +}
 --- /dev/null
@@ -22836,5 +22994,1101 @@
 +        dashed.setLineDash([5, 4], count: 2, phase: 0)
 +        (isTargeted ? Self.targetAccent : NSColor.white.withAlphaComponent(0.4)).setStroke()
 +        dashed.stroke()
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/Onboarding.swift
+@@ -0,0 +1,112 @@
++import Foundation
++
++/// The app's light or dark look; `system` follows macOS.
++public enum AppAppearance: String, CaseIterable, Codable, Sendable {
++    case system, light, dark
++
++    public var title: String {
++        switch self {
++        case .system: "System"
++        case .light: "Light"
++        case .dark: "Dark"
++        }
++    }
++}
++
++public enum OnboardingStep: Int, CaseIterable, Sendable {
++    case welcome, bringOver, makeItYours, done
++}
++
++/// Where the first-run card is. Skipping or finishing both end it; the caller marks it complete either way.
++public struct OnboardingFlow: Equatable, Sendable {
++    public private(set) var step: OnboardingStep = .welcome
++    public private(set) var isEnded = false
++
++    public init() {}
++
++    /// The welcome step has nothing to go back to, and the last step only closes the card.
++    public var canGoBack: Bool { step != .welcome && step != .done }
++
++    public mutating func advance() {
++        guard !isEnded else { return }
++        if let next = OnboardingStep(rawValue: step.rawValue + 1) { step = next } else { isEnded = true }
++    }
++
++    public mutating func goBack() {
++        guard canGoBack, let previous = OnboardingStep(rawValue: step.rawValue - 1) else { return }
++        step = previous
++    }
++
++    public mutating func skip() { isEnded = true }
++}
++
++public enum TabLayout: String, CaseIterable, Sendable {
++    case sidebar, sidebarRight, top
++
++    public var title: String {
++        switch self {
++        case .sidebar: "Sidebar"
++        case .sidebarRight: "Sidebar on Right"
++        case .top: "Top"
++        }
++    }
++
++    /// The engine reserves the sidebar's strip on the left of the window and owns the toolbar row,
++    /// so neither a mirrored sidebar nor a top tab strip can be drawn from Swift alone.
++    public var isAvailable: Bool { self == .sidebar }
++}
++
++public enum NewTabStyle: String, CaseIterable, Sendable {
++    case popup, fullPage
++
++    public var title: String { self == .popup ? "Popup" : "Full Page" }
++
++    /// Cmd-T only opens the command bar popup.
++    public var isAvailable: Bool { self == .popup }
++}
++
++public struct OnboardingThemePreset: Equatable, Sendable {
++    public let name: String
++    public let theme: SpaceTheme?
++
++    /// "None" plus eight named swatches from the first page of `SpaceTheme.presetPages`.
++    public static let all: [OnboardingThemePreset] = {
++        let names = ["Linen", "Rose", "Lilac", "Coral", "Amber", "Butter", "Mint", "Sky"]
++        return [OnboardingThemePreset(name: "None", theme: nil)]
++            + zip(names, SpaceTheme.presetPages[0]).map { OnboardingThemePreset(name: $0, theme: SpaceTheme(stops: $1.stops)) }
++    }()
++}
++
++/// What "Make it yours" holds before Continue. Unavailable options cannot be chosen.
++public struct OnboardingChoices: Equatable, Sendable {
++    public private(set) var tabLayout = TabLayout.sidebar
++    public private(set) var newTab = NewTabStyle.popup
++    public private(set) var themeIndex = 0
++    public var appearance = AppAppearance.system
++
++    public init() {}
++
++    @discardableResult
++    public mutating func select(_ layout: TabLayout) -> Bool {
++        guard layout.isAvailable else { return false }
++        tabLayout = layout
++        return true
++    }
++
++    @discardableResult
++    public mutating func select(_ style: NewTabStyle) -> Bool {
++        guard style.isAvailable else { return false }
++        newTab = style
++        return true
++    }
++
++    @discardableResult
++    public mutating func selectTheme(at index: Int) -> Bool {
++        guard OnboardingThemePreset.all.indices.contains(index) else { return false }
++        themeIndex = index
++        return true
++    }
++
++    /// Nil for "None": the Space keeps the look it has.
++    public var theme: SpaceTheme? { OnboardingThemePreset.all[themeIndex].theme }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoImport/ImportSelection.swift
+@@ -0,0 +1,107 @@
++import Foundation
++
++extension ImportSource {
++    public var bundleIdentifier: String {
++        switch self {
++        case .chrome: "com.google.Chrome"
++        case .brave: "com.brave.Browser"
++        case .edge: "com.microsoft.edgemac"
++        case .arc: "company.thebrowser.Browser"
++        case .dia: "company.thebrowser.dia"
++        case .safari: "com.apple.Safari"
++        case .firefox: "org.mozilla.firefox"
++        case .zen: "app.zen-browser.zen"
++        case .orion: "com.kagi.kagimacOS"
++        }
++    }
++
++    /// The browser a macOS bundle identifier belongs to, for spotting the current default browser.
++    public init?(bundleIdentifier: String) {
++        guard let source = Self.allCases.first(where: { $0.bundleIdentifier == bundleIdentifier }) else { return nil }
++        self = source
++    }
++}
++
++/// One card of the "Bring everything over" grid.
++public struct BrowserChoice: Equatable, Sendable {
++    public let source: ImportSource
++    public let subtitle: String
++    public let isCurrentDefault: Bool
++
++    public var name: String { source.displayName }
++
++    public static func choices(from detected: [DetectedBrowser], defaultSource: ImportSource?) -> [BrowserChoice] {
++        detected.map { BrowserChoice(source: $0.source, subtitle: $0.subtitle, isCurrentDefault: $0.source == defaultSource) }
++    }
++}
++
++/// The toggle list shown after a browser is chosen: one row per supported item, switched on when it has something to bring.
++public struct ImportSelection: Equatable, Sendable {
++    public struct Row: Equatable, Sendable {
++        public let item: ImportItem
++        public let title: String
++        public let detail: String
++        public let count: Int?
++        public var isOn: Bool
++        public var isEnabled: Bool { count.map { $0 > 0 } ?? false }
++    }
++
++    public enum Access: Equatable, Sendable {
++        case ready
++        case needsFullDiskAccess
++        case nothingToImport
++    }
++
++    public let source: ImportSource
++    public private(set) var rows: [Row]
++    public let access: Access
++
++    public init(source: ImportSource, counts: [ImportItem: ItemAvailability], locale: Locale = .current) {
++        self.source = source
++        let order: [ImportItem] = [.favorites, .bookmarks, .history, .spaces]
++        let present = order.filter { counts[$0] != nil }
++        rows = present.map { item in
++            let count: Int?
++            if case .available(let value) = counts[item] { count = value } else { count = nil }
++            return Row(item: item, title: Self.title(item), detail: Self.detail(item, counts[item]!, locale: locale),
++                       count: count, isOn: (count ?? 0) > 0)
++        }
++        if counts.values.contains(.needsFullDiskAccess) {
++            access = .needsFullDiskAccess
++        } else {
++            access = rows.contains { $0.isEnabled } ? .ready : .nothingToImport
++        }
++    }
++
++    public mutating func toggle(_ item: ImportItem) {
++        guard let index = rows.firstIndex(where: { $0.item == item }), rows[index].isEnabled else { return }
++        rows[index].isOn.toggle()
++    }
++
++    public var selectedItems: Set<ImportItem> { Set(rows.filter { $0.isOn && $0.isEnabled }.map(\.item)) }
++    public var canContinue: Bool { access == .ready && !selectedItems.isEmpty }
++
++    private static func title(_ item: ImportItem) -> String {
++        switch item {
++        case .favorites: "Favorites"
++        case .bookmarks: "Bookmarks"
++        case .history: "History"
++        case .spaces: "Spaces"
++        }
++    }
++
++    private static func detail(_ item: ImportItem, _ availability: ItemAvailability, locale: Locale) -> String {
++        switch availability {
++        case .available(let count):
++            let number = count.formatted(.number.locale(locale))
++            switch item {
++            case .favorites, .bookmarks: return count == 1 ? "1 site" : "\(number) sites"
++            case .history: return count == 1 ? "1 page" : "\(number) pages"
++            case .spaces: return count == 1 ? "1 space" : "\(number) spaces"
++            }
++        case .needsFullDiskAccess: return "Needs Full Disk Access"
++        case .unsupported(let note): return note
++        case .missing: return "Nothing found"
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift
+@@ -0,0 +1,868 @@
++import AppKit
++import BatoCore
++import BatoImport
++
++/// What the first-run card needs from the app. Every closure runs on the main actor.
++public struct OnboardingHooks {
++    public var importer: BrowserImporter
++    public var defaultSource: () -> ImportSource?
++    /// Saves the snapshot into the current Profile as one transaction and returns a one-line result.
++    public var commitImport: (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>
++    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
++    /// Called once when the card ends by any route, including Skip Setup.
++    public var finished: () -> Void
++
++    public init(importer: BrowserImporter, defaultSource: @escaping () -> ImportSource?,
++                commitImport: @escaping (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>,
++                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void, finished: @escaping () -> Void) {
++        self.importer = importer
++        self.defaultSource = defaultSource
++        self.commitImport = commitImport
++        self.applyLook = applyLook
++        self.finished = finished
++    }
++}
++
++public struct OnboardingImportFailure: Error {
++    public let message: String
++    public init(_ message: String) { self.message = message }
++}
++
++/// Bato's first-run card: a dimmed child window over the browser window with a centred card.
++@MainActor
++public final class OnboardingController: NSObject {
++    private static let cardSize: CGFloat = 640
++
++    private let parent: NSWindow
++    private let hooks: OnboardingHooks
++    private let panel: OnboardingPanel
++    private let card = NSVisualEffectView()
++    private var flow = OnboardingFlow()
++    private var choices = OnboardingChoices()
++    private var current: NSView?
++    private var resizeObserver: NSObjectProtocol?
++    private var activeObserver: NSObjectProtocol?
++    private var importSummary: String?
++
++    private var detected: [DetectedBrowser] = []
++    private var detail: BrowserDetail?
++
++    private struct BrowserDetail {
++        var browser: DetectedBrowser
++        var profileIndex = 0
++        var selection: ImportSelection?
++        var error: String?
++        var isImporting = false
++        var profile: DetectedProfile { browser.profiles[profileIndex] }
++    }
++
++    public init(parent: NSWindow, hooks: OnboardingHooks) {
++        self.parent = parent
++        self.hooks = hooks
++        panel = OnboardingPanel(contentRect: parent.frame, styleMask: [.borderless], backing: .buffered, defer: false)
++        super.init()
++        panel.isOpaque = false
++        panel.backgroundColor = .clear
++        panel.hasShadow = false
++        panel.isReleasedWhenClosed = false
++        panel.onEscape = { [weak self] in self?.back() }
++        buildChrome()
++    }
++
++    public func show() {
++        detected = BrowserDetector(home: hooks.importer.home).detect()
++        parent.addChildWindow(panel, ordered: .above)
++        panel.setFrame(parent.frame, display: true)
++        panel.makeKeyAndOrderFront(nil)
++        resizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: parent,
++                                                                queue: .main) { [weak self] _ in
++            MainActor.assumeIsolated { self.map { $0.panel.setFrame($0.parent.frame, display: true) } }
++        }
++        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
++                                                                object: nil, queue: .main) { [weak self] _ in
++            MainActor.assumeIsolated { self?.recheckAccess() }
++        }
++        present(animated: false)
++    }
++
++    private func close() {
++        [resizeObserver, activeObserver].compactMap { $0 }.forEach(NotificationCenter.default.removeObserver)
++        parent.removeChildWindow(panel)
++        panel.orderOut(nil)
++        parent.makeKeyAndOrderFront(nil)
++        hooks.finished()
++    }
++
++    // MARK: Flow
++
++    private func advance() {
++        flow.advance()
++        flow.isEnded ? close() : present(animated: true)
++    }
++
++    private func back() {
++        if flow.step == .bringOver, detail != nil {
++            detail = nil
++            present(animated: true)
++        } else if flow.canGoBack {
++            flow.goBack()
++            present(animated: true)
++        }
++    }
++
++    private func skip() {
++        flow.skip()
++        close()
++    }
++
++    private func finishLook() {
++        hooks.applyLook(choices.theme, choices.appearance)
++        advance()
++    }
++
++    // MARK: Chrome
++
++    private func buildChrome() {
++        let dim = NSView()
++        dim.wantsLayer = true
++        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.38).cgColor
++        dim.layer?.cornerRadius = 10
++        panel.contentView = dim
++
++        card.material = .hudWindow
++        card.blendingMode = .behindWindow
++        card.state = .active
++        card.appearance = NSAppearance(named: .darkAqua)
++        card.wantsLayer = true
++        card.layer?.cornerRadius = 16
++        card.layer?.masksToBounds = true
++        card.layer?.borderWidth = 0.5
++        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
++        card.translatesAutoresizingMaskIntoConstraints = false
++        dim.addSubview(card)
++        let width = card.widthAnchor.constraint(equalToConstant: Self.cardSize)
++        let height = card.heightAnchor.constraint(equalToConstant: Self.cardSize)
++        [width, height].forEach { $0.priority = .defaultHigh }
++        NSLayoutConstraint.activate([
++            card.centerXAnchor.constraint(equalTo: dim.centerXAnchor),
++            card.centerYAnchor.constraint(equalTo: dim.centerYAnchor),
++            card.widthAnchor.constraint(lessThanOrEqualTo: dim.widthAnchor, constant: -40),
++            card.heightAnchor.constraint(lessThanOrEqualTo: dim.heightAnchor, constant: -40),
++            width, height,
++        ])
++    }
++
++    private func present(animated: Bool) {
++        let next = makeStepView()
++        next.translatesAutoresizingMaskIntoConstraints = false
++        card.addSubview(next)
++        NSLayoutConstraint.activate([
++            next.leadingAnchor.constraint(equalTo: card.leadingAnchor), next.trailingAnchor.constraint(equalTo: card.trailingAnchor),
++            next.topAnchor.constraint(equalTo: card.topAnchor), next.bottomAnchor.constraint(equalTo: card.bottomAnchor),
++        ])
++        let old = current
++        current = next
++        panel.makeFirstResponder(nil)
++        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let old else {
++            old?.removeFromSuperview()
++            return
++        }
++        next.alphaValue = 0
++        NSAnimationContext.runAnimationGroup({ context in
++            context.duration = 0.22
++            next.animator().alphaValue = 1
++            old.animator().alphaValue = 0
++        }, completionHandler: { old.removeFromSuperview() })
++    }
++
++    private func makeStepView() -> NSView {
++        switch flow.step {
++        case .welcome: welcomeView()
++        case .bringOver: detail == nil ? browserGridView() : browserDetailView()
++        case .makeItYours: makeItYoursView()
++        case .done: doneView()
++        }
++    }
++
++    // MARK: Welcome and done
++
++    private func welcomeView() -> NSView {
++        let start = OnboardingButton(title: "Get Started", style: .primary) { [weak self] in self?.advance() }
++        let skip = OnboardingButton(title: "Skip Setup", style: .text) { [weak self] in self?.skip() }
++        return centered([appIcon(120), spacer(8), title("Welcome to Bato"),
++                         subtitle("A calm, organized browser. Let’s get you set up in a minute."), spacer(18),
++                         fixedWidth(start, 275), skip])
++    }
++
++    private func doneView() -> NSView {
++        let finish = OnboardingButton(title: "Start Browsing", style: .primary) { [weak self] in self?.advance() }
++        var views: [NSView] = [appIcon(96), spacer(8), title("You’re all set"),
++                               subtitle("Change any of this in Settings whenever you like.")]
++        if let importSummary { views.append(subtitle(importSummary)) }
++        return centered(views + [spacer(18), fixedWidth(finish, 275)])
++    }
++
++    private func centered(_ views: [NSView]) -> NSView {
++        let container = NSView()
++        let stack = NSStackView(views: views)
++        stack.orientation = .vertical
++        stack.alignment = .centerX
++        stack.spacing = 10
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        container.addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
++            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
++            stack.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -80),
++        ])
++        for case let button as OnboardingButton in views where button.style == .primary { button.keyEquivalent = "\r" }
++        return container
++    }
++
++    // MARK: Bring everything over
++
++    private func browserGridView() -> NSView {
++        let header = header("Bring Everything Over", "Pick the browser you used before and choose what comes along.")
++        let body: NSView
++        if detected.isEmpty {
++            body = emptyNote("Start fresh", "No other browsers were found on this Mac. Bato starts clean, and you can bring data over later from Settings.")
++        } else {
++            let defaultSource = hooks.defaultSource()
++            let choices = BrowserChoice.choices(from: detected, defaultSource: defaultSource)
++            let grid = NSStackView()
++            grid.orientation = .vertical
++            grid.alignment = .leading
++            grid.spacing = 12
++            for start in stride(from: 0, to: choices.count, by: 2) {
++                let cards = choices[start..<min(start + 2, choices.count)].map { choice in
++                    BrowserCard(choice: choice) { [weak self] in self?.open(choice.source) } as NSView
++                }
++                let row = NSStackView(views: cards)
++                row.spacing = 12
++                grid.addArrangedSubview(row)
++            }
++            let scroll = NSScrollView()
++            scroll.drawsBackground = false
++            scroll.hasVerticalScroller = true
++            scroll.autohidesScrollers = true
++            let document = FlippedView(wrapping: grid)
++            document.translatesAutoresizingMaskIntoConstraints = false
++            scroll.documentView = document
++            NSLayoutConstraint.activate([
++                document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
++                document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
++                document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
++            ])
++            body = scroll
++        }
++        return page(header: header, body: body, footer: footer(primary: "Continue", primaryEnabled: true,
++                                                              onPrimary: { [weak self] in self?.advance() }))
++    }
++
++    private func open(_ source: ImportSource) {
++        guard let browser = detected.first(where: { $0.source == source }), !browser.profiles.isEmpty else { return }
++        detail = BrowserDetail(browser: browser)
++        loadCounts()
++        present(animated: true)
++    }
++
++    private func loadCounts() {
++        guard let current = detail else { return }
++        let importer = hooks.importer, source = current.browser.source, profile = current.profile
++        Task { [weak self] in
++            let counts = await Task.detached { importer.counts(source, profile: profile) }.value
++            guard let self, self.detail?.browser.source == source, self.detail?.profile == profile else { return }
++            self.detail?.selection = ImportSelection(source: source, counts: counts)
++            self.refreshDetail()
++        }
++    }
++
++    private func refreshDetail() {
++        guard flow.step == .bringOver, detail != nil else { return }
++        let old = current
++        let next = browserDetailView()
++        next.translatesAutoresizingMaskIntoConstraints = false
++        card.addSubview(next)
++        NSLayoutConstraint.activate([
++            next.leadingAnchor.constraint(equalTo: card.leadingAnchor), next.trailingAnchor.constraint(equalTo: card.trailingAnchor),
++            next.topAnchor.constraint(equalTo: card.topAnchor), next.bottomAnchor.constraint(equalTo: card.bottomAnchor),
++        ])
++        current = next
++        old?.removeFromSuperview()
++    }
++
++    private func recheckAccess() {
++        guard detail?.selection?.access == .needsFullDiskAccess else { return }
++        loadCounts()
++    }
++
++    private func browserDetailView() -> NSView {
++        guard let state = detail else { return NSView() }
++        let backPill = OnboardingButton(title: "‹  From \(state.browser.source.displayName)", style: .pill) { [weak self] in self?.back() }
++        var rows: [NSView] = []
++        var footerEnabled = false
++        if let selection = state.selection {
++            switch selection.access {
++            case .needsFullDiskAccess:
++                rows = [explanation("Safari keeps its data in a protected folder. Allow Bato in System Settings > Privacy & Security > Full Disk Access, then come back here.",
++                                    action: ("Open Full Disk Access Settings", { Self.openFullDiskAccess() }))]
++            case .nothingToImport:
++                rows = [emptyNote("Nothing to bring over", "Bato didn’t find anything it can read in this browser.")]
++            case .ready:
++                rows = selection.rows.map { row in
++                    ToggleRow(row: row) { [weak self] in
++                        self?.detail?.selection?.toggle(row.item)
++                        self?.refreshDetail()
++                    }
++                }
++                footerEnabled = selection.canContinue && !state.isImporting
++            }
++        } else {
++            rows = [subtitle("Checking what can be brought over…")]
++        }
++        let list = NSStackView(views: rows)
++        list.orientation = .vertical
++        list.spacing = 1
++        list.alignment = .leading
++        rows.forEach { $0.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true }
++        var bodyViews: [NSView] = [list]
++        if state.browser.profiles.count > 1 { bodyViews.insert(profilePicker(state), at: 0) }
++        if let error = state.error { bodyViews.append(errorLabel(error)) }
++        let body = NSStackView(views: bodyViews)
++        body.orientation = .vertical
++        body.spacing = 14
++        body.alignment = .leading
++        bodyViews.forEach { $0.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
++        return page(header: headerBlock(backPill, "Choose what to bring over", state.browser.subtitleNote), body: body,
++                    footer: footer(primary: state.isImporting ? "Importing…" : "Continue", primaryEnabled: footerEnabled,
++                                   onPrimary: { [weak self] in self?.runImport() }))
++    }
++
++    private func profilePicker(_ state: BrowserDetail) -> NSView {
++        let popup = NSPopUpButton()
++        popup.addItems(withTitles: state.browser.profiles.map(\.name))
++        popup.selectItem(at: state.profileIndex)
++        let target = PopupTarget { [weak self] index in
++            self?.detail?.profileIndex = index
++            self?.detail?.selection = nil
++            self?.loadCounts()
++            self?.refreshDetail()
++        }
++        popup.target = target
++        popup.action = #selector(PopupTarget.changed(_:))
++        objc_setAssociatedObject(popup, &PopupTarget.key, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
++        return popup
++    }
++
++    private func runImport() {
++        guard var state = detail, let selection = state.selection, selection.canContinue, !state.isImporting else { return }
++        state.isImporting = true
++        state.error = nil
++        detail = state
++        refreshDetail()
++        let importer = hooks.importer, source = state.browser.source, profile = state.profile, items = selection.selectedItems
++        Task { [weak self] in
++            let read = await Task.detached { () -> Result<BrowserSnapshot, ImportReadError> in
++                do { return .success(try importer.read(source, profile: profile, items: items)) }
++                catch { return .failure(error as? ImportReadError ?? .unreadable) }
++            }.value
++            guard let self, self.detail != nil else { return }
++            let outcome = read.mapError { OnboardingImportFailure($0.errorDescription ?? "The browser’s data could not be read.") }
++                .flatMap { self.hooks.commitImport($0, items) }
++            self.detail?.isImporting = false
++            switch outcome {
++            case .success(let summary):
++                self.importSummary = summary
++                self.detail = nil
++                self.advance()
++            case .failure(let failure):
++                self.detail?.error = failure.message
++                self.refreshDetail()
++            }
++        }
++    }
++
++    private static func openFullDiskAccess() {
++        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
++        NSWorkspace.shared.open(url)
++    }
++
++    // MARK: Make it yours
++
++    private func makeItYoursView() -> NSView {
++        let tiles = NSStackView(views: TabLayout.allCases.map { layout in
++            LayoutTile(layout: layout, isSelected: choices.tabLayout == layout) { [weak self] in
++                guard let self, self.choices.select(layout) else { return }
++                self.present(animated: false)
++            }
++        })
++        tiles.distribution = .fillEqually
++        tiles.spacing = 12
++
++        let swatches = NSStackView(views: OnboardingThemePreset.all.enumerated().map { index, preset in
++            ThemeSwatch(preset: preset, isSelected: choices.themeIndex == index) { [weak self] in
++                guard let self, self.choices.selectTheme(at: index) else { return }
++                self.present(animated: false)
++            }
++        })
++        swatches.distribution = .fillEqually
++        swatches.spacing = 6
++
++        let newTab = segmented(NewTabStyle.allCases.map(\.title), selected: NewTabStyle.allCases.firstIndex(of: choices.newTab) ?? 0,
++                               enabled: NewTabStyle.allCases.map(\.isAvailable)) { [weak self] index in
++            _ = self?.choices.select(NewTabStyle.allCases[index])
++        }
++        let appearance = segmented(AppAppearance.allCases.map(\.title), selected: AppAppearance.allCases.firstIndex(of: choices.appearance) ?? 0,
++                                   enabled: nil) { [weak self] index in
++            self?.choices.appearance = AppAppearance.allCases[index]
++        }
++        let sections = NSStackView(views: [
++            section("Tabs", tiles), section("Space Theme", swatches),
++            section("New Tab", newTab, note: "Full Page is coming soon."), section("Appearance", appearance),
++        ])
++        sections.orientation = .vertical
++        sections.alignment = .leading
++        sections.spacing = 14
++        sections.arrangedSubviews.forEach { $0.widthAnchor.constraint(equalTo: sections.widthAnchor).isActive = true }
++        return page(header: header("Make It Yours", "Pick a starting look. You can change it any time in Settings."), body: sections,
++                    footer: footer(primary: "Continue", primaryEnabled: true, onPrimary: { [weak self] in self?.finishLook() }),
++                    compact: true)
++    }
++
++    private func section(_ name: String, _ content: NSView, note: String? = nil) -> NSView {
++        let label = NSTextField(labelWithString: name.uppercased())
++        label.font = .systemFont(ofSize: 11, weight: .semibold)
++        label.textColor = .tertiaryLabelColor
++        var views: [NSView] = [label, content]
++        if let note {
++            let caption = NSTextField(labelWithString: note)
++            caption.font = .systemFont(ofSize: 11)
++            caption.textColor = .tertiaryLabelColor
++            views.append(caption)
++        }
++        let stack = NSStackView(views: views)
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 6
++        content.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
++        return stack
++    }
++
++    private func segmented(_ titles: [String], selected: Int, enabled: [Bool]?, change: @escaping (Int) -> Void) -> NSSegmentedControl {
++        let control = NSSegmentedControl(labels: titles, trackingMode: .selectOne, target: nil, action: nil)
++        control.selectedSegment = selected
++        enabled?.enumerated().forEach { control.setEnabled($1, forSegment: $0) }
++        let target = PopupTarget { change($0) }
++        control.target = target
++        control.action = #selector(PopupTarget.changed(_:))
++        objc_setAssociatedObject(control, &PopupTarget.key, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
++        return control
++    }
++
++    // MARK: Layout helpers
++
++    private func page(header: NSView, body: NSView, footer: NSView, compact: Bool = false) -> NSView {
++        let container = NSView()
++        for view in [header, body, footer] {
++            view.translatesAutoresizingMaskIntoConstraints = false
++            container.addSubview(view)
++        }
++        let inset: CGFloat = 32
++        NSLayoutConstraint.activate([
++            header.topAnchor.constraint(equalTo: container.topAnchor, constant: compact ? 28 : 36),
++            header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
++            header.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
++            body.topAnchor.constraint(equalTo: header.bottomAnchor, constant: compact ? 16 : 24),
++            body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
++            body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
++            body.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -12),
++            footer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
++            footer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
++            footer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
++        ])
++        if body is NSScrollView { body.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12).isActive = true }
++        return container
++    }
++
++    private func header(_ text: String, _ detail: String) -> NSView {
++        let stack = NSStackView(views: [appIcon(56), title(text), subtitle(detail)])
++        stack.orientation = .vertical
++        stack.alignment = .centerX
++        stack.spacing = 8
++        return stack
++    }
++
++    private func headerBlock(_ pill: NSView, _ heading: String, _ note: String?) -> NSView {
++        let stack = NSStackView(views: [pill, title(heading)] + (note.map { [subtitle($0)] } ?? []))
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 10
++        return stack
++    }
++
++    private func footer(primary: String, primaryEnabled: Bool, onPrimary: @escaping () -> Void) -> NSView {
++        let backButton = OnboardingButton(title: "Back", style: .secondary) { [weak self] in self?.back() }
++        let primaryButton = OnboardingButton(title: primary, style: .primary, action: onPrimary)
++        primaryButton.isEnabled = primaryEnabled
++        primaryButton.keyEquivalent = "\r"
++        let spring = NSView()
++        spring.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let stack = NSStackView(views: [backButton, spring, primaryButton])
++        stack.spacing = 10
++        for button in [backButton, primaryButton] { button.widthAnchor.constraint(equalToConstant: 110).isActive = true }
++        return stack
++    }
++
++    private func title(_ text: String) -> NSTextField {
++        let label = NSTextField(labelWithString: text)
++        label.font = .systemFont(ofSize: 28, weight: .bold)
++        label.textColor = .labelColor
++        label.alignment = .center
++        return label
++    }
++
++    private func subtitle(_ text: String) -> NSTextField {
++        let label = NSTextField(wrappingLabelWithString: text)
++        label.font = .systemFont(ofSize: 14)
++        label.textColor = .secondaryLabelColor
++        label.alignment = .center
++        label.preferredMaxLayoutWidth = 460
++        return label
++    }
++
++    private func errorLabel(_ text: String) -> NSTextField {
++        let label = NSTextField(wrappingLabelWithString: text)
++        label.font = .systemFont(ofSize: 12)
++        label.textColor = .systemRed
++        return label
++    }
++
++    private func emptyNote(_ heading: String, _ text: String) -> NSView {
++        let stack = NSStackView(views: [title(heading), subtitle(text)])
++        stack.orientation = .vertical
++        stack.spacing = 8
++        return stack
++    }
++
++    private func explanation(_ text: String, action: (String, () -> Void)) -> NSView {
++        let label = NSTextField(wrappingLabelWithString: text)
++        label.font = .systemFont(ofSize: 13)
++        label.textColor = .secondaryLabelColor
++        let button = OnboardingButton(title: action.0, style: .secondary, action: action.1)
++        let stack = NSStackView(views: [label, button])
++        stack.orientation = .vertical
++        stack.alignment = .leading
++        stack.spacing = 12
++        return stack
++    }
++
++    private func appIcon(_ size: CGFloat) -> NSView {
++        let view = NSImageView(image: NSApp.applicationIconImage)
++        view.imageScaling = .scaleProportionallyUpOrDown
++        view.widthAnchor.constraint(equalToConstant: size).isActive = true
++        view.heightAnchor.constraint(equalToConstant: size).isActive = true
++        return view
++    }
++
++    private func spacer(_ height: CGFloat) -> NSView {
++        let view = NSView()
++        view.heightAnchor.constraint(equalToConstant: height).isActive = true
++        return view
++    }
++
++    private func fixedWidth(_ view: NSView, _ width: CGFloat) -> NSView {
++        view.widthAnchor.constraint(equalToConstant: width).isActive = true
++        return view
++    }
++}
++
++private extension DetectedBrowser {
++    var subtitleNote: String? { notes.first }
++}
++
++// MARK: - Panel
++
++private final class OnboardingPanel: NSPanel {
++    var onEscape: (() -> Void)?
++    override var canBecomeKey: Bool { true }
++    override var canBecomeMain: Bool { false }
++    override func cancelOperation(_ sender: Any?) { onEscape?() }
++}
++
++private final class FlippedView: NSView {
++    override var isFlipped: Bool { true }
++
++    convenience init(wrapping content: NSView) {
++        self.init(frame: .zero)
++        content.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(content)
++        NSLayoutConstraint.activate([
++            content.topAnchor.constraint(equalTo: topAnchor), content.leadingAnchor.constraint(equalTo: leadingAnchor),
++            content.bottomAnchor.constraint(equalTo: bottomAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
++        ])
++    }
++}
++
++private final class PopupTarget: NSObject {
++    nonisolated(unsafe) static var key: UInt8 = 0
++    private let change: (Int) -> Void
++    init(_ change: @escaping (Int) -> Void) { self.change = change }
++    @MainActor @objc func changed(_ sender: Any?) {
++        if let popup = sender as? NSPopUpButton { change(popup.indexOfSelectedItem) }
++        if let control = sender as? NSSegmentedControl { change(control.selectedSegment) }
++    }
++}
++
++// MARK: - Controls
++
++private final class OnboardingButton: NSButton {
++    enum Style { case primary, secondary, text, pill }
++
++    let style: Style
++    private let handler: () -> Void
++
++    init(title: String, style: Style, action: @escaping () -> Void) {
++        self.style = style
++        handler = action
++        super.init(frame: .zero)
++        self.title = title
++        isBordered = false
++        wantsLayer = true
++        target = self
++        self.action = #selector(fire)
++        font = .systemFont(ofSize: style == .pill ? 13 : 14, weight: style == .text ? .regular : .medium)
++        layer?.cornerRadius = style == .pill ? 14 : 10
++        refresh()
++        if style != .text { heightAnchor.constraint(equalToConstant: style == .pill ? 28 : 40).isActive = true }
++    }
++
++    required init?(coder: NSCoder) { nil }
++
++    override var isEnabled: Bool { didSet { refresh() } }
++    override func updateLayer() { refresh() }
++    override var intrinsicContentSize: NSSize {
++        var size = super.intrinsicContentSize
++        if style == .secondary || style == .pill { size.width += 24 }
++        return size
++    }
++
++    private func refresh() {
++        let foreground: NSColor = style == .primary ? .white : (style == .text ? .secondaryLabelColor : .labelColor)
++        attributedTitle = NSAttributedString(string: title, attributes: [
++            .font: font ?? .systemFont(ofSize: 14), .foregroundColor: foreground.withAlphaComponent(isEnabled ? 1 : 0.4)])
++        switch style {
++        case .primary: layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(isEnabled ? 1 : 0.35).cgColor
++        case .secondary, .pill: layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
++        case .text: layer?.backgroundColor = nil
++        }
++    }
++
++    @objc private func fire() { handler() }
++}
++
++private final class BrowserCard: NSControl {
++    private let handler: () -> Void
++
++    init(choice: BrowserChoice, handler: @escaping () -> Void) {
++        self.handler = handler
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.cornerRadius = 12
++        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
++        let icon = NSImageView(image: Self.icon(for: choice.source))
++        icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
++        icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
++        let name = NSTextField(labelWithString: choice.name)
++        name.font = .systemFont(ofSize: 14, weight: .semibold)
++        let detail = NSTextField(labelWithString: choice.isCurrentDefault ? "Your browser now" : choice.subtitle)
++        detail.font = .systemFont(ofSize: 12)
++        detail.textColor = choice.isCurrentDefault ? .controlAccentColor : .secondaryLabelColor
++        detail.lineBreakMode = .byTruncatingTail
++        let text = NSStackView(views: [name, detail])
++        text.orientation = .vertical
++        text.alignment = .leading
++        text.spacing = 2
++        widthAnchor.constraint(equalToConstant: Self.width).isActive = true
++        let chevron = NSImageView(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) ?? NSImage())
++        chevron.contentTintColor = .tertiaryLabelColor
++        let spring = NSView()
++        spring.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
++        let row = NSStackView(views: [icon, text, spring, chevron])
++        row.spacing = 12
++        row.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
++        row.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(row)
++        NSLayoutConstraint.activate([
++            row.leadingAnchor.constraint(equalTo: leadingAnchor), row.trailingAnchor.constraint(equalTo: trailingAnchor),
++            row.topAnchor.constraint(equalTo: topAnchor), row.bottomAnchor.constraint(equalTo: bottomAnchor),
++        ])
++        setAccessibilityElement(true)
++        setAccessibilityRole(.button)
++        setAccessibilityLabel("\(choice.name), \(choice.subtitle)")
++    }
++
++    required init?(coder: NSCoder) { nil }
++
++    static let width: CGFloat = 282
++    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
++    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
++    override func mouseDown(with event: NSEvent) { handler() }
++
++    private static func icon(for source: ImportSource) -> NSImage {
++        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: source.bundleIdentifier) {
++            return NSWorkspace.shared.icon(forFile: url.path)
++        }
++        return NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage()
++    }
++}
++
++private final class ToggleRow: NSView {
++    init(row: ImportSelection.Row, toggled: @escaping () -> Void) {
++        super.init(frame: .zero)
++        wantsLayer = true
++        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
++        let title = NSTextField(labelWithString: row.title)
++        title.font = .systemFont(ofSize: 14, weight: .medium)
++        let detail = NSTextField(labelWithString: row.detail)
++        detail.font = .systemFont(ofSize: 12)
++        detail.textColor = .secondaryLabelColor
++        let text = NSStackView(views: [title, detail])
++        text.orientation = .vertical
++        text.alignment = .leading
++        text.spacing = 1
++        let toggle = NSSwitch()
++        toggle.state = row.isOn ? .on : .off
++        toggle.isEnabled = row.isEnabled
++        let target = PopupTarget { _ in toggled() }
++        toggle.target = target
++        toggle.action = #selector(PopupTarget.changed(_:))
++        objc_setAssociatedObject(toggle, &PopupTarget.key, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
++        let spring = NSView()
++        spring.setContentHuggingPriority(.defaultLow, for: .horizontal)
++        let stack = NSStackView(views: [text, spring, toggle])
++        stack.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
++        stack.translatesAutoresizingMaskIntoConstraints = false
++        addSubview(stack)
++        NSLayoutConstraint.activate([
++            stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
++            stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
++        ])
++    }
++
++    required init?(coder: NSCoder) { nil }
++}
++
++/// A mini wireframe of the window with the tab strip where the layout puts it.
++private final class LayoutTile: NSControl {
++    private let layout: TabLayout
++    private let isSelected: Bool
++    private let handler: () -> Void
++
++    init(layout: TabLayout, isSelected: Bool, handler: @escaping () -> Void) {
++        self.layout = layout
++        self.isSelected = isSelected
++        self.handler = handler
++        super.init(frame: .zero)
++        heightAnchor.constraint(equalToConstant: 112).isActive = true
++        setAccessibilityElement(true)
++        setAccessibilityRole(.radioButton)
++        setAccessibilityLabel(layout.isAvailable ? layout.title : "\(layout.title), coming soon")
++    }
++
++    required init?(coder: NSCoder) { nil }
++
++    override var isFlipped: Bool { true }
++    override func mouseDown(with event: NSEvent) { if layout.isAvailable { handler() } }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let alpha: CGFloat = layout.isAvailable ? 1 : 0.4
++        let frame = NSRect(x: 0, y: 0, width: bounds.width, height: 84).insetBy(dx: 1, dy: 1)
++        NSColor.white.withAlphaComponent(0.08 * alpha).setFill()
++        NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8).fill()
++        let strip = NSColor.white.withAlphaComponent(0.28 * alpha)
++        let page = NSColor.white.withAlphaComponent(0.12 * alpha)
++        let inner = frame.insetBy(dx: 6, dy: 6)
++        let stripRect: NSRect, pageRect: NSRect
++        switch layout {
++        case .sidebar:
++            stripRect = NSRect(x: inner.minX, y: inner.minY, width: 22, height: inner.height)
++            pageRect = NSRect(x: inner.minX + 26, y: inner.minY, width: inner.width - 26, height: inner.height)
++        case .sidebarRight:
++            stripRect = NSRect(x: inner.maxX - 22, y: inner.minY, width: 22, height: inner.height)
++            pageRect = NSRect(x: inner.minX, y: inner.minY, width: inner.width - 26, height: inner.height)
++        case .top:
++            stripRect = NSRect(x: inner.minX, y: inner.minY, width: inner.width, height: 12)
++            pageRect = NSRect(x: inner.minX, y: inner.minY + 16, width: inner.width, height: inner.height - 16)
++        }
++        strip.setFill()
++        NSBezierPath(roundedRect: stripRect, xRadius: 4, yRadius: 4).fill()
++        page.setFill()
++        NSBezierPath(roundedRect: pageRect, xRadius: 4, yRadius: 4).fill()
++        if isSelected {
++            NSColor.controlAccentColor.setStroke()
++            let outline = NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8)
++            outline.lineWidth = 2
++            outline.stroke()
++        }
++        let caption = layout.isAvailable ? layout.title : "\(layout.title) · Coming soon"
++        let style = NSMutableParagraphStyle()
++        style.alignment = .center
++        style.lineBreakMode = .byTruncatingTail
++        (caption as NSString).draw(in: NSRect(x: 0, y: 90, width: bounds.width, height: 18), withAttributes: [
++            .font: NSFont.systemFont(ofSize: 11, weight: isSelected ? .semibold : .regular),
++            .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha), .paragraphStyle: style])
++    }
++}
++
++private final class ThemeSwatch: NSControl {
++    private let preset: OnboardingThemePreset
++    private let isSelected: Bool
++    private let handler: () -> Void
++
++    init(preset: OnboardingThemePreset, isSelected: Bool, handler: @escaping () -> Void) {
++        self.preset = preset
++        self.isSelected = isSelected
++        self.handler = handler
++        super.init(frame: .zero)
++        heightAnchor.constraint(equalToConstant: 56).isActive = true
++        setAccessibilityElement(true)
++        setAccessibilityRole(.radioButton)
++        setAccessibilityLabel(preset.name)
++    }
++
++    required init?(coder: NSCoder) { nil }
++
++    override var isFlipped: Bool { true }
++    override func mouseDown(with event: NSEvent) { handler() }
++
++    override func draw(_ dirtyRect: NSRect) {
++        let rect = NSRect(x: bounds.midX - 16, y: 4, width: 32, height: 32)
++        let circle = NSBezierPath(ovalIn: rect)
++        if let theme = preset.theme {
++            NSGraphicsContext.saveGraphicsState()
++            circle.addClip()
++            let colors = theme.stops.map { NSColor(hex: $0.color) }
++            if colors.count > 1 { NSGradient(colors: colors)?.draw(in: rect, angle: -45) } else { colors[0].setFill(); rect.fill() }
++            NSGraphicsContext.restoreGraphicsState()
++        } else {
++            NSColor.white.withAlphaComponent(0.1).setFill()
++            circle.fill()
++            let slash = NSBezierPath()
++            slash.move(to: NSPoint(x: rect.minX + 7, y: rect.maxY - 7))
++            slash.line(to: NSPoint(x: rect.maxX - 7, y: rect.minY + 7))
++            NSColor.white.withAlphaComponent(0.5).setStroke()
++            slash.lineWidth = 1.5
++            slash.stroke()
++        }
++        if isSelected {
++            NSColor.controlAccentColor.setStroke()
++            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: -3, dy: -3))
++            ring.lineWidth = 2
++            ring.stroke()
++        }
++        let style = NSMutableParagraphStyle()
++        style.alignment = .center
++        (preset.name as NSString).draw(in: NSRect(x: 0, y: 40, width: bounds.width, height: 14), withAttributes: [
++            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
 +    }
 +}

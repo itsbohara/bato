@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "e9b37bb92a2071609ccefb1d63d1fb9c947799bc84aa15b17a89344b1da45858",
+  "patch_sha256": "561d1e337a2efa92226c145094c88248fe3fb9c32cee0b22aa5e0d3dea78e6e5",
   "files": [
     {
       "root": "cef",
@@ -14,13 +14,13 @@
       "root": "cef",
       "path": "BUILD.gn",
       "original_sha256": "e02ab88a00db11feb75a38e80e07929c8cdd7a06499a6d901dba97cd897ff1b2",
-      "patched_sha256": "e3c65ddf56f09fbd949701a810533eb7588f34debd95a630db4d12a0e473fcc2"
+      "patched_sha256": "59d2a9f50f4079a0577da93c3fc7f71d1c406d174db80ffc811d76bbb5b63897"
     },
     {
       "root": "cef",
       "path": "tests/cefsimple/native_slot_client.mm",
       "original_sha256": null,
-      "patched_sha256": "fc1d2456443c0fe17c3255c0f17ba36e0ace2f04b063fd79c49c747c0daefd00"
+      "patched_sha256": "2c72c0ea2c050b2026bd20227d59d5b6773a6bb4b9fa07c7bb583b9c4f91bc71"
     },
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "add988f3499171c0a0744e6ee34f7c188dcdb4ecf73de7c51be1d8957729ff35"
+      "patched_sha256": "f70a81535d68bc625caba1120c9534f55e94e3ef746ad3356be0cdd0a68de293"
     },
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "2b97b26c192b0b07d4cd81f3ad573644bb452f4327e27636ac351c4a110ae27e"
+      "patched_sha256": "9a887755ef10d86da8bd778a4ba9a226b5b00c4b4e87834c8d7a4eef625dcc7f"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "fdd3c4dafecf1c9228979c06178758c73bc11e8141063b59162f01caec8215c1"
+      "patched_sha256": "785612181b9169f3f2bd3407a62755a88ba5104667f97902ca47f01b027932f6"
     },
     {
       "root": "cef",
@@ -230,7 +230,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift",
       "original_sha256": null,
-      "patched_sha256": "fbb7a77e82dae87811cd63ac0d0dc298de1b614e19f431a7bc49673151e58b03"
+      "patched_sha256": "8210ed88657990ab069fe7e6255207ce07749281ebebfb4b47300c49f726fa96"
     },
     {
       "root": "cef",
@@ -416,7 +416,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift",
       "original_sha256": null,
-      "patched_sha256": "99dcd0b23fc5086f5efe51d283ddeda4b3505913531f1d552299998e12b0ceff"
+      "patched_sha256": "7d94d4ba2c501c9a4f1e2ef65f3c9b4940ba3aaaa67e26a1a32b55bc8c79d829"
     },
     {
       "root": "cef",
@@ -446,7 +446,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoImport/ChromiumProfileWriter.swift",
       "original_sha256": null,
-      "patched_sha256": "1f3f00e4d4919f4293b1c495b4df7e3b4e1cf3aa9bbf2ff878bf9c89f88a7289"
+      "patched_sha256": "c2aa1bd848b66b24145581cde56ab41cfaa12697f41452b7f2b6f286fde8da71"
     },
     {
       "root": "cef",
@@ -489,6 +489,24 @@
       "path": "tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift",
       "original_sha256": null,
       "patched_sha256": "8a1dbe29c8a627f1ddfa13ffb24b15c4a918f76730f5a61f0a5c744f590c28b3"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoCore/Onboarding.swift",
+      "original_sha256": null,
+      "patched_sha256": "d4ec987398069670f035c6aa58ce3beb45f3ef6a561420669ae17779bedcee49"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoImport/ImportSelection.swift",
+      "original_sha256": null,
+      "patched_sha256": "225d2b0707604b1d789e2d69db93002a1d2c8199daa4a218985010f4255dfa4a"
+    },
+    {
+      "root": "cef",
+      "path": "tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift",
+      "original_sha256": null,
+      "patched_sha256": "f64243cc81a55710bbabd7fd36eaac4ea4c0779c86789f0e36e46a55b7fe2d38"
     }
   ],
   "source_mirrors": {
