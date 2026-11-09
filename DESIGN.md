@@ -113,6 +113,10 @@ Keyboard focus must move correctly among chrome, command bar, web content, exten
 
 Diagnostics should record versions, operation type, and sanitized errors. Full URLs, page content, browsing history, extension secrets, and private reference screenshots should not be published in bug reports by default.
 
+## Deferred and future
+
+**Future: AI and agents onboarding step.** An optional onboarding page, "AI and Agents", with a master "Use AI and agents" toggle and items for a page assistant (ask about or act on the current page, with a shortcut), hold-to-talk voice, running coding agents such as Claude Code or Codex next to tabs, and link, page and video summaries. Everything stays off for V1 and is kept as future optional UX; the V1 onboarding offers only "Bring everything over".
+
 ## Review and delivery gates
 
 On2026-10-30, the user approved starting provisional application implementation alongside remaining engine/extension acceptance. This changes implementation sequencing; the compatibility and daily-use requirements below remain in force.
