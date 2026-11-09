@@ -307,6 +307,7 @@ final class SidebarEntryDragSource: NSObject, NSDraggingSource {
         context == .withinApplication ? .move : []
     }
 
+    var onBegan: ((UUID) -> Void)?
     var onEnded: (() -> Void)?
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
@@ -325,6 +326,7 @@ final class SidebarEntryDragSource: NSObject, NSDraggingSource {
         row.beginDraggingSession(with: [dragging], event: event, source: self)
         row.alphaValue = 0.35
         draggedRow = row
+        onBegan?(entryID)
     }
 
     private static func liftedImage(of row: NSView, margin: CGFloat) -> NSImage {

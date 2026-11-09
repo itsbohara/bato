@@ -101,6 +101,11 @@ public final class NativeWorkspaceController: NSObject {
             _ = self.runtime.updateSplitRatio(split.id, ratio: ratio)
         }
         frame.canAddSplit = runtime.supportsSplits && runtime.state.canSplitSelection
+        frame.splitDrop.onDrop = { [weak self] id, side in
+            guard let self, self.runtime.state.canCreateSplit(with: id) else { return false }
+            self.perform { self.runtime.createSplit(with: id, side: side) }
+            return true
+        }
         cardFrames.add(frame)
         return frame
     }
@@ -768,7 +773,14 @@ public final class NativeWorkspaceController: NSObject {
         peekActions.widthAnchor.constraint(equalTo: peekRow.widthAnchor).isActive = true
 
         entries.slotViews = { [weak self] in self?.dropSlotViews ?? [] }
-        entryDragSource.onEnded = { [weak self] in self?.entries.setFavoritesZone(visible: false) }
+        entryDragSource.onBegan = { [weak self] id in
+            guard let self, self.runtime.supportsSplits, self.runtime.state.canCreateSplit(with: id) else { return }
+            self.cardFrames.allObjects.forEach { $0.beginSplitDrop() }
+        }
+        entryDragSource.onEnded = { [weak self] in
+            self?.entries.setFavoritesZone(visible: false)
+            self?.cardFrames.allObjects.forEach { $0.splitDrop.disarm() }
+        }
         entries.resolveDrop = { [weak self] id, point in self?.resolveDrop(entryID: id, at: point) }
         entries.performDrop = { [weak self] id, target in self?.performDrop(entryID: id, target: target) ?? false }
         entries.orientation = .vertical
@@ -3501,6 +3513,12 @@ public final class ContentCardFrameView: NSView {
     public static let emptyHint = "Press ⌘T to open a tab"
     var onShowSidebar: (() -> Void)?
     private let showSidebarButton = NSButton(frame: .zero)
+    let splitDrop = SplitDropOverlay(frame: .zero)
+
+    func beginSplitDrop() {
+        splitDrop.cardRect = cardRect
+        splitDrop.arm()
+    }
 
     /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
     static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
@@ -3515,6 +3533,8 @@ public final class ContentCardFrameView: NSView {
         layer?.zPosition = 1000
         configureShowSidebarButton()
         configureSplitButton()
+        splitDrop.frame = bounds
+        addSubview(splitDrop)
         AppearanceWatcher.start()
         NotificationCenter.default.addObserver(self, selector: #selector(redraw),
                                                name: AppearanceWatcher.didChange, object: nil)
@@ -3529,6 +3549,7 @@ public final class ContentCardFrameView: NSView {
     public override var isFlipped: Bool { true }
     /// The empty card covers Chrome's toolbar and blank page, so it must swallow their clicks too.
     public override func hitTest(_ point: NSPoint) -> NSView? {
+        if splitDrop.isArmed, !isHidden, cardRect.contains(convert(point, from: superview)) { return splitDrop }
         guard showsEmptyState, !isHidden, cardRect.contains(convert(point, from: superview)) else { return nil }
         return self
     }
