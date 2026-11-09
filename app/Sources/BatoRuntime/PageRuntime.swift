@@ -236,9 +236,10 @@ public final class PageRuntime {
     }
 
     @discardableResult
-    public func addWorkspace(name: String, color: String? = nil) -> Bool {
+    public func addWorkspace(name: String, color: String? = nil, theme: SpaceTheme? = nil, icon: String? = nil) -> Bool {
         change { candidate in
-            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID, color: color)
+            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID,
+                                                color: color, theme: theme, icon: icon)
             try candidate.activateWorkspace(id)
         }
     }
@@ -278,6 +279,11 @@ public final class PageRuntime {
     @discardableResult
     public func updateWorkspace(_ id: UUID, name: String, color: String) -> Bool {
         change(reconcileSelection: false) { try $0.updateWorkspace(id, name: name, color: color) }
+    }
+
+    @discardableResult
+    public func updateWorkspaceTheme(_ id: UUID, theme: SpaceTheme) -> Bool {
+        change(reconcileSelection: false) { try $0.updateWorkspaceTheme(id, theme: theme) }
     }
 
     /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine

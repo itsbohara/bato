@@ -240,12 +240,20 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var archivePeriod: ArchivePeriod?
     /// Hides every pinned page and folder under the Space header. Pinned pages stay loaded and selectable by other means.
     public var pinsCollapsed: Bool
+    /// Absent in documents saved before Spaces had themes; `effectiveTheme` then derives one from `color`.
+    public var theme: SpaceTheme?
+    /// An emoji, or `symbol:` followed by an SF Symbol name.
+    public var icon: String?
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil, pinsCollapsed: Bool = false) {
+    public var effectiveTheme: SpaceTheme { theme ?? SpaceTheme(color: color) }
+
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: String = "#B47879", pins: [PageEntry] = [], folders: [PageFolder] = [], tabs: [PageEntry] = [], activeEntryID: UUID? = nil, splits: [PageSplit] = [], activeSplitID: UUID? = nil, archivePeriod: ArchivePeriod? = nil, pinsCollapsed: Bool = false, theme: SpaceTheme? = nil, icon: String? = nil) {
         self.id = id
         self.profileID = profileID
         self.name = name
         self.color = color
+        self.theme = theme
+        self.icon = icon
         self.pins = pins
         self.folders = folders
         self.tabs = tabs
@@ -306,7 +314,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod, pinsCollapsed
+        case id, profileID, name, color, pins, folders, tabs, activeEntryID, splits, activeSplitID, archivePeriod, pinsCollapsed, theme, icon
     }
 
     public init(from decoder: any Decoder) throws {
@@ -323,6 +331,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         activeEntryID = try values.decodeIfPresent(UUID.self, forKey: .activeEntryID)
         archivePeriod = try values.decodeIfPresent(ArchivePeriod.self, forKey: .archivePeriod)
         pinsCollapsed = try values.decodeIfPresent(Bool.self, forKey: .pinsCollapsed) ?? false
+        theme = try values.decodeIfPresent(SpaceTheme.self, forKey: .theme)
+        icon = try values.decodeIfPresent(String.self, forKey: .icon)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -341,6 +351,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         try values.encodeIfPresent(archivePeriod, forKey: .archivePeriod)
         // Documents that never collapsed the pinned section keep their bytes.
         if pinsCollapsed { try values.encode(true, forKey: .pinsCollapsed) }
+        try values.encodeIfPresent(theme, forKey: .theme)
+        try values.encodeIfPresent(icon, forKey: .icon)
     }
 }
 
@@ -534,6 +546,7 @@ public struct BrowserState: Codable, Equatable, Sendable {
             try Self.validateName(workspace.name)
             guard profileIDs.contains(workspace.profileID) else { throw BrowserStateError.missingProfile }
             try Self.validateColor(workspace.color)
+            if let theme = workspace.theme, !theme.isValid { throw BrowserStateError.invalidColor }
             for entry in workspace.pins { try validateEntry(entry, kind: .pinned) }
             for entry in workspace.tabs { try validateEntry(entry, kind: .temporary) }
             let pinIDs = Set(workspace.pins.map(\.id))
@@ -746,7 +759,8 @@ public struct BrowserState: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil) throws -> UUID {
+    public mutating func addWorkspace(name: String, profileID: UUID, color: String? = nil,
+                                      theme: SpaceTheme? = nil, icon: String? = nil) throws -> UUID {
         try transact { draft in
             guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -756,6 +770,12 @@ public struct BrowserState: Codable, Equatable, Sendable {
                 try Self.validateColor(color)
                 workspace.color = color.uppercased()
             }
+            if let theme {
+                guard theme.isValid else { throw BrowserStateError.invalidColor }
+                workspace.theme = theme
+                workspace.color = theme.primaryColor
+            }
+            workspace.icon = icon
             draft.workspaces.append(workspace)
             return workspace.id
         }
@@ -795,7 +815,20 @@ public struct BrowserState: Codable, Equatable, Sendable {
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             try Self.validateName(name)
             draft.workspaces[index].name = name
+            if color.uppercased() != draft.workspaces[index].color { draft.workspaces[index].theme = nil }
             draft.workspaces[index].color = color.uppercased()
+        }
+    }
+
+    /// Replaces the theme; the workspace colour follows its first stop so badges and dots keep matching.
+    public mutating func updateWorkspaceTheme(_ id: UUID, theme: SpaceTheme) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            guard theme.isValid else { throw BrowserStateError.invalidColor }
+            draft.workspaces[index].theme = theme
+            draft.workspaces[index].color = theme.primaryColor
         }
     }
 
