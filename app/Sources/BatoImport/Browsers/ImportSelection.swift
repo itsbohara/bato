@@ -1,14 +1,23 @@
 import Foundation
 
 extension ImportSource {
+    public var bundleIdentifier: String {
+        switch self {
+        case .chrome: "com.google.Chrome"
+        case .brave: "com.brave.Browser"
+        case .edge: "com.microsoft.edgemac"
+        case .arc: "company.thebrowser.Browser"
+        case .dia: "company.thebrowser.dia"
+        case .safari: "com.apple.Safari"
+        case .firefox: "org.mozilla.firefox"
+        case .zen: "app.zen-browser.zen"
+        case .orion: "com.kagi.kagimacOS"
+        }
+    }
+
     /// The browser a macOS bundle identifier belongs to, for spotting the current default browser.
     public init?(bundleIdentifier: String) {
-        let known: [String: ImportSource] = [
-            "com.google.Chrome": .chrome, "com.brave.Browser": .brave, "com.microsoft.edgemac": .edge,
-            "company.thebrowser.Browser": .arc, "company.thebrowser.dia": .dia, "com.apple.Safari": .safari,
-            "org.mozilla.firefox": .firefox, "app.zen-browser.zen": .zen, "com.kagi.kagimacOS": .orion,
-        ]
-        guard let source = known[bundleIdentifier] else { return nil }
+        guard let source = Self.allCases.first(where: { $0.bundleIdentifier == bundleIdentifier }) else { return nil }
         self = source
     }
 }
