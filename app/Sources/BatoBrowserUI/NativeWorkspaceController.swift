@@ -1070,6 +1070,7 @@ public final class NativeWorkspaceController: NSObject {
         for frame in cardFrames.allObjects {
             frame.theme = theme
             frame.showsEmptyState = state.showsEmptySpace
+            frame.blanksPages = createSpacePage != nil
             frame.canAddSplit = runtime.supportsSplits && state.canSplitSelection
             frame.focusedPane = focusedPaneIndex
         }
@@ -2182,6 +2183,7 @@ public final class NativeWorkspaceController: NSObject {
             page.bottomAnchor.constraint(equalTo: sidebarScroll.bottomAnchor)
         ])
         createSpacePage = page
+        cardFrames.allObjects.forEach { $0.blanksPages = true }
         sidebarScroll.alphaValue = 0
         requestNativeFocus?()
         previewTheme(draft)
@@ -2205,6 +2207,7 @@ public final class NativeWorkspaceController: NSObject {
         guard let page = createSpacePage else { return }
         createSpacePage = nil
         themePreview = nil
+        cardFrames.allObjects.forEach { $0.blanksPages = false }
         sidebarScroll.alphaValue = 1
         page.removeFromSuperview()
         render()
@@ -3688,6 +3691,14 @@ public final class ContentCardFrameView: NSView {
         }
     }
     public static let emptyHint = "Press ⌘T to open a tab"
+    /// Covers every page with a plain themed card, as Arc does while a new Space is being created.
+    public var blanksPages = false {
+        didSet {
+            guard blanksPages != oldValue else { return }
+            needsDisplay = true
+            updateSplitButton()
+        }
+    }
     var onShowSidebar: (() -> Void)?
     private let showSidebarButton = NSButton(frame: .zero)
     let splitDrop = SplitDropOverlay(frame: .zero)
@@ -3728,7 +3739,7 @@ public final class ContentCardFrameView: NSView {
     /// The empty card covers Chrome's toolbar and blank page, so it must swallow their clicks too.
     public override func hitTest(_ point: NSPoint) -> NSView? {
         if splitDrop.isArmed, !isHidden, cardRect.contains(convert(point, from: superview)) { return splitDrop }
-        guard showsEmptyState, !isHidden, cardRect.contains(convert(point, from: superview)) else { return nil }
+        guard showsEmptyState || blanksPages, !isHidden, cardRect.contains(convert(point, from: superview)) else { return nil }
         return self
     }
     public override func isAccessibilityElement() -> Bool { showsEmptyState }
@@ -3772,7 +3783,7 @@ public final class ContentCardFrameView: NSView {
     }
 
     private func updateSplitButton() {
-        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState
+        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState || blanksPages
         needsLayout = true
     }
 
@@ -3928,15 +3939,22 @@ public final class ContentCardFrameView: NSView {
         card.lineWidth = 1
         card.stroke()
         NSGraphicsContext.restoreGraphicsState()
-        if let focusedPane, paneCards.indices.contains(focusedPane) { drawFocus(of: paneCards[focusedPane], outside: ring) }
-        if let pill = grabberPillRect {
+        if !blanksPages, let focusedPane, paneCards.indices.contains(focusedPane) { drawFocus(of: paneCards[focusedPane], outside: ring) }
+        if !blanksPages, let pill = grabberPillRect {
             let active = grabberHovered || grabberDragging
             let dark = effectiveAppearance.isDark
             (dark ? (active ? NSColor(srgbRed: 0.58, green: 0.57, blue: 0.60, alpha: 1) : NSColor(srgbRed: 0.34, green: 0.31, blue: 0.36, alpha: 1))
                   : NSColor.black.withAlphaComponent(active ? 0.5 : 0.25)).setFill()
             NSBezierPath(roundedRect: pill, xRadius: min(pill.width, pill.height) / 2, yRadius: min(pill.width, pill.height) / 2).fill()
         }
-        if showsEmptyState { drawEmptyState(in: paths[0]) }
+        if blanksPages {
+            NSGraphicsContext.saveGraphicsState()
+            card.addClip()
+            ThemeFill.drawLifted(theme, in: cardRect, appearance: effectiveAppearance)
+            NSGraphicsContext.restoreGraphicsState()
+        } else if showsEmptyState {
+            drawEmptyState(in: paths[0])
+        }
     }
 
     /// Arc's focused pane: a 2pt outline inside the pane's bounds and a soft glow that only shows between panes.
