@@ -7911,7 +7911,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4216 @@
+@@ -0,0 +1,4235 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -8187,6 +8187,8 @@
 +                self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
 +            },
 +            applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
++            previewLook: { [weak self] theme, appearance in self?.previewOnboardingLook(theme: theme, appearance: appearance) },
++            endPreview: { [weak self] in self?.endOnboardingPreview() },
 +            finished: { [weak self] in
 +                try? self?.preferences.update { $0.onboardingCompleted = true }
 +                self?.onboarding = nil
@@ -8229,6 +8231,23 @@
 +        try? preferences.update { $0.appearance = appearance }
 +        NSApp.appearance = appearance.nsAppearance
 +        if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
++    }
++
++    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
++        NSApp.appearance = appearance.nsAppearance
++        guard let theme else { return endThemePreview() }
++        previewTheme(theme)
++    }
++
++    private func endOnboardingPreview() {
++        NSApp.appearance = preferences.current().appearance.nsAppearance
++        endThemePreview()
++    }
++
++    private func endThemePreview() {
++        guard themePreview != nil else { return }
++        themePreview = nil
++        render()
 +    }
 +
 +    /// Waits for launch sheets to clear, then asks once about the optional uBlock Origin lists.
@@ -23223,7 +23242,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,883 @@
 +import AppKit
 +import BatoCore
 +import BatoImport
@@ -23235,16 +23254,24 @@
 +    /// Saves the snapshot into the current Profile as one transaction and returns a one-line result.
 +    public var commitImport: (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>
 +    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
++    /// Shows a look without saving it; nil theme keeps the Space's own.
++    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
++    /// Drops any preview and returns to the saved look.
++    public var endPreview: () -> Void
 +    /// Called once when the card ends by any route, including Skip Setup.
 +    public var finished: () -> Void
 +
 +    public init(importer: BrowserImporter, defaultSource: @escaping () -> ImportSource?,
 +                commitImport: @escaping (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>,
-+                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void, finished: @escaping () -> Void) {
++                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void,
++                previewLook: @escaping (SpaceTheme?, AppAppearance) -> Void, endPreview: @escaping () -> Void,
++                finished: @escaping () -> Void) {
 +        self.importer = importer
 +        self.defaultSource = defaultSource
 +        self.commitImport = commitImport
 +        self.applyLook = applyLook
++        self.previewLook = previewLook
++        self.endPreview = endPreview
 +        self.finished = finished
 +    }
 +}
@@ -23316,6 +23343,7 @@
 +        parent.removeChildWindow(panel)
 +        panel.orderOut(nil)
 +        parent.makeKeyAndOrderFront(nil)
++        hooks.endPreview()
 +        hooks.finished()
 +    }
 +
@@ -23339,6 +23367,10 @@
 +    private func skip() {
 +        flow.skip()
 +        close()
++    }
++
++    private func previewChoices() {
++        hooks.previewLook(choices.theme, choices.appearance)
 +    }
 +
 +    private func finishLook() {
@@ -23379,6 +23411,7 @@
 +    }
 +
 +    private func present(animated: Bool) {
++        flow.step == .makeItYours ? previewChoices() : hooks.endPreview()
 +        let next = makeStepView()
 +        next.translatesAutoresizingMaskIntoConstraints = false
 +        card.addSubview(next)
@@ -23641,6 +23674,7 @@
 +        let appearance = segmented(AppAppearance.allCases.map(\.title), selected: AppAppearance.allCases.firstIndex(of: choices.appearance) ?? 0,
 +                                   enabled: nil) { [weak self] index in
 +            self?.choices.appearance = AppAppearance.allCases[index]
++            self?.previewChoices()
 +        }
 +        let sections = NSStackView(views: [
 +            section("Tabs", tiles), section("Space Theme", swatches),
