@@ -83,16 +83,21 @@ public final class NativeWorkspaceController: NSObject {
     /// The state the list is drawn from; a neighbouring workspace's while its picture is taken for a slide.
     private var previewState: BrowserState?
     private var sidebarState: BrowserState { previewState ?? runtime.state }
-    private var accent: NSColor { workspaceColor(sidebarState.currentWorkspace.color) }
+    /// A theme being edited in the Create Space page or the theme popover, drawn instead of the stored one.
+    private var themePreview: SpaceTheme?
+    private var theme: SpaceTheme { themePreview ?? sidebarState.currentWorkspace.effectiveTheme }
+    private var accent: NSColor { themePreview?.primaryNSColor ?? workspaceColor(sidebarState.currentWorkspace.color) }
     private let sidebarScroll = SidebarScrollView()
     private var slide: SpaceSlide?
+    private var createSpacePage: CreateSpacePageView?
+    private var themePopover: SpaceThemePopover?
     private var slideReleasing = false
     private var slideListTop: CGFloat = 0
     private var slideHeight: CGFloat = 0
     private let cardFrames = NSHashTable<ContentCardFrameView>.weakObjects()
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
     public func makeCardFrame() -> ContentCardFrameView {
-        let frame = ContentCardFrameView(accent: accent)
+        let frame = ContentCardFrameView(theme: theme)
         frame.showsEmptyState = runtime.state.showsEmptySpace
         frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
         frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
@@ -944,9 +949,9 @@ public final class NativeWorkspaceController: NSObject {
         settingsWindow?.reload()
         let state = runtime.state
         let workspace = state.currentWorkspace
-        if slide == nil { (root as? WorkspaceRoot)?.accent = accent }
+        if slide == nil { (root as? WorkspaceRoot)?.theme = theme }
         for frame in cardFrames.allObjects {
-            frame.accent = accent
+            frame.theme = theme
             frame.showsEmptyState = state.showsEmptySpace
             frame.canAddSplit = runtime.supportsSplits && state.canSplitSelection
             frame.focusedPane = focusedPaneIndex
@@ -1791,7 +1796,7 @@ public final class NativeWorkspaceController: NSObject {
 
     private func makeSpaceHeader(_ workspace: Workspace, animatingFromCollapsed: Bool?) -> SpaceHeaderRow {
         let workspaceID = workspace.id
-        let header = SpaceHeaderRow(name: workspace.name, color: workspaceColor(workspace.color),
+        let header = SpaceHeaderRow(name: workspace.name, color: workspaceColor(workspace.color), icon: workspace.icon,
                                     collapsed: animatingFromCollapsed ?? workspace.pinsCollapsed)
         header.toggle = { [weak self] in self?.togglePins(inWorkspace: workspaceID) }
         header.showActions = { [weak self, weak header] in
@@ -1901,7 +1906,7 @@ public final class NativeWorkspaceController: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.addItem(ActionMenuItem(title: "Rename Space…") { [weak self] in self?.editWorkspace() })
-        menu.addItem(ActionMenuItem(title: "Change Colour…") { [weak self] in self?.editWorkspace() })
+        menu.addItem(ActionMenuItem(title: "Edit Theme…") { [weak self] in self?.editTheme() })
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == id else { return }
@@ -2028,37 +2033,91 @@ public final class NativeWorkspaceController: NSObject {
         finder.focusSearch()
     }
 
-    /// Asks for the name and colour first, so Cancel leaves organization untouched.
+    /// Shows the Create a Space page in place of the sidebar list. The draft theme previews on the window; Cancel
+    /// leaves organization untouched.
     private func createSpace() {
-        guard hasStarted, workspaceEditor == nil, folderEditor == nil, profileEditor == nil, let window = root.window,
-              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard hasStarted, createSpacePage == nil, workspaceEditor == nil, folderEditor == nil, profileEditor == nil,
+              themePopover == nil, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        finishSlideNow()
         let state = runtime.state
         let profileID = state.currentWorkspace.profileID
         let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
-        requestNativeFocus?()
-        let editor = WorkspaceEditor(creating: true, name: "Workspace \(state.workspaces.count + 1)", color: color) { [weak self] name, color in
-            guard let self else { return "Bato is no longer available." }
-            guard self.runtime.state.currentWorkspace.profileID == profileID else { return "The Profile is no longer active." }
+        var draft = SpaceTheme(color: color)
+        draft.intensity = Self.newSpaceIntensity
+        let profileName = state.profiles.first { $0.id == profileID }?.name ?? "Default"
+        let page = CreateSpacePageView(theme: draft, profileName: profileName)
+        page.onThemeChange = { [weak self] in self?.previewTheme($0) }
+        page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
+        page.onCreate = { [weak self] name, icon, theme in
+            guard let self else { return }
+            guard self.runtime.state.currentWorkspace.profileID == profileID else { return self.dismissCreateSpacePage() }
             let before = self.runtime.state.workspaces.count
-            // The engine rejects the selection change while this sheet is attached; the sheet's completion retries it.
-            _ = self.runtime.addWorkspace(name: name, color: color)
-            guard self.runtime.state.workspaces.count > before else {
-                return self.runtime.lastError == .saveFailed
-                    ? "Changes couldn’t be saved. Reopen Bato to reload organization."
-                    : "The Space couldn’t be created. Check its name and try again."
-            }
+            _ = self.runtime.addWorkspace(name: name, theme: theme, icon: icon)
+            guard self.runtime.state.workspaces.count > before else { return NSSound.beep() }
+            self.dismissCreateSpacePage()
+        }
+        page.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(page)
+        NSLayoutConstraint.activate([
+            page.leadingAnchor.constraint(equalTo: sidebarScroll.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: sidebarScroll.trailingAnchor),
+            page.topAnchor.constraint(equalTo: sidebarScroll.topAnchor),
+            page.bottomAnchor.constraint(equalTo: sidebarScroll.bottomAnchor)
+        ])
+        createSpacePage = page
+        sidebarScroll.alphaValue = 0
+        requestNativeFocus?()
+        previewTheme(draft)
+        if !Self.reducesMotion { slideIn(page) }
+        page.focusName()
+    }
+
+    private static let newSpaceIntensity = 0.6
+
+    private func slideIn(_ page: NSView) {
+        page.wantsLayer = true
+        let animation = CABasicAnimation(keyPath: "transform.translation.x")
+        animation.fromValue = sidebarScroll.bounds.width
+        animation.toValue = 0
+        animation.duration = 0.24
+        animation.timingFunction = SpaceSlide.releaseTiming
+        page.layer?.add(animation, forKey: "slideIn")
+    }
+
+    private func dismissCreateSpacePage() {
+        guard let page = createSpacePage else { return }
+        createSpacePage = nil
+        themePreview = nil
+        sidebarScroll.alphaValue = 1
+        page.removeFromSuperview()
+        render()
+    }
+
+    private func previewTheme(_ draft: SpaceTheme) {
+        themePreview = draft
+        (root as? WorkspaceRoot)?.theme = draft
+        for frame in cardFrames.allObjects { frame.theme = draft }
+    }
+
+    /// Edits the current Space's theme in the same popover the Create page uses; the change previews live and is
+    /// saved when the popover closes.
+    private func editTheme() {
+        guard hasStarted, createSpacePage == nil, themePopover == nil, workspaceEditor == nil, folderEditor == nil,
+              let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil,
+              let anchor = spaceHeaderRow else { return }
+        finishSlideNow()
+        let workspace = runtime.state.currentWorkspace
+        let original = workspace.effectiveTheme
+        requestNativeFocus?()
+        let popover = SpaceThemePopover(theme: original, onChange: { [weak self] in self?.previewTheme($0) }, onClose: { [weak self] edited in
+            guard let self else { return }
+            self.themePopover = nil
+            self.themePreview = nil
+            if edited != original { _ = self.runtime.updateWorkspaceTheme(workspace.id, theme: edited) }
             self.render()
-            return nil
-        }
-        workspaceEditor = editor
-        guard let sheet = editor.window else { workspaceEditor = nil; return }
-        window.beginSheet(sheet) { [weak self] _ in
-            self?.workspaceEditor = nil
-            // The engine refuses to change its selection while the sheet is attached, so the new Space's
-            // empty selection is presented only now; otherwise the previous Space's page stays visible.
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.resumeCommittedSelection() } }
-        }
-        editor.focusName()
+        })
+        themePopover = popover
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 
     private func editWorkspace() {
@@ -2101,6 +2160,7 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private func switchWorkspace(_ id: UUID) {
+        if createSpacePage != nil { dismissCreateSpacePage() }
         guard hasStarted, root.window?.attachedSheet == nil, NSApp.modalWindow == nil,
               id != runtime.state.activeWorkspaceID else { return }
         finishSlideNow()
@@ -2124,10 +2184,11 @@ public final class NativeWorkspaceController: NSObject {
         }
         recognizer.onTrack = { [weak self] in self?.trackSlide(offset: $0) }
         recognizer.onFinish = { [weak self] direction, _ in self?.releaseSlide(direction) }
+        recognizer.onPastEnd = { [weak self] in self?.createSpace() }
     }
 
     private var canSlide: Bool {
-        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating
+        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating && createSpacePage == nil
     }
 
     private func trackSlide(offset: CGFloat) {
@@ -2199,15 +2260,17 @@ public final class NativeWorkspaceController: NSObject {
         var state = runtime.state
         state.activeWorkspaceID = id
         previewState = state
+        (root as? WorkspaceRoot)?.appearance = state.currentWorkspace.effectiveTheme.appearance
         rebuildEntries(state, pinsAnimation: nil)
         entries.layoutSubtreeIfNeeded()
         let top = spaceHeaderRow.map { entries.convert($0.bounds, from: $0).minY } ?? 0
         let height = min(slideHeight, max(entries.bounds.height - top, 0))
         let page = capture(NSRect(x: 0, y: top, width: entries.bounds.width, height: height), top: slideListTop)
-        let tint = accent
+        let tint = theme
         previewState = nil
+        (root as? WorkspaceRoot)?.appearance = runtime.state.currentWorkspace.effectiveTheme.appearance
         rebuildEntries(runtime.state, pinsAnimation: nil)
-        if let page { slide.addNeighbour(direction, page: page, accent: tint) }
+        if let page { slide.addNeighbour(direction, page: page, theme: tint) }
     }
 
     private func capture(_ rect: NSRect, top: CGFloat) -> SpaceSlide.Page? {
@@ -2249,7 +2312,7 @@ public final class NativeWorkspaceController: NSObject {
         slide.remove()
         sidebarScroll.alphaValue = 1
         sidebarScroll.contentView.scroll(to: .zero)
-        (root as? WorkspaceRoot)?.accent = accent
+        (root as? WorkspaceRoot)?.theme = theme
     }
 
     /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
@@ -2756,11 +2819,15 @@ private final class WorkspaceRoot: AdaptiveSidebarView {
     override func scrollWheel(with event: NSEvent) {
         if !swipe.handle(event) { super.scrollWheel(with: event) }
     }
-    var accent: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
+    var theme = SpaceTheme(color: "#B47879") {
+        didSet {
+            appearance = theme.appearance
+            needsDisplay = true
+        }
+    }
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
-        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
+        ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
     }
     var keyEquivalentsEnabled = true
     var pointerChanged: ((Bool) -> Void)?
@@ -3463,7 +3530,12 @@ private final class ProfileEditor: NSWindowController {
 public final class ContentCardFrameView: NSView {
     public static let margin: CGFloat = 8
     static let cornerRadius: CGFloat = 12
-    var accent: NSColor { didSet { needsDisplay = true } }
+    var theme: SpaceTheme {
+        didSet {
+            appearance = theme.appearance
+            needsDisplay = true
+        }
+    }
     /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
     public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
     /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
@@ -3505,9 +3577,10 @@ public final class ContentCardFrameView: NSView {
     /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
     static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
 
-    init(accent: NSColor) {
-        self.accent = accent
+    init(theme: SpaceTheme) {
+        self.theme = theme
         super.init(frame: .zero)
+        appearance = theme.appearance
         autoresizingMask = [.width, .height]
         // Sibling layers composite by zPosition, not subview order, so Chromium re-adding a native
         // view (new tab, DevTools, Peek) above this one cannot cover the gutter.
@@ -3710,14 +3783,13 @@ public final class ContentCardFrameView: NSView {
         let paths = cardPaths
         let card = NSBezierPath()
         paths.forEach { card.append($0) }
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
         let ring = NSBezierPath(rect: bounds)
         ring.append(card)
         ring.windingRule = .evenOdd
         NSGraphicsContext.saveGraphicsState()
         ring.addClip()
         NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
-        NSGradient(starting: top, ending: bottom)?.draw(in: bounds, angle: -90)
+        ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
         shadow.shadowBlurRadius = 8
@@ -3767,12 +3839,9 @@ public final class ContentCardFrameView: NSView {
     static let focusColor = NSColor(srgbRed: 0x4f / 255, green: 0x40 / 255, blue: 0xf9 / 255, alpha: 1)
 
     private func drawEmptyState(in card: NSBezierPath) {
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: effectiveAppearance)
-        let lift = effectiveAppearance.isDark ? NSColor.white : NSColor.black
         NSGraphicsContext.saveGraphicsState()
         card.addClip()
-        NSGradient(starting: top.blended(withFraction: 0.08, of: lift) ?? top,
-                   ending: bottom.blended(withFraction: 0.08, of: lift) ?? bottom)?.draw(in: cardRect, angle: -90)
+        ThemeFill.drawLifted(theme, in: cardRect, appearance: effectiveAppearance)
         NSGraphicsContext.restoreGraphicsState()
         let text = NSAttributedString(string: Self.emptyHint, attributes: [
             .font: NSFont.systemFont(ofSize: 15, weight: .medium),
@@ -3790,6 +3859,7 @@ private final class SpaceHeaderRow: AdaptiveSidebarView {
     static let height: CGFloat = 36
     private static let labelX: CGFloat = 36
     private let color: NSColor
+    private let icon: String?
     private let name: String
     private lazy var nameButton = ActionButton(title: name) { [weak self] in self?.toggle?() }
     private lazy var actions = ActionButton(title: "") { [weak self] in self?.showActions?() }
@@ -3815,9 +3885,10 @@ private final class SpaceHeaderRow: AdaptiveSidebarView {
         key == "chevronTurn" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
     }
 
-    init(name: String, color: NSColor, collapsed: Bool) {
+    init(name: String, color: NSColor, icon: String?, collapsed: Bool) {
         self.name = name
         self.color = color
+        self.icon = icon
         isCollapsed = collapsed
         super.init(frame: .zero)
         chevronTurn = collapsed ? 1 : 0
@@ -3904,10 +3975,25 @@ private final class SpaceHeaderRow: AdaptiveSidebarView {
         let slot = NSPoint(x: 18, y: bounds.midY)
         if hovered || isCollapsed || chevronTurn != 0 {
             drawChevron(at: slot)
+        } else if let icon, let image = CreateSpacePageView.iconImage(icon, size: 14) {
+            drawIcon(image, at: slot)
         } else {
             color.setFill()
             NSBezierPath(ovalIn: NSRect(x: slot.x - 6, y: slot.y - 6, width: 12, height: 12)).fill()
         }
+    }
+
+    /// Emoji keep their colours; symbols take the Space colour.
+    private func drawIcon(_ image: NSImage, at slot: NSPoint) {
+        let rect = NSRect(x: slot.x - 7, y: slot.y - 7, width: 14, height: 14)
+        guard image.isTemplate else { return image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
+        let tinted = NSImage(size: rect.size, flipped: false) { bounds in
+            image.draw(in: bounds)
+            SidebarStyle.vivid(self.color).setFill()
+            bounds.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 
     /// A 10pt wide chevron, stroke 1.5, turned about its centre by `chevronTurn` quarter-turns.

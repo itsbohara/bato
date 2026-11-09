@@ -1,4 +1,5 @@
 import AppKit
+import BatoCore
 
 /// Decides whether a two-finger scroll gesture over the sidebar is a horizontal workspace swipe, and where the
 /// page sits while the fingers are down. Vertical scrolling of the tab list and wheel mice (no gesture phases)
@@ -12,6 +13,9 @@ struct WorkspaceSwipe {
         case track(CGFloat)
         /// The fingers lifted. `nil` means the page springs back; `velocity` is the page's pt/s at release.
         case finish(Direction?, velocity: CGFloat)
+        /// Like `finish(nil)`, but the fingers pulled a full commit distance past the last workspace: Arc opens its
+        /// Create a Space page from there.
+        case pastEnd(velocity: CGFloat)
     }
     struct Layout: Equatable {
         var width: CGFloat
@@ -64,9 +68,11 @@ struct WorkspaceSwipe {
         let hasNeighbour = direction == .previous ? layout.hasPrevious : layout.hasNext
         let flicked = abs(velocity) >= Self.flickVelocity && velocity * offset > 0 && abs(offset) >= Self.flickMinimumOffset
         let commit = phase.contains(.ended) && hasNeighbour && (abs(offset) >= Self.commitFraction * layout.width || flicked)
+        let pulledPastEnd = phase.contains(.ended) && direction == .next && !hasNeighbour
+            && -travelled.width * Self.travelScale >= Self.commitFraction * layout.width
         reset()
         swallowingMomentum = true
-        return .finish(commit ? direction : nil, velocity: velocity)
+        return pulledPastEnd ? .pastEnd(velocity: velocity) : .finish(commit ? direction : nil, velocity: velocity)
     }
 
     /// Finger travel scaled to the page, held to one page where a neighbour exists and resisted where none does.
@@ -110,6 +116,7 @@ final class WorkspaceSwipeRecognizer {
     var layout: (() -> WorkspaceSwipe.Layout)?
     var onTrack: ((CGFloat) -> Void)?
     var onFinish: ((WorkspaceSwipe.Direction?, CGFloat) -> Void)?
+    var onPastEnd: (() -> Void)?
 
     /// True when the event belongs to a horizontal workspace swipe and must not reach the scroll view.
     func handle(_ event: NSEvent) -> Bool {
@@ -125,6 +132,10 @@ final class WorkspaceSwipeRecognizer {
             return true
         case .finish(let direction, let velocity):
             onFinish?(direction, velocity)
+            return true
+        case .pastEnd:
+            onFinish?(nil, 0)
+            onPastEnd?()
             return true
         }
     }
@@ -181,14 +192,14 @@ final class SpaceSlide {
 
     func hasNeighbour(_ direction: WorkspaceSwipe.Direction) -> Bool { neighbours[direction] != nil }
 
-    func addNeighbour(_ direction: WorkspaceSwipe.Direction, page: Page, accent: NSColor) {
+    func addNeighbour(_ direction: WorkspaceSwipe.Direction, page: Page, theme: SpaceTheme) {
         let layer = layer(for: page, x: direction == .previous ? -width : width)
         slider.addSublayer(layer)
         neighbours[direction] = layer
         let tint = CALayer()
         tint.frame = backdrop.bounds
         tint.contentsScale = scale
-        tint.contents = Self.tintImage(accent, size: backdrop.bounds.size, appearance: appearance)
+        tint.contents = Self.tintImage(theme, size: backdrop.bounds.size, appearance: theme.appearance ?? appearance)
         tint.opacity = 0
         backdrop.layer?.addSublayer(tint)
         tints[direction] = tint
@@ -263,10 +274,9 @@ final class SpaceSlide {
         return layer
     }
 
-    private static func tintImage(_ accent: NSColor, size: NSSize, appearance: NSAppearance) -> CGImage? {
-        let (top, bottom) = SidebarStyle.tint(accent, appearance: appearance)
+    private static func tintImage(_ theme: SpaceTheme, size: NSSize, appearance: NSAppearance) -> CGImage? {
         let image = NSImage(size: size, flipped: true) { rect in
-            NSGradient(starting: top, ending: bottom)?.draw(in: rect, angle: -90)
+            appearance.performAsCurrentDrawingAppearance { ThemeFill.draw(theme, in: rect, appearance: appearance) }
             return true
         }
         return image.cgImage(forProposedRect: nil, context: nil, hints: nil)

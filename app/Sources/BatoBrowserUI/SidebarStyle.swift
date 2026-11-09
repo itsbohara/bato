@@ -70,16 +70,18 @@ enum SidebarStyle {
 
     /// Top and bottom of the sidebar gradient for an appearance. The workspace colour dominates, as in
     /// Dia; the system background only keeps the result from going neon. Resolved under `appearance`, so
-    /// the result is correct whichever appearance the caller happens to be drawing in.
-    static func tint(_ accent: NSColor, appearance: NSAppearance) -> (top: NSColor, bottom: NSColor) {
+    /// the result is correct whichever appearance the caller happens to be drawing in. `intensity` scales how far
+    /// the colour replaces the base; the default reproduces a Space saved before themes.
+    static func tint(_ accent: NSColor, appearance: NSAppearance, intensity: Double = SpaceTheme.defaultIntensity) -> (top: NSColor, bottom: NSColor) {
         var result: (top: NSColor, bottom: NSColor)?
         appearance.performAsCurrentDrawingAppearance {
             let dark = appearance.isDark
             let base = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
             let hue = vivid(accent)
             let body = dark ? darkened(hue) : hue
-            result = (base.blended(withFraction: dark ? 0.8 : 0.55, of: body) ?? base,
-                      base.blended(withFraction: dark ? 0.6 : 0.4, of: body) ?? base)
+            let strength = CGFloat(intensity / SpaceTheme.defaultIntensity)
+            result = (base.blended(withFraction: min(1, (dark ? 0.8 : 0.55) * strength), of: body) ?? base,
+                      base.blended(withFraction: min(1, (dark ? 0.6 : 0.4) * strength), of: body) ?? base)
         }
         return result ?? (.windowBackgroundColor, .windowBackgroundColor)
     }

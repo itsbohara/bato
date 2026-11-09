@@ -1,4 +1,5 @@
 import XCTest
+import BatoCore
 @testable import BatoBrowserUI
 
 @MainActor
@@ -17,7 +18,7 @@ final class ShowSidebarButtonTests: XCTestCase {
 @MainActor
 final class EmptyCardStateTests: XCTestCase {
     func testEmptyCardTakesHitsOnlyInsideTheCard() {
-        let card = ContentCardFrameView(accent: .systemBlue)
+        let card = ContentCardFrameView(theme: SpaceTheme(color: "#527FAD"))
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         host.addSubview(card)
         card.frame = host.bounds

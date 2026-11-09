@@ -106,6 +106,26 @@ final class WorkspaceSwipeTests: XCTestCase {
         XCTAssertNil(direction)
     }
 
+    func testPullingAFullCommitDistancePastTheLastWorkspaceOpensCreateSpace() {
+        var swipe = WorkspaceSwipe()
+        swipe.layout = .init(width: 268, hasPrevious: true, hasNext: false)
+        guard case .pastEnd = drag(&swipe, total: -220, duration: 0.8, hold: 0.2) else { return XCTFail() }
+    }
+
+    func testShortPullPastTheLastWorkspaceJustSpringsBack() {
+        var swipe = WorkspaceSwipe()
+        swipe.layout = .init(width: 268, hasPrevious: true, hasNext: false)
+        guard case .finish(let direction, _) = drag(&swipe, total: -100, duration: 0.8, hold: 0.2) else { return XCTFail() }
+        XCTAssertNil(direction)
+    }
+
+    func testPullingTheOtherWayPastTheFirstWorkspaceNeverOpensCreateSpace() {
+        var swipe = WorkspaceSwipe()
+        swipe.layout = .init(width: 268, hasPrevious: false, hasNext: true)
+        guard case .finish(let direction, _) = drag(&swipe, total: 220, duration: 0.8, hold: 0.2) else { return XCTFail() }
+        XCTAssertNil(direction)
+    }
+
     func testResistedDistanceGrowsSlowlyAndStaysBelowPage() {
         let width: CGFloat = 268
         XCTAssertLessThan(WorkspaceSwipe.resisted(10, width: width), 10)
