@@ -45,3 +45,21 @@ Proposed semantics: Bato’s toggle controls Bato’s blocker only. AdGuard keep
 Test all four combinations of Bato/AdGuard enabled and disabled on a controlled fixture. Verify network blocking, cosmetics, exceptions and restart persistence independently, then together. Measure both request outcomes and page behavior so double-counted statistics do not pass as correctness. Cover subframes, SPA navigation, split views, Peek, redirect chains and a worker/cache case. Require login, Bitwarden autofill and MetaMask test-account connection/signature flows to remain usable with protection enabled; use no funded wallet or real transaction.
 
 For Bato’s engine, add deterministic filter tests for first/third-party and resource-type rules, exception precedence, one cosmetic rule and one replacement/scriptlet case. Verify global disable and per-site disable bypass every Bato filtering layer, including injection after reload. Proposed Profile-scoped exceptions must be consistent across that Profile’s workspaces and isolated from other Profiles. Test offline launch, invalid/partial list updates and last-known-good rollback; list update policy remains a design proposal.
+
+## Browser import for onboarding ("Bring everything over")
+
+Backend only (`app/Sources/BatoImport/Browsers`, system libsqlite3, no new package). Detection reads only the profile lists (Chromium `Local State`, Gecko `profiles.ini`). Readers return counts cheaply, then a versioned `BrowserSnapshot`; `BrowserImportPlan` validates and previews; `apply` saves the organization as one snapshotted transaction.
+
+| Browser | Source | Status |
+| --- | --- | --- |
+| Chrome, Brave, Edge | `Bookmarks` JSON, `History` SQLite | Fixture-verified; layout is Chromium's public, long-stable format |
+| Dia | Same Chromium files under `Dia/User Data` | Path assumed (Chromium convention); Dia's sidebar and pinned tabs have no public format, so only bookmarks bar (as Favorites), bookmarks and history |
+| Arc | `StorableSidebar.json` Spaces/pins/folders/Favorites plus Chromium `History` under `Arc/User Data` | Parser fixture-verified; Arc has no Chromium bookmarks. Favorites of all Arc profiles merge into the target Profile |
+| Safari | `Bookmarks.plist`, `History.db` | Fixture-verified; blocked folder returns `needsFullDiskAccess` counts and `ImportReadError.permissionDenied` |
+| Firefox | `places.sqlite` | Fixture-verified |
+| Zen | `places.sqlite` plus `zen_workspaces` / `zen_pins` tables | Table and column names assumed from Zen's public source, read defensively; unfamiliar layout yields no Spaces |
+| Orion | none | Data format not documented; import through an exported bookmarks HTML (`readBookmarksHTML`) |
+
+Favorites are the bookmarks-bar pages (Arc Favorites, Zen Essentials). Duplicate policy: Favorites already in the target Profile (same address, ignoring scheme/host case, fragment and trailing slash) are skipped; Spaces already imported are skipped; a salt imports copies. Passwords, cookies and form data are never read (iCloud Passwords or password import is future work).
+
+History and bookmarks cannot live in the organization document: Bato keeps no history store, and pages run in Chromium profiles whose `History` is exclusively locked and whose `Bookmarks` is rewritten from memory on exit. The plan stages them (`PendingImportStore`) and `applyPending` writes them into an idle profile directory at the next launch, before its engine starts (skipped while `SingletonLock` names a live process). History inserts only add URLs that are missing, with one visit each; bookmarks go to an "Imported from X" folder under Other bookmarks with a batch marker, so repeats add nothing. This was tested against fixture databases that mimic Chromium's `urls`/`visits` tables, not against a real Chromium profile; verify it on a real launch before relying on it.

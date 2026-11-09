@@ -14,8 +14,12 @@ public enum ImportTransaction {
 
     /// A failure leaves the committed document byte-identical and the store unchanged.
     public static func apply(_ plan: ImportPlan, to store: OrganizationStore<BrowserState>) throws -> Applied {
-        let snapshot = try store.saveWithSnapshot(plan.state, named: snapshotName)
-        return Applied(state: plan.state, snapshot: snapshot)
+        try apply(plan.state, to: store)
+    }
+
+    public static func apply(_ state: BrowserState, to store: OrganizationStore<BrowserState>) throws -> Applied {
+        let snapshot = try store.saveWithSnapshot(state, named: snapshotName)
+        return Applied(state: state, snapshot: snapshot)
     }
 
     /// Undo is available only while nothing else has been saved since the import: restoring over
