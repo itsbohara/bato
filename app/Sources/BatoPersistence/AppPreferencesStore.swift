@@ -5,11 +5,14 @@ public struct AppPreferences: Equatable, Sendable {
     public var searchProvider: CommandBarSearchProvider = .default
     /// Sends what is typed in the command bar to the search provider for completions.
     public var searchSuggestions = true
+    public var appearance = AppAppearance.system
+    /// Set when the first-run card is finished or skipped.
+    public var onboardingCompleted = false
     public init() {}
 }
 
 extension AppPreferences: Codable {
-    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions }
+    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions, appearance, onboardingCompleted }
 
     /// An unknown provider name, e.g. from a newer build, falls back to the default instead of dropping the file.
     public init(from decoder: any Decoder) throws {
@@ -17,6 +20,8 @@ extension AppPreferences: Codable {
         let name = try values.decodeIfPresent(String.self, forKey: .searchProvider)
         searchProvider = name.flatMap(CommandBarSearchProvider.init(rawValue:)) ?? .default
         searchSuggestions = try values.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
+        appearance = try values.decodeIfPresent(String.self, forKey: .appearance).flatMap(AppAppearance.init(rawValue:)) ?? .system
+        onboardingCompleted = try values.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
     }
 }
 
