@@ -69,3 +69,14 @@ enum ThemeFill {
         return image
     }()
 }
+
+extension AppAppearance {
+    /// Nil follows the system.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}

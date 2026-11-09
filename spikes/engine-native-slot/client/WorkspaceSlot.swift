@@ -990,6 +990,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     private var pageMenuItem: NSMenuItem?
     private var spacesMenuItem: NSMenuItem?
     private var copyURLItems: [NSMenuItem] = []
+    private var onboardingItem: NSMenuItem?
     init(token: UInt64, root: NSView, toggle: @escaping () -> Bool,
          dismissPeek: @escaping () -> Bool, promotePeek: @escaping () -> Bool,
          editAddress: @escaping () -> Bool, copyLink: @escaping () -> Bool,
@@ -1020,6 +1021,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     @objc private func nextSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: true) }
     @objc private func previousSpaceFromMenu() { workspaceHost.controller?.switchToAdjacentSpace(next: false) }
     @objc private func newSpaceFromMenu() { workspaceHost.controller?.addSpace() }
+    @objc private func showOnboardingFromMenu() { workspaceHost.controller?.showOnboarding() }
 
     /// Menu key equivalents reach Bato where the sidebar view's performKeyEquivalent does not
     /// while Chromium owns focus, so Control-1…9 live here. Rebuilt on every workspace change.
@@ -1104,6 +1106,13 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         }
         if let mainMenu = NSApp.mainMenu {
             installCopyURLItems(in: mainMenu)
+            if onboardingItem == nil, let help = mainMenu.items.first(where: { $0.title == "Help" })?.submenu {
+                let item = NSMenuItem(title: "Show Onboarding…", action: #selector(showOnboardingFromMenu), keyEquivalent: "")
+                item.target = self
+                help.addItem(.separator())
+                help.addItem(item)
+                onboardingItem = item
+            }
             if spacesMenuItem == nil {
                 let item = NSMenuItem(title: "Spaces", action: nil, keyEquivalent: "")
                 item.submenu = NSMenu(title: "Spaces")
@@ -1145,6 +1154,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         workspaceHost.controller?.onSpacesChanged = nil
         copyURLItems.forEach { $0.menu?.removeItem($0) }
         copyURLItems = []
+        if let onboardingItem { onboardingItem.menu?.removeItem(onboardingItem) }
+        onboardingItem = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let deactivationObserver { NotificationCenter.default.removeObserver(deactivationObserver) }

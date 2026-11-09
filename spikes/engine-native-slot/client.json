@@ -567,6 +567,9 @@
     "app/Sources/BatoCore/SpaceTheme.swift": "tests/cefsimple/bato/BatoCore/SpaceTheme.swift",
     "app/Sources/BatoBrowserUI/CreateSpacePage.swift": "tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift",
     "app/Sources/BatoBrowserUI/SpaceThemePicker.swift": "tests/cefsimple/bato/BatoBrowserUI/SpaceThemePicker.swift",
-    "app/Sources/BatoBrowserUI/SpaceThemeStyle.swift": "tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift"
+    "app/Sources/BatoBrowserUI/SpaceThemeStyle.swift": "tests/cefsimple/bato/BatoBrowserUI/SpaceThemeStyle.swift",
+    "app/Sources/BatoCore/Onboarding.swift": "tests/cefsimple/bato/BatoCore/Onboarding.swift",
+    "app/Sources/BatoImport/Browsers/ImportSelection.swift": "tests/cefsimple/bato/BatoImport/ImportSelection.swift",
+    "app/Sources/BatoBrowserUI/OnboardingController.swift": "tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift"
   }
 }

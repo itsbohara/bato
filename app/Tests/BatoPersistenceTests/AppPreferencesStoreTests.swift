@@ -61,3 +61,29 @@ struct AppPreferencesStoreTests {
         #expect(result == .search(URL(string: "https://www.google.com/search?q=swift%20concurrency")!))
     }
 }
+
+struct OnboardingPreferencesTests {
+    private func directory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("prefs-\(UUID().uuidString)")
+    }
+
+    @Test func onboardingIsPendingUntilCompletedAndAppearanceDefaultsToSystem() throws {
+        let dir = directory()
+        let fresh = AppPreferencesStore(directory: dir).current()
+        #expect(!fresh.onboardingCompleted)
+        #expect(fresh.appearance == .system)
+        try AppPreferencesStore(directory: dir).update { $0.onboardingCompleted = true; $0.appearance = .dark }
+        let reloaded = AppPreferencesStore(directory: dir).current()
+        #expect(reloaded.onboardingCompleted)
+        #expect(reloaded.appearance == .dark)
+    }
+
+    @Test func oldFileWithoutTheNewKeysStillLoads() throws {
+        let dir = directory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let store = AppPreferencesStore(directory: dir)
+        try Data(#"{"searchProvider":"google","appearance":"sepia"}"#.utf8).write(to: store.fileURL)
+        #expect(store.current().appearance == .system)
+        #expect(store.current().searchProvider == .google)
+    }
+}
