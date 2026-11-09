@@ -117,6 +117,8 @@ Diagnostics should record versions, operation type, and sanitized errors. Full U
 
 **Future: AI and agents onboarding step.** An optional onboarding page, "AI and Agents", with a master "Use AI and agents" toggle and items for a page assistant (ask about or act on the current page, with a shortcut), hold-to-talk voice, running coding agents such as Claude Code or Codex next to tabs, and link, page and video summaries. Everything stays off for V1 and is kept as future optional UX; the V1 onboarding offers only "Bring everything over".
 
+**Onboarding V1 (built, unverified on a real host).** First launch shows a card over the dimmed window: Welcome, Bring Everything Over, Make It Yours, then a short "You're all set". Skip Setup and finishing both mark it complete in `preferences.json`; Help > Show Onboarding… reopens it. Real options: Sidebar layout, Space Theme presets (applied to the current Space), System/Light/Dark appearance (persisted and applied at launch). Coming soon, shown disabled: Sidebar on Right and Top (the engine reserves the sidebar strip on the left and owns the toolbar row), New Tab Full Page (Cmd-T only opens the command bar popup). Bookmarks and history from the import are staged under `<state>/import-pending`; nothing yet calls `PendingImportStore.applyPending` at launch, so they do not reach Chromium until that is wired before the engine starts.
+
 ## Review and delivery gates
 
 On2026-10-30, the user approved starting provisional application implementation alongside remaining engine/extension acceptance. This changes implementation sequencing; the compatibility and daily-use requirements below remain in force.
