@@ -176,6 +176,42 @@ Driven with synthesized phased trackpad scroll events (continuous, began/changed
 - [ ] The web content area does not move. It switches to the target Space's selected tab right at the commit (first frame after release) and shows that Space's page directly, no slide or crossfade of the page card.
 - [ ] Space name label sits in the list (it moves with it). Keyboard (Ctrl-digit) and pager-icon switching were not captured; Bato gives them the same non-interactive slide as an assumption.
 
+## 7. Create Space and theme picker (captured 2026-11-09, private shots in `2026-11-09/create-space/`)
+
+Driven through Arc's UI only (synthetic mouse/keys). Window 1470x892 pt, 1x, sidebar 268 wide. Coordinates are window points (y from the window top); colours sampled sRGB. The test Space was deleted afterwards and Create Space was also cancelled once.
+Entry
+- [ ] Opened by the pager `+` -> "New Space" (menu: New Space, New Folder | New Easel, New Boost | New Split, New Tab). Also the page past the last Space (section 6). Not checked: a Spaces menu item.
+- [ ] The page slides in from the right like a neighbouring Space (tint cross-fades from the current Space to the draft theme); Cancel slides it back (~250 ms, sidebar offset ~12 pt in the second frame) and restores the previous Space's tint.
+Page (`02-create-page`)
+- [ ] Replaces the list, Favorites row and Space header; window controls row and the pager dots stay (a new dot for the draft Space appears, and shows the chosen icon).
+- [ ] Illustration: three fanned white cards, ~66x42, centred x=134, y 82..124. Title "Create a Space" 17 pt semibold centred y=150. Subtitle 13 pt regular, two lines, centred y=180 and 197, ~170 wide.
+- [ ] Rows are x 14..254 (240 wide), radius ~8, translucent fill ~white 10% on dark: Space name y 238..273 (35 tall), Profile y 279..316 (37), Choose a Theme y 323..360 (37); 6-7 pt between rows.
+- [ ] Name row: 18 pt dashed rounded-square "+" icon button at x=31, field 14 pt medium from x=48, placeholder "Space name...". Row brightens (white ~25%) while focused.
+- [ ] Profile row: smiley glyph x=30, "Profile" 13 pt semibold at x=46, pill "Default v" x 96..166 (70x20, fully rounded, ~white 12%, 11 pt semibold), info (i) button at x=238. Pill menu did not open in the capture (single Profile); tooltip "Default".
+- [ ] Choose a Theme row: brush glyph x=30, label 13 pt semibold x=46; fill goes to ~white 20% while its popover is open.
+- [ ] Create Space: x 14..254, y 760..796 (36 tall), radius ~8, 13 pt semibold white. Disabled until the name is non-empty (dimmed text, ~45% fill). Fill is a darker tint of the theme (#454097 default; #7D647E with a purple/green theme). Cancel: centred y=818, 13 pt medium, white ~80%.
+- [ ] Return creates, Escape cancels while the name field is focused (Return not driven; Create button was).
+Icon picker (`10-icon-picker`, `11-icon-tab`)
+- [ ] Callout popover below the icon button, ~272x270, arrow at the button; segmented Emoji | Icon at the top (selected tab indigo #5b6bd5-ish), Emoji tab: Search field + 7-column grid (pitch ~33) + category row; Icon tab: 8 columns x 7 rows of monochrome white glyphs (pitch ~31).
+- [ ] Picking an icon closes the popover; the glyph replaces the dashed placeholder in the field and the pager dot.
+Theme popover (`03-theme-popover` .. `swatch-p4`)
+- [ ] Callout popover to the right of the row: x 268..623 (355 wide), y 88..594 (506 tall), radius ~22, arrow ~8 pt on the left edge at the row's centre y=341. Opens with no handle ("Tap to pick a color for this space") and the moon (dark) mode selected.
+- [ ] Field: x 275..615, y 95..435 (340 square), radius ~16, dotted (dots ~1.4 pt, pitch ~5) over a ~white 6% fill. The field is a disc of radius 170: hue = angle around the centre (clockwise from the right: right red, bottom yellow-green, left cyan, top violet), lightness = distance (centre black, ~halfway vivid, rim white). Handles are clamped to the disc.
+- [ ] Mode buttons: sparkle (auto/system), sun (light), moon (dark), 32x30 at y 120..150, centres x 404, 445, 484; selected fill ~white 20%, radius ~8. The popover itself switches to a light panel in light mode.
+- [ ] Mode effect: light makes the content card a near-white tint of the colour (#E9E2E9 for a mauve) while the sidebar/window keeps the full colour; dark keeps the card the same tone as the window. Auto = system (dark here).
+- [ ] Handles: primary 46 pt (3.5 pt white ring), extra handles 28 pt (2 pt ring); the selected one is the large one. Click on empty field moves the selected handle there; a click at one point also focuses the Space name field.
+- [ ] `-` / `+` at (425,403) and (465,403), 20 pt apart: `+` adds a handle at a new spot with its own colour (max 3, `+` dims at 3), `-` removes the selected one (dims at 1). Window background becomes a soft diagonal gradient across the handle colours in handle order.
+- [ ] Preset swatches: row centre y=467, 24 pt circles, pitch ~29.6, 9 per page, chevrons at x=291 and 599 (dim at the ends); 4 pages: solids, two-colour gradients, pastels, deep tones. Picking a swatch sets the handles (gradients set two). Page 1: #F2EFEA #E1B4C6 #A88CAA #D68681 #E3A376 #EEDD83 #A4E3AE #A2C3DD #7B7B98.
+- [ ] Wavy slider (x 286..508, y 540): a sine wave on a rounded track with a white pill thumb; left = flat wave and a small thumb (~16x52), right = tall wave and a larger thumb (~28x62). Controls how strongly the colour replaces the neutral base (cream at left read #DDDCDA, at right #F0EDE9 in dark mode). Default thumb position ~75%.
+- [ ] Dial (centre (565,539), ring radius ~35): 28 small dots filled clockwise from the top up to a white pill indicator; inner knob radius ~20 darkens as it turns. Controls grain: 0 at the top, a visible film-grain texture over the whole window by the bottom. Click or drag sets the angle.
+- [ ] Everything previews live: sidebar, window chrome and content card tints change as the handle moves; nothing is committed until Create Space.
+Create (`create-f1..6`, `create-final`)
+- [ ] The page scales/fades toward the centre while a rounded tile with the icon (~64x80, ~white 50%) appears mid-screen, then the normal sidebar appears for the new Space: Favorites, Space header (icon + name), New Tab, themed. Roughly 0.5 s.
+Edit an existing Space's theme (`20d-ctx`, `21-edit-theme3`)
+- [ ] Space header right-click menu: Change Space Icon..., Rename Space..., Edit Theme Color..., Set Profile >, | New Folder, Live Folders > | Share Space..., Export into Folder > | Manage Spaces... | Delete Space (undo toast "Space deleted! Use Cmd-Z to undo.").
+- [ ] "Edit Theme Color..." opens the same popover (same size, handles, mode, slider, dial and swatch page restored) near the top of the window without a callout arrow, previewing live.
+Not verified: profile menu contents, dial/slider exact curves (linear assumed), emoji search, Return-to-create, effect of mode on text colours beyond the popover and sidebar labels turning dark on light themes.
+
 ## Not captured / caveats
 
 - Grabber "dragging" colour is indistinguishable from hover; no distinct pressed style seen.
