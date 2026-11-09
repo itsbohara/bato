@@ -176,6 +176,20 @@ Driven with synthesized phased trackpad scroll events (continuous, began/changed
 - [ ] The web content area does not move. It switches to the target Space's selected tab right at the commit (first frame after release) and shows that Space's page directly, no slide or crossfade of the page card.
 - [ ] Space name label sits in the list (it moves with it). Keyboard (Ctrl-digit) and pager-icon switching were not captured; Bato gives them the same non-interactive slide as an assumption.
 
+## 8. Drag tab to split (Dia, captured 2026-11-09, private shots in `dia/2026-11-09/drag-split/`)
+
+Driven with synthesized CGEvent mouse down/drag and window screenshots, on a 1920x1080 point display. Another agent was driving Arc and other apps on the same display, so only the first part of the drag was captured cleanly; items marked UNVERIFIED are assumptions Bato implements.
+- [ ] Zones appear at the START of the drag, while the pointer is still on the sidebar row (`t1-a-sidebar`, `t2-0-start`), not on entering the page. Fade in not measured.
+- [ ] Exactly two zones, "Add left split" and "Add right split"; no top or bottom zone. Content card x 206..1916, y ~37..1075 (toolbar included).
+- [ ] Armed size ~194 x 327 pt: left zone x 244..437 (38 from the card's left edge), right zone x 1705..1898 (~18 from the right edge), both centred vertically on the card (y 392..719, centre ~555).
+- [ ] Larger once the pointer is over the page: ~313 x 520 pt (left x 244..557, right x 1585..1898, y 296..816), same edge insets and centre (`t1-c-content`, `t2-1`). Exact trigger (pointer over page vs elapsed time) and the grow animation not measured.
+- [ ] Look: dark fill ~#222 (opaque-ish), rounded radius ~20, 1.5 pt dashed inner border (~white 40%, 8 pt inside the edge, dash 5 / gap 4), soft drop shadow, a half-filled-rectangle glyph (~16 pt, left or right half filled) above a 13 pt semibold label, both ~white 60%, centred in the zone.
+- [ ] The page stays visible and unblurred between the zones; no dimming of the page.
+- [ ] Drag image is a ~208 x 104 snapshot of the dragged page (not the row), centred on the pointer; the dragged row leaves the list for the duration (rows below it close up).
+- [ ] Mouse-down on a sidebar row selects that tab as usual, so the page under the zones is the dragged tab's own page in the first frames; after the drag started the current tab was unchanged in the later frames (`t1-c`). Which tab Dia treats as "the other pane" was not confirmed.
+- [ ] UNVERIFIED: hover highlight of the targeted zone (Bato: fill ~white 20% instead of 13%, border ~white 85% instead of 40%), drop result layout (Bato: dragged tab on the chosen side, current tab on the other, via createSplit), Escape cancel (Bato: AppKit drag cancel, nothing changes), release outside the zones (Bato: no-op, drag image slides back), dropping on the page centre (Bato: no-op), page already split or dragging the selected tab (Bato: no zones).
+- [ ] Arc: not captured this pass. Bato keeps Dia's left/right only; top and bottom splits stay reachable through the pane split menu and the command bar.
+
 ## Not captured / caveats
 
 - Grabber "dragging" colour is indistinguishable from hover; no distinct pressed style seen.
