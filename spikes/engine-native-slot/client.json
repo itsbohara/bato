@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "263da033d9341553687d866ec5f7357148d1ee983c19456a4c3bcd8101f09ec8",
+  "patch_sha256": "c3af489059b311524083bfe2463fc83baf56d1cd89564b6db567b69997699aee",
   "files": [
     {
       "root": "cef",
@@ -44,7 +44,7 @@
       "root": "cef",
       "path": "tests/cefsimple/WorkspaceSlot.swift",
       "original_sha256": null,
-      "patched_sha256": "9a887755ef10d86da8bd778a4ba9a226b5b00c4b4e87834c8d7a4eef625dcc7f"
+      "patched_sha256": "43de51e926322aac3e120c4491ff9b59ecb54d71aea2e515e971ce3b2419ad87"
     },
     {
       "root": "cef",
@@ -62,7 +62,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/BrowserState.swift",
       "original_sha256": null,
-      "patched_sha256": "37170f3ff8c400aea7fe2aa0139d3060d09f2219d1c0a7f17bb05cbdd1db12f2"
+      "patched_sha256": "7bfcf656ec897b4c4803536b80ac278b1102e79674f6c3db39dd7f16d0c36ee3"
     },
     {
       "root": "cef",
@@ -74,7 +74,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoRuntime/PageRuntime.swift",
       "original_sha256": null,
-      "patched_sha256": "b6ad23e6eda0b2df5d145506a97bb9084708052ca3f7fc977e57d40e8cf6cb55"
+      "patched_sha256": "413db2c1a706c0d088e4000b3e441d7dc2eddb0695754a6d105ffb22d795061e"
     },
     {
       "root": "cef",
@@ -86,7 +86,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift",
       "original_sha256": null,
-      "patched_sha256": "b18acc177c769b280765e84d251cb33582a2c74de4bc1a60cd87cbe5543e11f7"
+      "patched_sha256": "8d02a480138669227bd957ff98ff348ee4140c82b2a130828061b8f226f2bd34"
     },
     {
       "root": "cef",
@@ -404,7 +404,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift",
       "original_sha256": null,
-      "patched_sha256": "71f0b53c056ed46cb80256975bfa2de519b0d6f8530aaf2deec8a2089316967c"
+      "patched_sha256": "cb831453451acc3bc083bd8744f0d9e55e461a0ac93d86d4b86590b4a7ddda97"
     },
     {
       "root": "cef",

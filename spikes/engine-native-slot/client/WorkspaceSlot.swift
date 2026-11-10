@@ -418,6 +418,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     private var pointerMonitor: Any?
     private var menuObservers: [NSObjectProtocol] = []
     private var keyObserver: NSObjectProtocol?
+    private var frameObservers: [NSObjectProtocol] = []
     private var menuTracking = false
     private var changingGeometry = false
     /// Fullscreen only: the sidebar floats over the page. `mode` is untouched so leaving fullscreen
@@ -552,6 +553,14 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
                 MainActor.assumeIsolated { self?.dismissPeek(on: .windowResigned) }
             }
         }
+        if frameObservers.isEmpty, let window = root.window {
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+                frameObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                    MainActor.assumeIsolated { if let self, let window { self.followWindowFrame(of: window) } }
+                })
+            }
+        }
         if keyObserver == nil, let window = root.window {
             keyObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
@@ -573,9 +582,27 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     }
     /// Brings this window forward with the sidebar, e.g. when a page of its Profile is selected.
     func show() {
+        let previous = workspaceHost.mounted
         workspaceHost.mount(self)
-        if NSApp.isActive, let window = root.window, !window.isKeyWindow, window.attachedSheet == nil {
+        guard let window = root.window else { return }
+        if let previous, previous !== self, let old = previous.root.window, old.isVisible, old.attachedSheet == nil,
+           !old.styleMask.contains(.fullScreen), !window.styleMask.contains(.fullScreen) {
+            // A Chrome window has one Profile, so Spaces of another Profile live in a sibling window stacked
+            // exactly under the visible one. The old window stays ordered in: the engine only accepts page
+            // work for a window its widget reports visible, and that lags a hide/show by a runloop turn.
+            window.setFrame(old.frame, display: true)
             window.makeKeyAndOrderFront(nil)
+        } else if NSApp.isActive, !window.isKeyWindow, window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+    /// Sibling Profile windows follow the visible one, so a move or resize never leaves a stray window behind it.
+    private func followWindowFrame(of window: NSWindow) {
+        guard workspaceHost.mounted === self else { return }
+        for (token, slot) in workspaceSlots where token != self.token {
+            guard let other = slot.root.window, other.frame != window.frame, !other.styleMask.contains(.fullScreen),
+                  !window.styleMask.contains(.fullScreen) else { continue }
+            other.setFrame(window.frame, display: false)
         }
     }
     func focusNative() {
@@ -710,9 +737,10 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         resignObserver = nil
         peekPoll?.invalidate()
         peekPoll = nil
-        for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
+        for observer in menuObservers + fullscreenObservers + frameObservers { NotificationCenter.default.removeObserver(observer) }
         menuObservers.removeAll()
         fullscreenObservers.removeAll()
+        frameObservers.removeAll()
         root.onEnter = nil
         root.onExit = nil
         root.onResize = nil

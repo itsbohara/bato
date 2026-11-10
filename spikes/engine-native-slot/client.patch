@@ -2324,7 +2324,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1461 @@
+@@ -0,0 +1,1489 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2745,6 +2745,7 @@
 +    private var pointerMonitor: Any?
 +    private var menuObservers: [NSObjectProtocol] = []
 +    private var keyObserver: NSObjectProtocol?
++    private var frameObservers: [NSObjectProtocol] = []
 +    private var menuTracking = false
 +    private var changingGeometry = false
 +    /// Fullscreen only: the sidebar floats over the page. `mode` is untouched so leaving fullscreen
@@ -2879,6 +2880,14 @@
 +                MainActor.assumeIsolated { self?.dismissPeek(on: .windowResigned) }
 +            }
 +        }
++        if frameObservers.isEmpty, let window = root.window {
++            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
++                frameObservers.append(NotificationCenter.default.addObserver(
++                    forName: name, object: window, queue: .main) { [weak self, weak window] _ in
++                    MainActor.assumeIsolated { if let self, let window { self.followWindowFrame(of: window) } }
++                })
++            }
++        }
 +        if keyObserver == nil, let window = root.window {
 +            keyObserver = NotificationCenter.default.addObserver(
 +                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
@@ -2900,9 +2909,27 @@
 +    }
 +    /// Brings this window forward with the sidebar, e.g. when a page of its Profile is selected.
 +    func show() {
++        let previous = workspaceHost.mounted
 +        workspaceHost.mount(self)
-+        if NSApp.isActive, let window = root.window, !window.isKeyWindow, window.attachedSheet == nil {
++        guard let window = root.window else { return }
++        if let previous, previous !== self, let old = previous.root.window, old.isVisible, old.attachedSheet == nil,
++           !old.styleMask.contains(.fullScreen), !window.styleMask.contains(.fullScreen) {
++            // A Chrome window has one Profile, so Spaces of another Profile live in a sibling window stacked
++            // exactly under the visible one. The old window stays ordered in: the engine only accepts page
++            // work for a window its widget reports visible, and that lags a hide/show by a runloop turn.
++            window.setFrame(old.frame, display: true)
 +            window.makeKeyAndOrderFront(nil)
++        } else if NSApp.isActive, !window.isKeyWindow, window.attachedSheet == nil {
++            window.makeKeyAndOrderFront(nil)
++        }
++    }
++    /// Sibling Profile windows follow the visible one, so a move or resize never leaves a stray window behind it.
++    private func followWindowFrame(of window: NSWindow) {
++        guard workspaceHost.mounted === self else { return }
++        for (token, slot) in workspaceSlots where token != self.token {
++            guard let other = slot.root.window, other.frame != window.frame, !other.styleMask.contains(.fullScreen),
++                  !window.styleMask.contains(.fullScreen) else { continue }
++            other.setFrame(window.frame, display: false)
 +        }
 +    }
 +    func focusNative() {
@@ -3037,9 +3064,10 @@
 +        resignObserver = nil
 +        peekPoll?.invalidate()
 +        peekPoll = nil
-+        for observer in menuObservers + fullscreenObservers { NotificationCenter.default.removeObserver(observer) }
++        for observer in menuObservers + fullscreenObservers + frameObservers { NotificationCenter.default.removeObserver(observer) }
 +        menuObservers.removeAll()
 +        fullscreenObservers.removeAll()
++        frameObservers.removeAll()
 +        root.onEnter = nil
 +        root.onExit = nil
 +        root.onResize = nil
@@ -4761,7 +4789,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1561 @@
+@@ -0,0 +1,1568 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -5385,7 +5413,8 @@
 +    /// Adds a Profile and its first workspace together; an invalid name or color leaves both absent.
 +    /// Selection is unchanged so callers choose whether to enter the new Profile.
 +    @discardableResult
-+    public mutating func createProfile(name: String, color: String, workspaceName: String) throws
++    public mutating func createProfile(name: String, color: String, workspaceName: String,
++                                       theme: SpaceTheme? = nil, icon: String? = nil) throws
 +        -> (profileID: UUID, workspaceID: UUID) {
 +        try transact { draft in
 +            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5395,7 +5424,13 @@
 +            try Self.validateColor(color)
 +            guard draft.isProfileNameAvailable(name) else { throw BrowserStateError.duplicateProfileName }
 +            let profile = BrowserProfile(name: name, color: color.uppercased())
-+            let workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
++            var workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
++            if let theme {
++                guard theme.isValid else { throw BrowserStateError.invalidColor }
++                workspace.theme = theme
++                workspace.color = theme.primaryColor
++            }
++            workspace.icon = icon
 +            draft.profiles.append(profile)
 +            draft.workspaces.append(workspace)
 +            return (profile.id, workspace.id)
@@ -6618,7 +6653,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1170 @@
+@@ -0,0 +1,1172 @@
 +import Foundation
 +import BatoCore
 +
@@ -6857,9 +6892,10 @@
 +    }
 +
 +    @discardableResult
-+    public func addWorkspace(name: String, color: String? = nil, theme: SpaceTheme? = nil, icon: String? = nil) -> Bool {
++    public func addWorkspace(name: String, profileID: UUID? = nil, color: String? = nil, theme: SpaceTheme? = nil,
++                             icon: String? = nil) -> Bool {
 +        change { candidate in
-+            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID,
++            let id = try candidate.addWorkspace(name: name, profileID: profileID ?? candidate.currentWorkspace.profileID,
 +                                                color: color, theme: theme, icon: icon)
 +            try candidate.activateWorkspace(id)
 +        }
@@ -6910,10 +6946,11 @@
 +    /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine
 +    /// cannot open is never saved.
 +    @discardableResult
-+    public func createProfile(name: String, color: String, workspaceName: String,
-+                              deferPageSelection: Bool = false) -> Bool {
++    public func createProfile(name: String, color: String, workspaceName: String, theme: SpaceTheme? = nil,
++                              icon: String? = nil, deferPageSelection: Bool = false) -> Bool {
 +        change(reconcileSelection: !deferPageSelection) { candidate in
-+            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
++            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName,
++                                                      theme: theme, icon: icon)
 +            try candidate.activateWorkspace(created.workspaceID)
 +        }
 +    }
@@ -7911,7 +7948,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4254 @@
+@@ -0,0 +1,4280 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -10076,15 +10113,20 @@
 +        let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
 +        var draft = SpaceTheme(color: color)
 +        draft.intensity = Self.newSpaceIntensity
-+        let profileName = state.profiles.first { $0.id == profileID }?.name ?? "Default"
-+        let page = CreateSpacePageView(theme: draft, profileName: profileName)
++        let page = CreateSpacePageView(theme: draft, profiles: state.profiles.map { ($0.id, $0.name) }, selected: profileID)
++        page.onNewProfile = { [weak self, weak page] in self?.draftProfile(for: page) }
 +        page.onThemeChange = { [weak self] in self?.previewTheme($0) }
 +        page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
-+        page.onCreate = { [weak self] name, icon, theme in
++        page.onCreate = { [weak self] name, icon, theme, choice in
 +            guard let self else { return }
-+            guard self.runtime.state.currentWorkspace.profileID == profileID else { return self.dismissCreateSpacePage() }
 +            let before = self.runtime.state.workspaces.count
-+            _ = self.runtime.addWorkspace(name: name, theme: theme, icon: icon)
++            switch choice {
++            case .existing(let id):
++                guard self.runtime.state.profiles.contains(where: { $0.id == id }) else { return self.dismissCreateSpacePage() }
++                _ = self.runtime.addWorkspace(name: name, profileID: id, theme: theme, icon: icon)
++            case .new(let profileName, let color):
++                _ = self.runtime.createProfile(name: profileName, color: color, workspaceName: name, theme: theme, icon: icon)
++            }
 +            guard self.runtime.state.workspaces.count > before else { return NSSound.beep() }
 +            self.dismissCreateSpacePage()
 +        }
@@ -10106,6 +10148,27 @@
 +    }
 +
 +    private static let newSpaceIntensity = 0.6
++
++    /// Asks for a Profile name and colour for the Space being created; the Profile is only created with the Space.
++    private func draftProfile(for page: CreateSpacePageView?) {
++        guard let window = root.window, window.attachedSheet == nil, profileEditor == nil else { return }
++        let state = runtime.state
++        let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
++        let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
++        let editor = ProfileEditor(creating: true, name: "", color: color, asksFirstWorkspace: false) { [weak self, weak page] name, color, _ in
++            guard let self else { return "Bato is no longer available." }
++            guard self.runtime.state.isProfileNameAvailable(name) else { return "Another Profile already has that name." }
++            page?.chooseNewProfile(name: name, color: color)
++            return nil
++        }
++        profileEditor = editor
++        guard let sheet = editor.window else { profileEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] _ in
++            self?.profileEditor = nil
++            page?.focusName()
++        }
++        editor.focusName()
++    }
 +
 +    private func slideIn(_ page: NSView) {
 +        page.wantsLayer = true
@@ -10349,8 +10412,7 @@
 +        (root as? WorkspaceRoot)?.theme = theme
 +    }
 +
-+    /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
-+    @objc private func showWorkspaceSwitcher() {
++        @objc private func showWorkspaceSwitcher() {
 +        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
 +        requestNativeFocus?()
 +        let state = runtime.state
@@ -10360,7 +10422,7 @@
 +        for group in state.profileGroups {
 +            if state.hasMultipleProfiles {
 +                let own = group.profile.id == currentProfileID
-+                entries.append(.header(title: own ? group.profile.name : "\(group.profile.name) · opens in its own window",
++                entries.append(.header(title: group.profile.name,
 +                                       dot: workspaceColor(state.displayColor(of: group.profile))))
 +            }
 +            for workspace in group.workspaces {
@@ -11449,7 +11511,8 @@
 +    private let save: (String, String, String) -> String?
 +    private var colors: [String] = []
 +
-+    init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
++    init(creating: Bool, name: String, color: String, asksFirstWorkspace: Bool = true,
++         save: @escaping (String, String, String) -> String?) {
 +        self.save = save
 +        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
 +                              styleMask: [.titled], backing: .buffered, defer: false)
@@ -11479,7 +11542,7 @@
 +            colorPicker.selectItem(at: colors.count - 1)
 +        }
 +        let note = NSTextField(wrappingLabelWithString: creating
-+            ? "A Profile keeps its own logins, cookies and site data, and opens in its own window."
++            ? "A Profile keeps its own logins, cookies and site data. Spaces of different Profiles share this window."
 +            : "Renaming keeps this Profile’s logins and site data.")
 +        note.font = .systemFont(ofSize: 11)
 +        note.textColor = .secondaryLabelColor
@@ -11500,7 +11563,7 @@
 +        buttons.spacing = 8
 +        var rows: [NSView] = [NSTextField(labelWithString: "Name"), nameField,
 +                              NSTextField(labelWithString: "Color"), colorPicker]
-+        if creating { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
++        if creating && asksFirstWorkspace { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
 +        rows += [note, errorLabel, buttons]
 +        let stack = NSStackView(views: rows)
 +        stack.orientation = .vertical
@@ -11520,7 +11583,7 @@
 +                errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
 +                buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
 +            ]
-+            if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
++            if creating && asksFirstWorkspace { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
 +            NSLayoutConstraint.activate(constraints)
 +            SidebarStyle.fitSheet(window, to: stack)
 +        }
@@ -20611,7 +20674,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,452 @@
 +import AppKit
 +import BatoCore
 +
@@ -20620,12 +20683,20 @@
 +@MainActor
 +final class CreateSpacePageView: NSView, NSTextFieldDelegate {
 +    var onThemeChange: ((SpaceTheme) -> Void)?
-+    var onCreate: ((String, String?, SpaceTheme) -> Void)?
++    enum ProfileChoice: Equatable {
++        case existing(UUID)
++        case new(name: String, color: String)
++    }
++
++    var onCreate: ((String, String?, SpaceTheme, ProfileChoice) -> Void)?
++    var onNewProfile: (() -> Void)?
 +    var onCancel: (() -> Void)?
 +
 +    private(set) var theme: SpaceTheme
 +    private var icon: String?
-+    private let profileName: String
++    private let profiles: [(id: UUID, name: String)]
++    private var choice: ProfileChoice
++    private let profilePill = NSButton()
 +    private let nameField = NSTextField()
 +    private let iconButton = NSButton()
 +    private let themeRow = PageRow()
@@ -20633,9 +20704,10 @@
 +    private var themePopover: SpaceThemePopover?
 +    private var iconPopover: NSPopover?
 +
-+    init(theme: SpaceTheme, profileName: String) {
++    init(theme: SpaceTheme, profiles: [(id: UUID, name: String)], selected: UUID) {
 +        self.theme = theme
-+        self.profileName = profileName
++        self.profiles = profiles
++        choice = .existing(selected)
 +        super.init(frame: .zero)
 +        setAccessibilityIdentifier("bato-create-space")
 +        build()
@@ -20680,7 +20752,8 @@
 +        let profileIcon = NSImageView(image: Self.symbol("person.crop.circle", 13))
 +        profileIcon.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
 +        let profileLabel = Self.label("Profile", size: 13, weight: .semibold, color: .labelColor)
-+        let profilePill = NSButton(title: "\(profileName) ⌄", target: self, action: #selector(showProfileMenu(_:)))
++        profilePill.target = self
++        profilePill.action = #selector(showProfileMenu(_:))
 +        profilePill.isBordered = false
 +        profilePill.font = .systemFont(ofSize: 11, weight: .semibold)
 +        profilePill.wantsLayer = true
@@ -20690,7 +20763,7 @@
 +        let info = NSButton(image: Self.symbol("info.circle", 13), target: nil, action: nil)
 +        info.isBordered = false
 +        info.contentTintColor = NSColor.labelColor.withAlphaComponent(0.6)
-+        info.toolTip = "A Profile keeps its own logins, cookies and history. The new Space joins the current Profile."
++        info.toolTip = "Profiles keep logins and cookies separate. Spaces in the same Profile share them."
 +        info.setAccessibilityLabel("About Profiles")
 +        for view in [profileIcon, profileLabel, profilePill, info] { profileRow.addSubview(view) }
 +
@@ -20815,6 +20888,7 @@
 +        createButton.attributedTitle = NSAttributedString(string: "Create Space", attributes: [
 +            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
 +            .foregroundColor: NSColor.white.withAlphaComponent(enabled ? 1 : 0.6)])
++        profilePill.title = "\(profileName) ⌄"
 +        themeRow.highlighted = themePopover?.isShown ?? false
 +        if let icon {
 +            iconButton.image = Self.iconImage(icon, size: 16)
@@ -20859,7 +20933,7 @@
 +    @objc private func create() {
 +        guard !trimmedName.isEmpty else { return }
 +        themePopover?.close()
-+        onCreate?(trimmedName, icon, theme)
++        onCreate?(trimmedName, icon, theme, choice)
 +    }
 +
 +    @objc private func cancelTapped() {
@@ -20869,10 +20943,43 @@
 +
 +    @objc private func showProfileMenu(_ sender: NSButton) {
 +        let menu = NSMenu()
-+        let item = NSMenuItem(title: profileName, action: nil, keyEquivalent: "")
-+        item.state = .on
-+        menu.addItem(item)
-+        menu.popUp(positioning: item, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
++        for profile in profiles {
++            let item = NSMenuItem(title: profile.name, action: #selector(pickProfile(_:)), keyEquivalent: "")
++            item.target = self
++            item.representedObject = profile.id
++            item.state = choice == .existing(profile.id) ? .on : .off
++            menu.addItem(item)
++        }
++        if case .new(let name, _) = choice {
++            let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
++            item.state = .on
++            menu.addItem(item)
++        }
++        menu.addItem(.separator())
++        let create = NSMenuItem(title: "New Profile…", action: #selector(newProfile), keyEquivalent: "")
++        create.target = self
++        menu.addItem(create)
++        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
++    }
++
++    @objc private func pickProfile(_ sender: NSMenuItem) {
++        guard let id = sender.representedObject as? UUID else { return }
++        choice = .existing(id)
++        refresh()
++    }
++
++    @objc private func newProfile() { onNewProfile?() }
++
++    func chooseNewProfile(name: String, color: String) {
++        choice = .new(name: name, color: color)
++        refresh()
++    }
++
++    private var profileName: String {
++        switch choice {
++        case .existing(let id): return profiles.first { $0.id == id }?.name ?? "Default"
++        case .new(let name, _): return name
++        }
 +    }
 +
 +    @objc private func chooseIcon() {
