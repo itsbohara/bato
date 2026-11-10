@@ -241,7 +241,7 @@ Source is a screenshot of the Create a Space page with the Profile pill menu ope
 - [ ] "New Profile..." creates a Profile and selects it for the Space being created.
 - [ ] The info (i) button explains that Profiles keep logins and cookies separate.
 - [ ] Spaces of different Profiles share one window; switching to a Space of another Profile changes the page area in place (design: PROFILE-SPACES.md).
-- [ ] Space header menu has "Set Profile >" (section 7); Bato does not implement it yet.
+- [ ] Space header menu has "Set Profile >" (section 7); Bato has it as a "Profile" submenu with a confirm sheet.
 
 ## Not captured / caveats
 
