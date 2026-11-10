@@ -78,6 +78,11 @@ final class SplitOrientationTests: XCTestCase {
         XCTAssertTrue(SplitPaneChrome.showsSidebarToggle(paneIndex: 0, sidebarHidden: true))
         XCTAssertFalse(SplitPaneChrome.showsSidebarToggle(paneIndex: 1, sidebarHidden: true))
         XCTAssertFalse(SplitPaneChrome.showsSidebarToggle(paneIndex: 0, sidebarHidden: false))
+        XCTAssertTrue(SplitPaneChrome.clearsTrafficLights(paneIndex: 0, layout: .sidebarRight, sidebarHidden: false))
+        XCTAssertTrue(SplitPaneChrome.clearsTrafficLights(paneIndex: 0, layout: .sidebar, sidebarHidden: true))
+        XCTAssertFalse(SplitPaneChrome.clearsTrafficLights(paneIndex: 0, layout: .sidebar, sidebarHidden: false))
+        XCTAssertFalse(SplitPaneChrome.clearsTrafficLights(paneIndex: 0, layout: .top, sidebarHidden: true))
+        XCTAssertFalse(SplitPaneChrome.clearsTrafficLights(paneIndex: 1, layout: .sidebarRight, sidebarHidden: false))
     }
 
     func testToolbarFrameIsTopBandOfPane() {

@@ -43,6 +43,12 @@ public enum SplitPaneChrome {
         paneIndex == 0 && sidebarHidden
     }
 
+    /// The first pane's row clears the traffic lights wherever they overlay the card: always with the sidebar
+    /// on the right, and with it hidden on the left. The top strip keeps the lights above the card.
+    public static func clearsTrafficLights(paneIndex: Int, layout: TabLayout, sidebarHidden: Bool) -> Bool {
+        paneIndex == 0 && (layout == .sidebarRight || (layout == .sidebar && sidebarHidden))
+    }
+
     /// Where a pane's page ends and the toolbar row above it begins, for a pane frame in the engine's coordinates.
     public static func toolbarFrame(ofPane pane: CGRect) -> CGRect {
         CGRect(x: pane.minX, y: pane.minY, width: pane.width, height: min(toolbarHeight, pane.height))

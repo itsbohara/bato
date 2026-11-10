@@ -41,12 +41,18 @@ final class OnboardingTests: XCTestCase {
 
     func testOnlyAvailableOptionsCanBeChosen() {
         var choices = OnboardingChoices()
-        XCTAssertFalse(choices.select(TabLayout.top))
-        XCTAssertFalse(choices.select(TabLayout.sidebarRight))
         XCTAssertFalse(choices.select(NewTabStyle.fullPage))
-        XCTAssertEqual(choices.tabLayout, .sidebar)
         XCTAssertEqual(choices.newTab, .popup)
-        XCTAssertTrue(choices.select(TabLayout.sidebar))
+        XCTAssertTrue(choices.select(NewTabStyle.popup))
+    }
+
+    func testEveryTabLayoutCanBeChosen() {
+        var choices = OnboardingChoices()
+        XCTAssertEqual(choices.tabLayout, .sidebar)
+        for layout in TabLayout.allCases {
+            choices.tabLayout = layout
+            XCTAssertEqual(choices.tabLayout, layout)
+        }
     }
 
     func testThemePresetsStartWithNoneAndAreValid() {

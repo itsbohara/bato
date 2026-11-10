@@ -40,7 +40,7 @@ public struct OnboardingFlow: Equatable, Sendable {
     public mutating func skip() { isEnded = true }
 }
 
-public enum TabLayout: String, CaseIterable, Sendable {
+public enum TabLayout: String, CaseIterable, Codable, Sendable {
     case sidebar, sidebarRight, top
 
     public var title: String {
@@ -50,10 +50,6 @@ public enum TabLayout: String, CaseIterable, Sendable {
         case .top: "Top"
         }
     }
-
-    /// The engine reserves the sidebar's strip on the left of the window and owns the toolbar row,
-    /// so neither a mirrored sidebar nor a top tab strip can be drawn from Swift alone.
-    public var isAvailable: Bool { self == .sidebar }
 }
 
 public enum NewTabStyle: String, CaseIterable, Sendable {
@@ -79,19 +75,12 @@ public struct OnboardingThemePreset: Equatable, Sendable {
 
 /// What "Make it yours" holds before Continue. Unavailable options cannot be chosen.
 public struct OnboardingChoices: Equatable, Sendable {
-    public private(set) var tabLayout = TabLayout.sidebar
+    public var tabLayout = TabLayout.sidebar
     public private(set) var newTab = NewTabStyle.popup
     public private(set) var themeIndex = 0
     public var appearance = AppAppearance.system
 
     public init() {}
-
-    @discardableResult
-    public mutating func select(_ layout: TabLayout) -> Bool {
-        guard layout.isAvailable else { return false }
-        tabLayout = layout
-        return true
-    }
 
     @discardableResult
     public mutating func select(_ style: NewTabStyle) -> Bool {
