@@ -61,7 +61,8 @@ class NativeSlotPatchTest(unittest.TestCase):
         exports = re.findall(r'CEF_EXPORT\s+\w+\s+(bato_native_slot_\w+)\(', header)
         self.assertIn('bato_native_slot_peek_present_v1', exports)
         self.assertIn('bato_native_slot_register_peek_interaction_callbacks_v1', exports)
-        self.assertEqual(len(exports), 24)
+        self.assertEqual(len(exports), 25)
+        self.assertIn('bato_native_slot_set_layout_v1', exports)
         self.assertIn('bato_native_slot_present_split_v2', exports)
         self.assertIn('bato_native_slot_register_split_layout_callbacks_v1', exports)
         for name in exports:
@@ -71,10 +72,11 @@ class NativeSlotPatchTest(unittest.TestCase):
         added = '\n'.join(line[1:] for line in (HERE / 'engine.patch').read_text().splitlines()
                           if line.startswith('+') and not line.startswith('+++'))
         self.assertIn('sidebar_owns_tabs = cef::NativeSidebarOwnsTabs(&browser_view_.get())', added)
-        self.assertIn('kNativeCardMargin, kNativeCardMargin)', added)
+        self.assertIn('(sidebar_right ? 0 : reserved_width) + kNativeCardMargin', added)
+        self.assertIn('kNativeTopStripHeight, kNativeCardMargin, kNativeCardMargin', added)
         self.assertIn('Inset(gfx::Insets::TLBR(top_row, reserved_width, 0, 0))', added)
         self.assertIn('leading_exclusion.vertical_padding', added)
-        self.assertIn('cef::NativeSidebarOwnsTabs(this) ? 0 : 44', added)
+        self.assertIn('cef::NativeSidebarOwnsTabs(this) ? cef::NativeTopStripHeight(this) : 44', added)
         self.assertNotIn('Inset(gfx::Insets::TLBR(44, reserved_width', added)
 
     def test_split_pane_toolbar_policy(self):

@@ -31,6 +31,12 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
 @MainActor private var commandID: CommandID?
 @MainActor private var scheduleSelection: ScheduleSelection?
 @MainActor private var sidebarGeometry: SidebarGeometry?
+private typealias SetTabLayout = @convention(c) (UInt64, Int32) -> Int32
+/// Exported by the same engine as the sidebar geometry call; resolved by name so the registration ABI is unchanged.
+@MainActor private let setEngineTabLayout: SetTabLayout? = {
+    let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+    return dlsym(defaultHandle, "bato_native_slot_set_layout_v1").map { unsafeBitCast($0, to: SetTabLayout.self) }
+}()
 @MainActor private var pageFocus: ActivePage?
 @MainActor private var presentSplitPages: PresentSplit?
 @MainActor private var separateSplitPages: ActivePage?
@@ -300,13 +306,15 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     var onExit: (() -> Void)?
     var onResize: ((CGFloat) -> Void)?
     weak var content: NSView? { didSet { needsLayout = true } }
-    var mode: Int32 = 1 {
+    var mode: Int32 = 1 { didSet { needsLayout = true } }
+    /// The strip of the top layout is always shown; only a sidebar can be hidden down to its edge.
+    var tabLayout = TabLayout.sidebar {
         didSet {
-            content?.isHidden = mode == 0
-            grip.isHidden = mode == 0 || content == nil
+            grip.edge = tabLayout.sidebarEdge
             needsLayout = true
         }
     }
+    private var showsContent: Bool { mode != 0 || tabLayout == .top }
     private var area: NSTrackingArea?
     private let grip = SidebarResizeGrip(frame: .zero)
     override var isFlipped: Bool { true }
@@ -320,10 +328,19 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     required init?(coder: NSCoder) { fatalError("Not supported") }
     override func layout() {
         super.layout()
-        content?.isHidden = mode == 0
-        grip.isHidden = mode == 0 || content == nil
-        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
-        grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
+        content?.isHidden = !showsContent
+        grip.isHidden = !showsContent || content == nil || tabLayout == .top
+        switch tabLayout.sidebarEdge {
+        case .right:
+            let width = max(214, bounds.width)
+            content?.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+            grip.frame = NSRect(x: 0, y: 0, width: 6, height: bounds.height)
+        case .left:
+            content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
+            grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
+        case nil:
+            content?.frame = bounds
+        }
     }
     override func updateTrackingAreas() {
         if let area { removeTrackingArea(area) }
@@ -349,6 +366,8 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     var onResize: ((CGFloat) -> Void)?
     private var dragOrigin: CGFloat?
     private var startWidth: CGFloat = 260
+    /// The sidebar's docked edge: dragging toward the page widens it, which is leftward on the right.
+    var edge: SidebarEdge? = .left
     override var acceptsFirstResponder: Bool { true }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -367,18 +386,20 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     override func mouseDown(with event: NSEvent) {
         guard let root = superview else { return }
         window?.makeFirstResponder(self)
-        dragOrigin = root.convert(event.locationInWindow, from: nil).x
+        dragOrigin = event.locationInWindow.x
         startWidth = root.bounds.width
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let origin = dragOrigin, let root = superview else { return }
-        onResize?(startWidth + root.convert(event.locationInWindow, from: nil).x - origin)
+        guard let origin = dragOrigin else { return }
+        let delta = event.locationInWindow.x - origin
+        onResize?(startWidth + (edge == .right ? -delta : delta))
     }
     override func mouseUp(with event: NSEvent) { dragOrigin = nil }
     private func adjust(_ delta: CGFloat) { onResize?((superview?.bounds.width ?? 260) + delta) }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 123 { adjust(-10) }
-        else if event.keyCode == 124 { adjust(10) }
+        let towardPage: CGFloat = edge == .right ? 10 : -10
+        if event.keyCode == 123 { adjust(towardPage) }
+        else if event.keyCode == 124 { adjust(-towardPage) }
         else { super.keyDown(with: event) }
     }
 }
@@ -399,6 +420,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         slot.root.content = content
         slot.root.addSubview(content, positioned: .below, relativeTo: nil)
         mounted = slot
+        slot.applyLayout(controller?.displayedLayout ?? .sidebar)
         router?.retarget(token: slot.token, root: slot.root)
     }
 }
@@ -415,6 +437,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     private var paneFrames: [NSRect] = []
     private var width: Int32 = 260
     private var mode: Int32 = 1
+    private var layout = TabLayout.sidebar
     private var pointerMonitor: Any?
     private var menuObservers: [NSObjectProtocol] = []
     private var keyObserver: NSObjectProtocol?
@@ -461,6 +484,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             controller.paneNavigationState = { page in workspaceHost.engine?.paneNavigationState(page) ?? PaneNavigationState() }
             controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
             controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
+            controller.layoutDidChange = { layout in workspaceSlots.values.forEach { $0.applyLayout(layout) } }
             controller.requestPagePresentation = {
                 if let token = workspaceHost.mounted?.token { scheduleSelection?(token) }
             }
@@ -470,6 +494,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             engine?.onShow = { token in workspaceSlots[token]?.show() }
             root.content = controller.root
             root.addSubview(controller.root, positioned: .below, relativeTo: nil)
+            root.tabLayout = controller.displayedLayout
             root.needsLayout = true
             workspaceHost.mounted = self
             let router = WorkspaceKeyRouter(token: token, root: root,
@@ -529,9 +554,18 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
         paneFrames = frames
         updateCard()
     }
+    /// Tells the engine where to reserve space and the root which way to lay itself out. Sent again once the
+    /// window attaches, because the engine only knows a window after that.
+    func applyLayout(_ next: TabLayout) {
+        layout = next
+        _ = setEngineTabLayout?(token, next.engineCode)
+        root.tabLayout = next
+        root.layoutSubtreeIfNeeded()
+        updateCard()
+    }
     private func attached() {
         installPointerMonitor()
-        updateCard()
+        applyLayout(workspaceHost.controller?.displayedLayout ?? .sidebar)
         if fullscreenObservers.isEmpty, let window = root.window {
             for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
                 fullscreenObservers.append(NotificationCenter.default.addObserver(
@@ -540,6 +574,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
                         guard let self else { return }
                         self.fullscreenRevealed = false
                         self.root.mode = entering ? 0 : self.mode
+                        if workspaceHost.mounted === self { self.controller?.setFullscreen(entering) }
                         self.syncPeekPoll()
                         self.root.layoutSubtreeIfNeeded()
                         self.updateCard()
@@ -663,7 +698,7 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
     }
     @discardableResult func toggle() -> Bool {
         if isFullscreen { return setFullscreenReveal(!fullscreenRevealed) }
-        guard setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
+        guard layout.sidebarEdge != nil, setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
         if mode == 0 { _ = pageFocus?(token) }
         return true
     }
@@ -672,14 +707,14 @@ private typealias DownloadAct = @convention(c) (UnsafePointer<CChar>?, UnsafePoi
             if !fullscreenRevealed, canInteract, !menuTracking { setFullscreenReveal(true) }
             return
         }
-        guard mode == 0, canInteract, !menuTracking else { return }
+        guard layout.sidebarEdge != nil, mode == 0, canInteract, !menuTracking else { return }
         _ = setGeometry(mode: 2) // Hover never steals focus from the page.
     }
     private var sidebarHasFocus: Bool {
         guard let focused = root.window?.firstResponder as? NSView else { return false }
         return focused === root || focused.isDescendant(of: root)
     }
-    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : mode == 2 }
+    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : layout.sidebarEdge != nil && mode == 2 }
     private var pointerInsideSidebar: Bool {
         guard let window = root.window else { return false }
         return root.bounds.contains(root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))

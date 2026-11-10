@@ -22,7 +22,8 @@ def main():
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
                                         'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift', 'Onboarding.swift']),
+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift', 'Onboarding.swift',
+                                        'TabLayoutGeometry.swift', 'TopTabStrip.swift']),
                            ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
                            ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
                            ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -38,7 +39,8 @@ def main():
                                               'WorkspaceSwipe.swift', 'TabAudio.swift',
                                               'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift', 'SplitDropOverlay.swift',
                                               'TabSwitcherPanel.swift', 'CreateSpacePage.swift',
-                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift', 'OnboardingController.swift'])]:
+                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift', 'OnboardingController.swift',
+                                              'TopTabStripView.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
         subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',

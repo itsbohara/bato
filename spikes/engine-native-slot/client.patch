@@ -248,7 +248,7 @@
        info_plist_target = ":${app_name}_plist"
 
        # Disable clang modules for this target (see issue #3611).
-@@ -2313,6 +2317,103 @@
+@@ -2313,6 +2317,106 @@
      output_path = "{{bundle_resources_dir}}/English.lproj"
    }
 
@@ -303,6 +303,8 @@
 +      "tests/cefsimple/bato/BatoCore/SidebarRows.swift",
 +      "tests/cefsimple/bato/BatoCore/TabSwitcher.swift",
 +      "tests/cefsimple/bato/BatoCore/SpaceTheme.swift",
++      "tests/cefsimple/bato/BatoCore/TabLayoutGeometry.swift",
++      "tests/cefsimple/bato/BatoCore/TopTabStrip.swift",
 +      "tests/cefsimple/bato/BatoBlocking/UBlockListsChoice.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveController.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/ArchiveSheet.swift",
@@ -331,6 +333,7 @@
 +      "tests/cefsimple/bato/BatoImport/SafariReader.swift",
 +      "tests/cefsimple/bato/BatoCore/SplitDropZones.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/SplitDropOverlay.swift",
++      "tests/cefsimple/bato/BatoBrowserUI/TopTabStripView.swift",
 +      "tests/cefsimple/bato/BatoCore/Onboarding.swift",
 +      "tests/cefsimple/bato/BatoImport/ImportSelection.swift",
 +      "tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift",
@@ -352,7 +355,7 @@
    cef_app("cefsimple") {
      # Necessary because the cef_framework target is testonly.
      testonly = true
-@@ -2336,12 +2437,19 @@
+@@ -2336,12 +2440,19 @@
                gypi_paths2.includes_wrapper +
                gypi_paths2.includes_wrapper_mac +
                gypi_paths2.cefsimple_sources_common +
@@ -2105,7 +2108,7 @@
 +#endif
 --- /dev/null
 +++ b/cef/tests/cefsimple/compile_native_slot.py
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,60 @@
 +#!/usr/bin/env python3
 +"""GN-only Swift library action, scoped to the bounded SSD component output."""
 +from pathlib import Path
@@ -2130,7 +2133,8 @@
 +    objects = []
 +    for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
 +                                        'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
-+                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift', 'Onboarding.swift']),
++                                        'SidebarPeekDismissal.swift', 'SplitPaneChrome.swift', 'SplitDropZones.swift', 'SidebarRows.swift', 'TabSwitcher.swift', 'SpaceTheme.swift', 'Onboarding.swift',
++                                        'TabLayoutGeometry.swift', 'TopTabStrip.swift']),
 +                           ('BatoPersistence', ['OrganizationStore.swift', 'BackupStore.swift', 'SessionRecovery.swift', 'AppPreferencesStore.swift', 'ClosedTabsStore.swift']),
 +                           ('BatoRuntime', ['PageRuntime.swift', 'PeekSession.swift', 'EssentialsRuntime.swift']),
 +                           ('BatoImport', ['ArcSidebarParser.swift', 'ArcStaging.swift', 'ImportPlan.swift',
@@ -2146,7 +2150,8 @@
 +                                              'WorkspaceSwipe.swift', 'TabAudio.swift',
 +                                              'SidebarDragDrop.swift', 'SidebarHoverCard.swift', 'SplitPaneOverlay.swift', 'SplitDropOverlay.swift',
 +                                              'TabSwitcherPanel.swift', 'CreateSpacePage.swift',
-+                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift', 'OnboardingController.swift'])]:
++                                              'SpaceThemePicker.swift', 'SpaceThemeStyle.swift', 'OnboardingController.swift',
++                                              'TopTabStripView.swift'])]:
 +        module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
 +        obj = modules / (name + '.o')
 +        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
@@ -2324,7 +2329,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/WorkspaceSlot.swift
-@@ -0,0 +1,1489 @@
+@@ -0,0 +1,1524 @@
 +import AppKit
 +import BatoCore
 +import BatoRuntime
@@ -2358,6 +2363,12 @@
 +@MainActor private var commandID: CommandID?
 +@MainActor private var scheduleSelection: ScheduleSelection?
 +@MainActor private var sidebarGeometry: SidebarGeometry?
++private typealias SetTabLayout = @convention(c) (UInt64, Int32) -> Int32
++/// Exported by the same engine as the sidebar geometry call; resolved by name so the registration ABI is unchanged.
++@MainActor private let setEngineTabLayout: SetTabLayout? = {
++    let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
++    return dlsym(defaultHandle, "bato_native_slot_set_layout_v1").map { unsafeBitCast($0, to: SetTabLayout.self) }
++}()
 +@MainActor private var pageFocus: ActivePage?
 +@MainActor private var presentSplitPages: PresentSplit?
 +@MainActor private var separateSplitPages: ActivePage?
@@ -2627,13 +2638,15 @@
 +    var onExit: (() -> Void)?
 +    var onResize: ((CGFloat) -> Void)?
 +    weak var content: NSView? { didSet { needsLayout = true } }
-+    var mode: Int32 = 1 {
++    var mode: Int32 = 1 { didSet { needsLayout = true } }
++    /// The strip of the top layout is always shown; only a sidebar can be hidden down to its edge.
++    var tabLayout = TabLayout.sidebar {
 +        didSet {
-+            content?.isHidden = mode == 0
-+            grip.isHidden = mode == 0 || content == nil
++            grip.edge = tabLayout.sidebarEdge
 +            needsLayout = true
 +        }
 +    }
++    private var showsContent: Bool { mode != 0 || tabLayout == .top }
 +    private var area: NSTrackingArea?
 +    private let grip = SidebarResizeGrip(frame: .zero)
 +    override var isFlipped: Bool { true }
@@ -2647,10 +2660,19 @@
 +    required init?(coder: NSCoder) { fatalError("Not supported") }
 +    override func layout() {
 +        super.layout()
-+        content?.isHidden = mode == 0
-+        grip.isHidden = mode == 0 || content == nil
-+        content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
-+        grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
++        content?.isHidden = !showsContent
++        grip.isHidden = !showsContent || content == nil || tabLayout == .top
++        switch tabLayout.sidebarEdge {
++        case .right:
++            let width = max(214, bounds.width)
++            content?.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
++            grip.frame = NSRect(x: 0, y: 0, width: 6, height: bounds.height)
++        case .left:
++            content?.frame = NSRect(x: 0, y: 0, width: max(214, bounds.width), height: bounds.height)
++            grip.frame = NSRect(x: max(0, bounds.width - 6), y: 0, width: 6, height: bounds.height)
++        case nil:
++            content?.frame = bounds
++        }
 +    }
 +    override func updateTrackingAreas() {
 +        if let area { removeTrackingArea(area) }
@@ -2676,6 +2698,8 @@
 +    var onResize: ((CGFloat) -> Void)?
 +    private var dragOrigin: CGFloat?
 +    private var startWidth: CGFloat = 260
++    /// The sidebar's docked edge: dragging toward the page widens it, which is leftward on the right.
++    var edge: SidebarEdge? = .left
 +    override var acceptsFirstResponder: Bool { true }
 +    override init(frame frameRect: NSRect) {
 +        super.init(frame: frameRect)
@@ -2694,18 +2718,20 @@
 +    override func mouseDown(with event: NSEvent) {
 +        guard let root = superview else { return }
 +        window?.makeFirstResponder(self)
-+        dragOrigin = root.convert(event.locationInWindow, from: nil).x
++        dragOrigin = event.locationInWindow.x
 +        startWidth = root.bounds.width
 +    }
 +    override func mouseDragged(with event: NSEvent) {
-+        guard let origin = dragOrigin, let root = superview else { return }
-+        onResize?(startWidth + root.convert(event.locationInWindow, from: nil).x - origin)
++        guard let origin = dragOrigin else { return }
++        let delta = event.locationInWindow.x - origin
++        onResize?(startWidth + (edge == .right ? -delta : delta))
 +    }
 +    override func mouseUp(with event: NSEvent) { dragOrigin = nil }
 +    private func adjust(_ delta: CGFloat) { onResize?((superview?.bounds.width ?? 260) + delta) }
 +    override func keyDown(with event: NSEvent) {
-+        if event.keyCode == 123 { adjust(-10) }
-+        else if event.keyCode == 124 { adjust(10) }
++        let towardPage: CGFloat = edge == .right ? 10 : -10
++        if event.keyCode == 123 { adjust(towardPage) }
++        else if event.keyCode == 124 { adjust(-towardPage) }
 +        else { super.keyDown(with: event) }
 +    }
 +}
@@ -2726,6 +2752,7 @@
 +        slot.root.content = content
 +        slot.root.addSubview(content, positioned: .below, relativeTo: nil)
 +        mounted = slot
++        slot.applyLayout(controller?.displayedLayout ?? .sidebar)
 +        router?.retarget(token: slot.token, root: slot.root)
 +    }
 +}
@@ -2742,6 +2769,7 @@
 +    private var paneFrames: [NSRect] = []
 +    private var width: Int32 = 260
 +    private var mode: Int32 = 1
++    private var layout = TabLayout.sidebar
 +    private var pointerMonitor: Any?
 +    private var menuObservers: [NSObjectProtocol] = []
 +    private var keyObserver: NSObjectProtocol?
@@ -2788,6 +2816,7 @@
 +            controller.paneNavigationState = { page in workspaceHost.engine?.paneNavigationState(page) ?? PaneNavigationState() }
 +            controller.requestNativeFocus = { workspaceHost.mounted?.focusNative() }
 +            controller.requestSidebarToggle = { _ = workspaceHost.mounted?.toggle() }
++            controller.layoutDidChange = { layout in workspaceSlots.values.forEach { $0.applyLayout(layout) } }
 +            controller.requestPagePresentation = {
 +                if let token = workspaceHost.mounted?.token { scheduleSelection?(token) }
 +            }
@@ -2797,6 +2826,7 @@
 +            engine?.onShow = { token in workspaceSlots[token]?.show() }
 +            root.content = controller.root
 +            root.addSubview(controller.root, positioned: .below, relativeTo: nil)
++            root.tabLayout = controller.displayedLayout
 +            root.needsLayout = true
 +            workspaceHost.mounted = self
 +            let router = WorkspaceKeyRouter(token: token, root: root,
@@ -2856,9 +2886,18 @@
 +        paneFrames = frames
 +        updateCard()
 +    }
++    /// Tells the engine where to reserve space and the root which way to lay itself out. Sent again once the
++    /// window attaches, because the engine only knows a window after that.
++    func applyLayout(_ next: TabLayout) {
++        layout = next
++        _ = setEngineTabLayout?(token, next.engineCode)
++        root.tabLayout = next
++        root.layoutSubtreeIfNeeded()
++        updateCard()
++    }
 +    private func attached() {
 +        installPointerMonitor()
-+        updateCard()
++        applyLayout(workspaceHost.controller?.displayedLayout ?? .sidebar)
 +        if fullscreenObservers.isEmpty, let window = root.window {
 +            for (name, entering) in [(NSWindow.didEnterFullScreenNotification, true), (NSWindow.didExitFullScreenNotification, false)] {
 +                fullscreenObservers.append(NotificationCenter.default.addObserver(
@@ -2867,6 +2906,7 @@
 +                        guard let self else { return }
 +                        self.fullscreenRevealed = false
 +                        self.root.mode = entering ? 0 : self.mode
++                        if workspaceHost.mounted === self { self.controller?.setFullscreen(entering) }
 +                        self.syncPeekPoll()
 +                        self.root.layoutSubtreeIfNeeded()
 +                        self.updateCard()
@@ -2990,7 +3030,7 @@
 +    }
 +    @discardableResult func toggle() -> Bool {
 +        if isFullscreen { return setFullscreenReveal(!fullscreenRevealed) }
-+        guard setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
++        guard layout.sidebarEdge != nil, setGeometry(mode: mode == 1 ? 0 : 1) else { return false }
 +        if mode == 0 { _ = pageFocus?(token) }
 +        return true
 +    }
@@ -2999,14 +3039,14 @@
 +            if !fullscreenRevealed, canInteract, !menuTracking { setFullscreenReveal(true) }
 +            return
 +        }
-+        guard mode == 0, canInteract, !menuTracking else { return }
++        guard layout.sidebarEdge != nil, mode == 0, canInteract, !menuTracking else { return }
 +        _ = setGeometry(mode: 2) // Hover never steals focus from the page.
 +    }
 +    private var sidebarHasFocus: Bool {
 +        guard let focused = root.window?.firstResponder as? NSView else { return false }
 +        return focused === root || focused.isDescendant(of: root)
 +    }
-+    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : mode == 2 }
++    private var isFloating: Bool { isFullscreen ? fullscreenRevealed : layout.sidebarEdge != nil && mode == 2 }
 +    private var pointerInsideSidebar: Bool {
 +        guard let window = root.window else { return false }
 +        return root.bounds.contains(root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
@@ -4789,7 +4829,7 @@
                     ErrorCode errorCode,
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/BrowserState.swift
-@@ -0,0 +1,1568 @@
+@@ -0,0 +1,1597 @@
 +import Foundation
 +
 +public enum WorkspaceMoveDirection: Sendable {
@@ -5517,6 +5557,35 @@
 +            if draft.activeWorkspaceID == id {
 +                let nearest = siblings.first { $0.offset > index } ?? siblings.last
 +                draft.activeWorkspaceID = nearest!.element.id
++            }
++        }
++    }
++
++    /// A Profile always keeps one workspace, so moving the last one out of its Profile is refused as well.
++    public func canMoveWorkspace(_ id: UUID, toProfile profileID: UUID) -> Bool {
++        guard let workspace = workspaces.first(where: { $0.id == id }), workspace.profileID != profileID,
++              profiles.contains(where: { $0.id == profileID }) else { return false }
++        return canDeleteWorkspace(id)
++    }
++
++    /// Pins, tabs, folders, splits and archived tabs travel with the workspace; it keeps its place and
++    /// stays active if it was. A selected Favorite belongs to the old Profile, so that selection is cleared.
++    public mutating func moveWorkspace(_ id: UUID, toProfile profileID: UUID) throws {
++        try transact { draft in
++            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
++                throw BrowserStateError.missingWorkspace
++            }
++            guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
++            guard draft.workspaces[index].profileID != profileID else { return }
++            guard draft.canDeleteWorkspace(id) else { throw BrowserStateError.lastWorkspaceInProfile }
++            draft.workspaces[index].profileID = profileID
++            let ownIDs = Set((draft.workspaces[index].pins + draft.workspaces[index].tabs).map(\.id))
++            if let active = draft.workspaces[index].activeEntryID, !ownIDs.contains(active) {
++                draft.workspaces[index].activeEntryID = nil
++                draft.workspaces[index].activeSplitID = nil
++            }
++            for record in draft.archive.records.indices where draft.archive.records[record].workspaceID == id {
++                draft.archive.records[record].profileID = profileID
 +            }
 +        }
 +    }
@@ -6653,7 +6722,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoRuntime/PageRuntime.swift
-@@ -0,0 +1,1172 @@
+@@ -0,0 +1,1225 @@
 +import Foundation
 +import BatoCore
 +
@@ -7035,6 +7104,59 @@
 +        onStateChange?(state)
 +        if wasCurrent { _ = showSelection() }
 +        return true
++    }
++
++    /// Moves a workspace to another Profile. Cookies and logins stay behind, so its live pages are closed
++    /// without asking and reopen from their saved addresses in the new Profile when next shown.
++    @discardableResult
++    public func moveWorkspace(_ id: UUID, toProfile profileID: UUID) -> Bool {
++        relocateWorkspace(id) { _ in profileID }
++    }
++
++    /// Creates the Profile and moves the workspace into it as one step, so cancelling leaves no Profile behind.
++    @discardableResult
++    public func moveWorkspace(_ id: UUID, toNewProfile name: String, color: String) -> Bool {
++        relocateWorkspace(id) { candidate in
++            let profileID = try candidate.addProfile(name: name)
++            try candidate.updateProfile(profileID, name: name, color: color)
++            return profileID
++        }
++    }
++
++    private func relocateWorkspace(_ id: UUID, target: (inout BrowserState) throws -> UUID) -> Bool {
++        guard let moving = state.workspaces.first(where: { $0.id == id }), state.canDeleteWorkspace(id) else {
++            lastError = .invalidCommand
++            return false
++        }
++        var candidate = state
++        let profileID: UUID
++        do {
++            profileID = try target(&candidate)
++            guard profileID != moving.profileID else { throw PageRuntimeError.invalidCommand }
++            try candidate.moveWorkspace(id, toProfile: profileID)
++            try candidate.validate()
++        } catch {
++            lastError = .invalidCommand
++            return false
++        }
++        guard engine.supportsProfile(profileID) else {
++            lastError = .unsupportedProfile
++            return false
++        }
++        let wasActive = state.activeWorkspaceID == id
++        guard save(candidate) else { return false }
++        tearDownPeek()
++        if wasActive { _ = engine.separateSplit() }
++        for entry in (moving.pins + moving.tabs).map(\.id) {
++            guard let page = livePages.removeValue(forKey: entry) else { continue }
++            pendingClose.remove(page)
++            pagesWithUncommittedNavigation.removeValue(forKey: page)
++            pendingArchive.removeValue(forKey: entry)
++            pairUnloads.removeValue(forKey: entry)
++            engine.requestClose(page)
++        }
++        closedTabs[moving.profileID]?.removeTabs(inWorkspace: id)
++        return wasActive ? showSelection() : true
 +    }
 +
 +    /// Metadata only: the visible page and the Profile's engine context are untouched.
@@ -7948,7 +8070,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/NativeWorkspaceController.swift
-@@ -0,0 +1,4280 @@
+@@ -0,0 +1,4531 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -8042,6 +8164,14 @@
 +    private var theme: SpaceTheme { themePreview ?? sidebarState.currentWorkspace.effectiveTheme }
 +    private var accent: NSColor { themePreview?.primaryNSColor ?? workspaceColor(sidebarState.currentWorkspace.color) }
 +    private let sidebarScroll = SidebarScrollView()
++    private let strip = TopTabStripView(frame: .zero)
++    private var sidebarStack: NSStackView?
++    private var layoutPreview: TabLayout?
++    private var inFullscreen = false
++    /// What the window shows now: the chosen layout, or its stand-in in fullscreen, or a preview.
++    public private(set) var displayedLayout = TabLayout.sidebar
++    /// The host reserves window space for the layout: called whenever `displayedLayout` changes.
++    public var layoutDidChange: ((TabLayout) -> Void)?
 +    private var slide: SpaceSlide?
 +    private var createSpacePage: CreateSpacePageView?
 +    private var themePopover: SpaceThemePopover?
@@ -8052,6 +8182,7 @@
 +    /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
 +    public func makeCardFrame() -> ContentCardFrameView {
 +        let frame = ContentCardFrameView(theme: theme)
++        frame.tabLayout = displayedLayout
 +        frame.showsEmptyState = runtime.state.showsEmptySpace
 +        frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
 +        frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
@@ -8082,6 +8213,7 @@
 +    /// One per window; shows a native toolbar row over each pane of a displayed pair.
 +    public func makeSplitPaneOverlay() -> SplitPaneOverlayView {
 +        let overlay = SplitPaneOverlayView(frame: .zero)
++        overlay.tabLayout = displayedLayout
 +        overlay.provider = { [weak self] in self?.splitPaneStates() ?? [] }
 +        overlay.actions = SplitPaneActions(
 +            focus: { [weak self] id in self?.focusPane(id) },
@@ -8168,6 +8300,8 @@
 +        super.init()
 +        sidebar.windowChanged = { [weak self] in DispatchQueue.main.async { self?.fitTrafficLightClearance() } }
 +        configureView()
++        displayedLayout = preferences.current().tabLayout
++        applyLayout()
 +        runtime.onStateChange = { [weak self] _ in self?.render() }
 +        render()
 +    }
@@ -8223,8 +8357,8 @@
 +            commitImport: { [weak self] snapshot, items in
 +                self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
 +            },
-+            applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
-+            previewLook: { [weak self] theme, appearance in self?.previewOnboardingLook(theme: theme, appearance: appearance) },
++            applyLook: { [weak self] theme, appearance, layout in self?.applyOnboardingLook(theme: theme, appearance: appearance, layout: layout) },
++            previewLook: { [weak self] theme, appearance, layout in self?.previewOnboardingLook(theme: theme, appearance: appearance, layout: layout) },
 +            endPreview: { [weak self] in self?.endOnboardingPreview() },
 +            finished: { [weak self] in
 +                try? self?.preferences.update { $0.onboardingCompleted = true }
@@ -8264,21 +8398,62 @@
 +        return .success(parts.isEmpty ? "Everything was already here." : "Brought over " + parts.joined(separator: ", ") + ".")
 +    }
 +
-+    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
++    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance, layout: TabLayout) {
 +        try? preferences.update { $0.appearance = appearance }
 +        NSApp.appearance = appearance.nsAppearance
 +        if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
++        setTabLayout(layout)
 +    }
 +
-+    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
++    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance, layout: TabLayout) {
 +        NSApp.appearance = appearance.nsAppearance
++        layoutPreview = layout
++        refreshLayout()
 +        guard let theme else { return endThemePreview() }
 +        previewTheme(theme)
 +    }
 +
 +    private func endOnboardingPreview() {
 +        NSApp.appearance = preferences.current().appearance.nsAppearance
++        layoutPreview = nil
++        refreshLayout()
 +        endThemePreview()
++    }
++
++    /// Saves the choice and lays the window out for it at once.
++    private func setTabLayout(_ layout: TabLayout) {
++        try? preferences.update { $0.tabLayout = layout }
++        layoutPreview = nil
++        refreshLayout()
++        settingsWindow?.reload()
++    }
++
++    /// Fullscreen has no room for a strip over the page, so top tabs show as the floating sidebar there.
++    public func setFullscreen(_ fullscreen: Bool) {
++        inFullscreen = fullscreen
++        refreshLayout()
++    }
++
++    private func refreshLayout() {
++        let next = (layoutPreview ?? preferences.current().tabLayout).displayed(inFullscreen: inFullscreen)
++        guard next != displayedLayout else { return }
++        finishSlideNow()
++        if createSpacePage != nil { dismissCreateSpacePage() }
++        displayedLayout = next
++        applyLayout()
++    }
++
++    private func applyLayout() {
++        let layout = displayedLayout
++        sidebarStack?.isHidden = layout == .top
++        strip.isHidden = layout != .top
++        sidebarToggle.image = sidebarSymbol(layout.symbolName, size: 13)
++        hoverCard.opensTowardsLeft = layout == .sidebarRight
++        fitTrafficLightClearance()
++        cardFrames.allObjects.forEach { $0.tabLayout = layout }
++        paneOverlays.allObjects.forEach { $0.tabLayout = layout }
++        renderStrip()
++        layoutDidChange?(layout)
 +    }
 +
 +    private func endThemePreview() {
@@ -8497,7 +8672,9 @@
 +            searchSuggestions: { [weak self] in self?.preferences.current().searchSuggestions ?? true },
 +            setSearchSuggestions: { [weak self] enabled in
 +                try? self?.preferences.update { $0.searchSuggestions = enabled }
-+            }))
++            },
++            tabLayout: { [weak self] in self?.preferences.current().tabLayout ?? .sidebar },
++            setTabLayout: { [weak self] in self?.setTabLayout($0) }))
 +        settingsWindow = window
 +        window.show(pane)
 +    }
@@ -8907,6 +9084,8 @@
 +        stack.spacing = 11
 +        stack.translatesAutoresizingMaskIntoConstraints = false
 +        root.addSubview(stack)
++        sidebarStack = stack
++        configureStrip()
 +        NSLayoutConstraint.activate([
 +            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: SidebarMetrics.sideInset),
 +            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -SidebarMetrics.sideInset),
@@ -8924,6 +9103,62 @@
 +        ])
 +        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
 +        scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
++    }
++
++    private func configureStrip() {
++        strip.translatesAutoresizingMaskIntoConstraints = false
++        strip.isHidden = true
++        root.addSubview(strip)
++        NSLayoutConstraint.activate([
++            strip.leadingAnchor.constraint(equalTo: root.leadingAnchor), strip.trailingAnchor.constraint(equalTo: root.trailingAnchor),
++            strip.topAnchor.constraint(equalTo: root.topAnchor), strip.bottomAnchor.constraint(equalTo: root.bottomAnchor)
++        ])
++        strip.switcherButton.target = self
++        strip.switcherButton.action = #selector(showWorkspaceSwitcher)
++        strip.select = { [weak self] id in self?.perform { self?.runtime.selectEntry(id) ?? false } }
++        strip.close = { [weak self] id in self?.perform { self?.runtime.closeEntry(id) ?? false } }
++        strip.newTab = { [weak self] in self?.newTab() }
++        strip.showSplitMenu = { [weak self] anchor in
++            guard let self else { return }
++            let menu = makeSplitMenu(isEnabled: self.runtime.supportsSplits && self.runtime.state.canSplitSelection) { [weak self] side in
++                self?.addSplit(side)
++            }
++            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
++        }
++        strip.menuFor = { [weak self] id in self?.stripMenu(for: id) }
++        strip.canReorder = { [weak self] id, section in
++            guard let self else { return false }
++            return self.runtime.state.split(containingEntry: id) == nil && self.runtime.state.canPlaceEntry(id, in: section)
++        }
++        strip.reorder = { [weak self] id, section, slot in self?.perform { self?.runtime.placeEntry(id, in: section, at: slot) ?? false } }
++    }
++
++    /// Favorites and pins as icons, then the Space's tabs, in model order whether or not the sidebar collapsed its pins.
++    private func renderStrip() {
++        guard displayedLayout == .top else { return }
++        let state = sidebarState
++        let workspace = state.currentWorkspace
++        let sections: [BrowserState.SidebarSection] = [.favorites, .pinned(folder: nil)]
++            + workspace.folders.map { .pinned(folder: $0.id) } + [.tabs]
++        strip.apply(sections.flatMap { section in
++            state.sidebarEntries(in: section).map { entry in
++                let icon = (pageIcons[entry.id]?.copy() as? NSImage).map { icon -> NSImage in
++                    icon.size = NSSize(width: SidebarStyle.rowIconSize, height: SidebarStyle.rowIconSize)
++                    return icon
++                }
++                return TopTabModel(id: entry.id, title: pageTitle(entry), url: entry.lastURL, icon: icon, section: section,
++                                   isIconOnly: section != .tabs, isSelected: workspace.activeEntryID == entry.id,
++                                   canClose: !runtime.pendingClose.contains { $0.entryID == entry.id })
++            }
++        })
++        strip.canSplit = runtime.supportsSplits && state.canSplitSelection
++    }
++
++    private func stripMenu(for id: UUID) -> NSMenu? {
++        guard let page = runtime.state.visibleEntries.first(where: { $0.id == id }) else { return nil }
++        let carrier = NSButton(frame: .zero)
++        configurePageMenu(carrier, page: page)
++        return carrier.menu
 +    }
 +
 +    /// Mounts the downloads button in the workspace footer row. `profileKey` maps a Profile to the key
@@ -8964,8 +9199,12 @@
 +
 +    /// Keeps the workspace label clear of the real window buttons, which differ with the system's window style.
 +    private func fitTrafficLightClearance() {
-+        guard let constraint = trafficLightClearanceWidth, let window = root.window,
-+              let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
++        guard let constraint = trafficLightClearanceWidth else { return }
++        guard displayedLayout == .sidebar else {
++            constraint.constant = 0
++            return
++        }
++        guard let window = root.window, let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
 +        let lightsEnd = container.convert(zoom.frame, to: nil).maxX
 +        let rowStart = root.convert(NSPoint(x: SidebarMetrics.sideInset, y: 0), to: nil).x
 +        let fitted = max(SidebarMetrics.trafficLightClearance, ceil(lightsEnd - rowStart + SidebarMetrics.trafficLightGap))
@@ -9031,6 +9270,11 @@
 +        switcherButton.image = colorDot(workspaceColor(workspace.color))
 +        switcherButton.toolTip = "\(workspace.name) · Profile \(currentProfile?.name ?? "")"
 +        switcherButton.setAccessibilityValue("\(workspace.name), Profile \(currentProfile?.name ?? "")")
++        strip.switcherButton.title = workspace.name
++        strip.switcherButton.image = switcherButton.image
++        strip.switcherButton.toolTip = switcherButton.toolTip
++        strip.switcherButton.setAccessibilityValue(switcherButton.accessibilityValue())
++        strip.needsLayout = true
 +        let focusedControl = pageControls.first { _, controls in
 +            root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
 +        }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -9091,6 +9335,7 @@
 +            statusLabel.stringValue = "A Peek is already open. Close it or open it as a tab first."
 +        }
 +        statusLabel.isHidden = statusLabel.stringValue.isEmpty
++        renderStrip()
 +    }
 +
 +    /// Split controls address organization identities, never Chromium tab indices.
@@ -9976,6 +10221,7 @@
 +        menu.autoenablesItems = false
 +        menu.addItem(ActionMenuItem(title: "Rename Space…") { [weak self] in self?.editWorkspace() })
 +        menu.addItem(ActionMenuItem(title: "Edit Theme…") { [weak self] in self?.editTheme() })
++        menu.addItem(profileMenuItem(forWorkspace: id))
 +        menu.addItem(.separator())
 +        menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
 +            guard let self, self.runtime.state.activeWorkspaceID == id else { return }
@@ -9988,6 +10234,98 @@
 +        delete.isEnabled = runtime.state.canDeleteWorkspace(id)
 +        menu.addItem(delete)
 +        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.maxY + 2), in: anchor)
++    }
++
++    private func profileMenuItem(forWorkspace id: UUID) -> NSMenuItem {
++        let state = runtime.state
++        let canMove = state.canDeleteWorkspace(id)
++        let current = state.workspaces.first { $0.id == id }?.profileID
++        let submenu = NSMenu()
++        submenu.autoenablesItems = false
++        for profile in state.profiles {
++            let item = ActionMenuItem(title: profile.name) { [weak self] in
++                self?.confirmMoveWorkspace(id, to: .existing(profile.id, profile.name))
++            }
++            item.state = profile.id == current ? .on : .off
++            item.isEnabled = canMove || profile.id == current
++            submenu.addItem(item)
++        }
++        submenu.addItem(.separator())
++        let create = ActionMenuItem(title: "New Profile…") { [weak self] in self?.draftProfile(movingWorkspace: id) }
++        create.isEnabled = canMove
++        submenu.addItem(create)
++        let item = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
++        item.submenu = submenu
++        return item
++    }
++
++    private enum MoveTarget {
++        case existing(UUID, String)
++        case new(name: String, color: String)
++
++        var name: String {
++            switch self {
++            case .existing(_, let name), .new(let name, _): name
++            }
++        }
++    }
++
++    private func draftProfile(movingWorkspace id: UUID) {
++        guard hasStarted, profileEditor == nil, let window = root.window,
++              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
++        let state = runtime.state
++        let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
++        let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
++        var target: MoveTarget?
++        let editor = ProfileEditor(creating: true, name: "", color: color, asksFirstWorkspace: false) { [weak self] name, color, _ in
++            guard let self else { return "Bato is no longer available." }
++            guard self.runtime.state.isProfileNameAvailable(name) else { return "Another Profile already has that name." }
++            target = .new(name: name.trimmingCharacters(in: .whitespacesAndNewlines), color: color)
++            return nil
++        }
++        profileEditor = editor
++        guard let sheet = editor.window else { profileEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] response in
++            self?.profileEditor = nil
++            guard response == .OK, let target else { return }
++            DispatchQueue.main.async { [weak self] in self?.confirmMoveWorkspace(id, to: target) }
++        }
++        editor.focusName()
++    }
++
++    /// Cookies and logins stay with the old Profile, so the pages reload signed in as the new one.
++    private func confirmMoveWorkspace(_ id: UUID, to target: MoveTarget) {
++        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil,
++              let workspace = runtime.state.workspaces.first(where: { $0.id == id }) else { return }
++        if case .existing(let profileID, _) = target {
++            guard runtime.state.canMoveWorkspace(id, toProfile: profileID) else { return }
++        } else {
++            guard runtime.state.canDeleteWorkspace(id) else { return }
++        }
++        requestNativeFocus?()
++        let pages = workspace.pins.count + workspace.tabs.count
++        let body = "Its \(pages) pinned and open tab\(pages == 1 ? "" : "s") will reload signed in as \(target.name). "
++            + "Logins and cookies don’t move with the Space; they stay with its current Profile."
++        RecoverySheet.present(on: window, symbol: "person.crop.circle.badge.arrow.right",
++                              title: "Move “\(workspace.name)” to the Profile “\(target.name)”?", body: body,
++                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Move Space", isDefault: false)],
++                              cancelIndex: 0) { [weak self] index in
++            guard index == 1 else { return }
++            DispatchQueue.main.async { [weak self] in self?.moveWorkspace(id, to: target) }
++        }
++    }
++
++    private func moveWorkspace(_ id: UUID, to target: MoveTarget) {
++        let moved: Bool
++        switch target {
++        case .existing(let profileID, _): moved = runtime.moveWorkspace(id, toProfile: profileID)
++        case .new(let name, let color): moved = runtime.moveWorkspace(id, toNewProfile: name, color: color)
++        }
++        render()
++        guard !moved, let window = root.window, window.attachedSheet == nil else { return }
++        RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The Space couldn’t be moved",
++                              body: "Nothing was changed. Try again.",
++                              buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
 +    }
 +
 +    private func makeTidyClearRow() -> TidyClearRow {
@@ -10111,9 +10449,11 @@
 +        let state = runtime.state
 +        let profileID = state.currentWorkspace.profileID
 +        let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
++        guard displayedLayout != .top else { return createSpaceInSheet(color: color, window: window) }
 +        var draft = SpaceTheme(color: color)
 +        draft.intensity = Self.newSpaceIntensity
 +        let page = CreateSpacePageView(theme: draft, profiles: state.profiles.map { ($0.id, $0.name) }, selected: profileID)
++        page.themePopoverEdge = displayedLayout == .sidebarRight ? .minX : .maxX
 +        page.onNewProfile = { [weak self, weak page] in self?.draftProfile(for: page) }
 +        page.onThemeChange = { [weak self] in self?.previewTheme($0) }
 +        page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
@@ -10148,6 +10488,20 @@
 +    }
 +
 +    private static let newSpaceIntensity = 0.6
++
++    /// The top strip has no sidebar page to slide in, so a new Space is named and coloured in a sheet.
++    private func createSpaceInSheet(color: String, window: NSWindow) {
++        let editor = WorkspaceEditor(creating: true, name: "", color: color) { [weak self] name, color in
++            guard let self else { return "Bato is no longer available." }
++            guard self.runtime.addWorkspace(name: name, color: color) else { return "The Space couldn’t be created. Check its name and try again." }
++            self.render()
++            return nil
++        }
++        workspaceEditor = editor
++        guard let sheet = editor.window else { workspaceEditor = nil; return }
++        window.beginSheet(sheet) { [weak self] _ in self?.workspaceEditor = nil }
++        editor.focusName()
++    }
 +
 +    /// Asks for a Profile name and colour for the Space being created; the Profile is only created with the Space.
 +    private func draftProfile(for page: CreateSpacePageView?) {
@@ -10285,7 +10639,8 @@
 +    }
 +
 +    private var canSlide: Bool {
-+        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating && createSpacePage == nil
++        hasStarted && displayedLayout != .top && root.window?.attachedSheet == nil && NSApp.modalWindow == nil
++            && !pinsAnimating && createSpacePage == nil
 +    }
 +
 +    private func trackSlide(offset: CGFloat) {
@@ -10447,7 +10802,7 @@
 +        entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
 +            self?.showSettings(.profiles)
 +        })
-+        switcherPopover.show(entries, relativeTo: switcherButton)
++        switcherPopover.show(entries, relativeTo: displayedLayout == .top ? strip.switcherButton : switcherButton)
 +    }
 +
 +    @objc private func showProfileMenu() {
@@ -11633,11 +11988,22 @@
 +            needsDisplay = true
 +        }
 +    }
-+    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
++    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card stays one margin clear of it.
 +    public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
 +    /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
 +    public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
 +    public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
++    /// Which side the sidebar docks to, or the strip above the card; the card and the tint around it follow.
++    public var tabLayout = TabLayout.sidebar {
++        didSet {
++            guard tabLayout != oldValue else { return }
++            needsDisplay = true
++            needsLayout = true
++            showSidebarButton.image = sidebarSymbol(tabLayout.symbolName, size: 13)
++            updateShowSidebarButton()
++            updateSplitButton()
++        }
++    }
 +    /// Displayed split panes in this view's flipped coordinates; each is its own rounded card with the tint between.
 +    public var paneCards: [NSRect] = [] {
 +        didSet {
@@ -11687,6 +12053,14 @@
 +
 +    /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
 +    static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
++
++    /// The tint the card leaves around itself, minus what the native sidebar or strip paints for itself.
++    private var tintRegion: NSBezierPath {
++        let region = NSBezierPath(rect: bounds)
++        region.append(NSBezierPath(rect: ChromeGeometry.coverRect(in: bounds.size, layout: tabLayout, coverWidth: sidebarCoverWidth)))
++        region.windingRule = .evenOdd
++        return region
++    }
 +
 +    init(theme: SpaceTheme) {
 +        self.theme = theme
@@ -11760,12 +12134,13 @@
 +    }
 +
 +    private func updateSplitButton() {
-+        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState || blanksPages
++        splitToolbarButton.isHidden = !isCardShown || tabLayout == .top || !paneCards.isEmpty || showsEmptyState || blanksPages
 +        needsLayout = true
 +    }
 +
 +    private func updateShowSidebarButton() {
-+        showSidebarButton.isHidden = !isCardShown || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
++        showSidebarButton.isHidden = !isCardShown || tabLayout.sidebarEdge == nil
++            || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
 +        needsLayout = true
 +    }
 +
@@ -11782,12 +12157,13 @@
 +        let side = SidebarMetrics.revealButtonSide
 +        guard let window, let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
 +        if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
-+        showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
-+                                         width: side, height: side)
 +        if splitToolbarButton.superview !== container { container.addSubview(splitToolbarButton) }
 +        // The engine keeps Chrome's toolbar clear of this slot (kNativeSplitButtonSlot).
-+        splitToolbarButton.frame = NSRect(x: container.bounds.width - Self.margin - 6 - side, y: zoom.frame.midY - side / 2,
-+                                          width: side, height: side)
++        let splitX = container.bounds.width - Self.margin - 6 - side
++        splitToolbarButton.frame = NSRect(x: splitX, y: zoom.frame.midY - side / 2, width: side, height: side)
++        // With the sidebar on the right the traffic lights keep the leading edge, so the way back sits beside the split button.
++        let showX = tabLayout == .sidebarRight ? splitX - 2 - side : zoom.frame.maxX + SidebarMetrics.trafficLightGap
++        showSidebarButton.frame = NSRect(x: showX, y: zoom.frame.midY - side / 2, width: side, height: side)
 +    }
 +
 +    // MARK: Split grabber
@@ -11879,10 +12255,7 @@
 +    }
 +
 +    private var cardRect: NSRect {
-+        let margin = Self.margin
-+        let leading = sidebarWidth + margin
-+        return NSRect(x: leading, y: margin, width: max(0, bounds.width - leading - margin),
-+                      height: max(0, bounds.height - 2 * margin))
++        ChromeGeometry.cardRect(in: bounds.size, layout: tabLayout, reservation: sidebarWidth)
 +    }
 +
 +    /// One card normally; one per pane while a pair is displayed.
@@ -11903,7 +12276,7 @@
 +        ring.windingRule = .evenOdd
 +        NSGraphicsContext.saveGraphicsState()
 +        ring.addClip()
-+        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
++        tintRegion.addClip()
 +        ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
 +        let shadow = NSShadow()
 +        shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
@@ -11941,7 +12314,7 @@
 +        let width = SplitPaneChrome.focusOutlineWidth
 +        NSGraphicsContext.saveGraphicsState()
 +        ring.addClip()
-+        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
++        tintRegion.addClip()
 +        let glow = NSShadow()
 +        glow.shadowColor = Self.focusColor.withAlphaComponent(0.55)
 +        glow.shadowBlurRadius = SplitPaneChrome.focusGlowBlur
@@ -15288,7 +15661,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SettingsWindowController.swift
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,768 @@
 +import AppKit
 +import BatoBlocking
 +import BatoCore
@@ -15312,6 +15685,8 @@
 +    let setSearchProvider: (CommandBarSearchProvider) -> Void
 +    let searchSuggestions: () -> Bool
 +    let setSearchSuggestions: (Bool) -> Void
++    let tabLayout: () -> TabLayout
++    let setTabLayout: (TabLayout) -> Void
 +}
 +
 +extension DefaultBrowser {
@@ -15510,7 +15885,13 @@
 +                              title: "Search engine",
 +                              detail: "Used when you type a search in the command bar. Chromium’s own search engine setting is separate.",
 +                              trailing: picker)
-+        return [sectionHeading("Search"), SettingsGroup(rows: [row])]
++        let layoutPicker = TabLayoutPicker(selected: hooks.tabLayout()) { [weak self] in self?.hooks.setTabLayout($0) }
++        let layoutRow = SettingsRow(leading: SymbolTile(symbol: "sidebar.left", color: .systemPurple),
++                                    title: "Tab location",
++                                    detail: "Keep tabs in a sidebar on either side, or in a strip above the page.",
++                                    trailing: layoutPicker)
++        return [sectionHeading("Search"), SettingsGroup(rows: [row]),
++                sectionHeading("Tabs"), SettingsGroup(rows: [layoutRow])]
 +    }
 +
 +    private func aboutPane() -> [NSView] {
@@ -15985,6 +16366,27 @@
 +    required init?(coder: NSCoder) { fatalError("Not used") }
 +}
 +
++private final class TabLayoutPicker: NSPopUpButton {
++    private let handler: ActionTarget
++
++    init(selected: TabLayout, choose: @escaping (TabLayout) -> Void) {
++        let layouts = TabLayout.allCases
++        var picker: (() -> Int)?
++        handler = ActionTarget { choose(layouts[picker?() ?? 0]) }
++        super.init(frame: .zero, pullsDown: false)
++        picker = { [unowned self] in indexOfSelectedItem }
++        addItems(withTitles: layouts.map(\.title))
++        selectItem(at: layouts.firstIndex(of: selected) ?? 0)
++        controlSize = .large
++        target = handler
++        action = #selector(ActionTarget.fire)
++        setAccessibilityLabel("Tab location")
++        setAccessibilityIdentifier("bato-settings-tab-layout")
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not used") }
++}
++
 +private final class ColorDot: NSView {
 +    init(hex: String) {
 +        super.init(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
@@ -16445,7 +16847,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoPersistence/AppPreferencesStore.swift
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,78 @@
 +import BatoCore
 +import Foundation
 +
@@ -16454,13 +16856,14 @@
 +    /// Sends what is typed in the command bar to the search provider for completions.
 +    public var searchSuggestions = true
 +    public var appearance = AppAppearance.system
++    public var tabLayout = TabLayout.sidebar
 +    /// Set when the first-run card is finished or skipped.
 +    public var onboardingCompleted = false
 +    public init() {}
 +}
 +
 +extension AppPreferences: Codable {
-+    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions, appearance, onboardingCompleted }
++    private enum CodingKeys: String, CodingKey { case searchProvider, searchSuggestions, appearance, tabLayout, onboardingCompleted }
 +
 +    /// An unknown provider name, e.g. from a newer build, falls back to the default instead of dropping the file.
 +    public init(from decoder: any Decoder) throws {
@@ -16469,6 +16872,7 @@
 +        searchProvider = name.flatMap(CommandBarSearchProvider.init(rawValue:)) ?? .default
 +        searchSuggestions = try values.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
 +        appearance = try values.decodeIfPresent(String.self, forKey: .appearance).flatMap(AppAppearance.init(rawValue:)) ?? .system
++        tabLayout = try values.decodeIfPresent(String.self, forKey: .tabLayout).flatMap(TabLayout.init(rawValue:)) ?? .sidebar
 +        onboardingCompleted = try values.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
 +    }
 +}
@@ -19443,7 +19847,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SidebarHoverCard.swift
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,111 @@
 +import AppKit
 +
 +/// What the card for a sidebar row says: the page title and where it lives.
@@ -19464,6 +19868,8 @@
 +@MainActor
 +final class SidebarHoverCard {
 +    static let delay: TimeInterval = 0.6
++    /// The sidebar is on the right, so the card opens over the page on its left.
++    var opensTowardsLeft = false
 +    private var timer: Timer?
 +    private var panel: NSPanel?
 +    private var monitor: Any?
@@ -19547,7 +19953,8 @@
 +        panel.isReleasedWhenClosed = false
 +        panel.setAccessibilityElement(false)
 +        let rowInScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-+        panel.setFrameOrigin(NSPoint(x: rowInScreen.maxX + 8, y: rowInScreen.midY - size.height / 2))
++        let x = opensTowardsLeft ? rowInScreen.minX - 8 - size.width : rowInScreen.maxX + 8
++        panel.setFrameOrigin(NSPoint(x: x, y: rowInScreen.midY - size.height / 2))
 +        window.addChildWindow(panel, ordered: .above)
 +        self.panel = panel
 +    }
@@ -19604,7 +20011,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/SplitPaneChrome.swift
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,103 @@
 +import CoreGraphics
 +import Foundation
 +
@@ -19648,6 +20055,12 @@
 +    /// The sidebar toggle belongs to the leading pane (left or top) while the sidebar is hidden.
 +    public static func showsSidebarToggle(paneIndex: Int, sidebarHidden: Bool) -> Bool {
 +        paneIndex == 0 && sidebarHidden
++    }
++
++    /// The first pane's row clears the traffic lights wherever they overlay the card: always with the sidebar
++    /// on the right, and with it hidden on the left. The top strip keeps the lights above the card.
++    public static func clearsTrafficLights(paneIndex: Int, layout: TabLayout, sidebarHidden: Bool) -> Bool {
++        paneIndex == 0 && (layout == .sidebarRight || (layout == .sidebar && sidebarHidden))
 +    }
 +
 +    /// Where a pane's page ends and the toolbar row above it begins, for a pane frame in the engine's coordinates.
@@ -19704,7 +20117,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/SplitPaneOverlay.swift
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,358 @@
 +import AppKit
 +import BatoCore
 +
@@ -19970,6 +20383,7 @@
 +                                          addSplit: { _ in }, toggleSidebar: {})
 +    /// The sidebar is hidden, so the first pane's row also clears the traffic lights and show-sidebar button.
 +    public var sidebarHidden = false { didSet { needsLayout = true } }
++    public var tabLayout = TabLayout.sidebar { didSet { needsLayout = true } }
 +    public private(set) var paneFrames: [NSRect] = []
 +    private var toolbars: [SplitPaneToolbarView] = []
 +    private var poll: Timer?
@@ -20051,10 +20465,11 @@
 +    }
 +
 +    private func leadingInset(forPane index: Int, frame: NSRect) -> CGFloat {
-+        guard SplitPaneChrome.showsSidebarToggle(paneIndex: index, sidebarHidden: sidebarHidden),
++        guard SplitPaneChrome.clearsTrafficLights(paneIndex: index, layout: tabLayout, sidebarHidden: sidebarHidden),
 +              let window, let zoom = window.standardWindowButton(.zoomButton) else { return 0 }
 +        let lightsEnd = convert(zoom.convert(zoom.bounds, to: nil), from: nil).maxX
-+        let slot = SidebarMetrics.trafficLightGap + SidebarMetrics.revealButtonSide + 4
++        let slot = tabLayout == .sidebar ? SidebarMetrics.trafficLightGap + SidebarMetrics.revealButtonSide + 4
++                                         : SidebarMetrics.trafficLightGap
 +        return max(0, lightsEnd + slot - frame.minX - 8)
 +    }
 +
@@ -20688,7 +21103,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CreateSpacePage.swift
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,454 @@
 +import AppKit
 +import BatoCore
 +
@@ -20704,6 +21119,8 @@
 +
 +    var onCreate: ((String, String?, SpaceTheme, ProfileChoice) -> Void)?
 +    var onNewProfile: (() -> Void)?
++    /// The side the theme popover opens toward; away from a sidebar docked on the right.
++    var themePopoverEdge: NSRectEdge = .maxX
 +    var onCancel: (() -> Void)?
 +
 +    private(set) var theme: SpaceTheme
@@ -21026,7 +21443,7 @@
 +            self?.refresh()
 +        })
 +        themePopover = popover
-+        popover.show(relativeTo: themeRow.bounds, of: themeRow, preferredEdge: .maxX)
++        popover.show(relativeTo: themeRow.bounds, of: themeRow, preferredEdge: themePopoverEdge)
 +        refresh()
 +    }
 +}
@@ -23157,7 +23574,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/Onboarding.swift
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,101 @@
 +import Foundation
 +
 +/// The app's light or dark look; `system` follows macOS.
@@ -23200,7 +23617,7 @@
 +    public mutating func skip() { isEnded = true }
 +}
 +
-+public enum TabLayout: String, CaseIterable, Sendable {
++public enum TabLayout: String, CaseIterable, Codable, Sendable {
 +    case sidebar, sidebarRight, top
 +
 +    public var title: String {
@@ -23210,10 +23627,6 @@
 +        case .top: "Top"
 +        }
 +    }
-+
-+    /// The engine reserves the sidebar's strip on the left of the window and owns the toolbar row,
-+    /// so neither a mirrored sidebar nor a top tab strip can be drawn from Swift alone.
-+    public var isAvailable: Bool { self == .sidebar }
 +}
 +
 +public enum NewTabStyle: String, CaseIterable, Sendable {
@@ -23239,19 +23652,12 @@
 +
 +/// What "Make it yours" holds before Continue. Unavailable options cannot be chosen.
 +public struct OnboardingChoices: Equatable, Sendable {
-+    public private(set) var tabLayout = TabLayout.sidebar
++    public var tabLayout = TabLayout.sidebar
 +    public private(set) var newTab = NewTabStyle.popup
 +    public private(set) var themeIndex = 0
 +    public var appearance = AppAppearance.system
 +
 +    public init() {}
-+
-+    @discardableResult
-+    public mutating func select(_ layout: TabLayout) -> Bool {
-+        guard layout.isAvailable else { return false }
-+        tabLayout = layout
-+        return true
-+    }
 +
 +    @discardableResult
 +    public mutating func select(_ style: NewTabStyle) -> Bool {
@@ -23382,7 +23788,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/OnboardingController.swift
-@@ -0,0 +1,883 @@
+@@ -0,0 +1,882 @@
 +import AppKit
 +import BatoCore
 +import BatoImport
@@ -23393,9 +23799,9 @@
 +    public var defaultSource: () -> ImportSource?
 +    /// Saves the snapshot into the current Profile as one transaction and returns a one-line result.
 +    public var commitImport: (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>
-+    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
++    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance, _ layout: TabLayout) -> Void
 +    /// Shows a look without saving it; nil theme keeps the Space's own.
-+    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
++    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance, _ layout: TabLayout) -> Void
 +    /// Drops any preview and returns to the saved look.
 +    public var endPreview: () -> Void
 +    /// Called once when the card ends by any route, including Skip Setup.
@@ -23403,8 +23809,8 @@
 +
 +    public init(importer: BrowserImporter, defaultSource: @escaping () -> ImportSource?,
 +                commitImport: @escaping (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>,
-+                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void,
-+                previewLook: @escaping (SpaceTheme?, AppAppearance) -> Void, endPreview: @escaping () -> Void,
++                applyLook: @escaping (SpaceTheme?, AppAppearance, TabLayout) -> Void,
++                previewLook: @escaping (SpaceTheme?, AppAppearance, TabLayout) -> Void, endPreview: @escaping () -> Void,
 +                finished: @escaping () -> Void) {
 +        self.importer = importer
 +        self.defaultSource = defaultSource
@@ -23510,11 +23916,11 @@
 +    }
 +
 +    private func previewChoices() {
-+        hooks.previewLook(choices.theme, choices.appearance)
++        hooks.previewLook(choices.theme, choices.appearance, choices.tabLayout)
 +    }
 +
 +    private func finishLook() {
-+        hooks.applyLook(choices.theme, choices.appearance)
++        hooks.applyLook(choices.theme, choices.appearance, choices.tabLayout)
 +        advance()
 +    }
 +
@@ -23791,7 +24197,8 @@
 +    private func makeItYoursView() -> NSView {
 +        let tiles = NSStackView(views: TabLayout.allCases.map { layout in
 +            LayoutTile(layout: layout, isSelected: choices.tabLayout == layout) { [weak self] in
-+                guard let self, self.choices.select(layout) else { return }
++                guard let self else { return }
++                self.choices.tabLayout = layout
 +                self.present(animated: false)
 +            }
 +        })
@@ -24166,21 +24573,20 @@
 +        heightAnchor.constraint(equalToConstant: 112).isActive = true
 +        setAccessibilityElement(true)
 +        setAccessibilityRole(.radioButton)
-+        setAccessibilityLabel(layout.isAvailable ? layout.title : "\(layout.title), coming soon")
++        setAccessibilityLabel(layout.title)
 +    }
 +
 +    required init?(coder: NSCoder) { nil }
 +
 +    override var isFlipped: Bool { true }
-+    override func mouseDown(with event: NSEvent) { if layout.isAvailable { handler() } }
++    override func mouseDown(with event: NSEvent) { handler() }
 +
 +    override func draw(_ dirtyRect: NSRect) {
-+        let alpha: CGFloat = layout.isAvailable ? 1 : 0.4
 +        let frame = NSRect(x: 0, y: 0, width: bounds.width, height: 84).insetBy(dx: 1, dy: 1)
-+        NSColor.white.withAlphaComponent(0.08 * alpha).setFill()
++        NSColor.white.withAlphaComponent(0.08).setFill()
 +        NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8).fill()
-+        let strip = NSColor.white.withAlphaComponent(0.28 * alpha)
-+        let page = NSColor.white.withAlphaComponent(0.12 * alpha)
++        let strip = NSColor.white.withAlphaComponent(0.28)
++        let page = NSColor.white.withAlphaComponent(0.12)
 +        let inner = frame.insetBy(dx: 6, dy: 6)
 +        let stripRect: NSRect, pageRect: NSRect
 +        switch layout {
@@ -24204,13 +24610,12 @@
 +            outline.lineWidth = 2
 +            outline.stroke()
 +        }
-+        let caption = layout.isAvailable ? layout.title : "\(layout.title) · Coming soon"
 +        let style = NSMutableParagraphStyle()
 +        style.alignment = .center
 +        style.lineBreakMode = .byTruncatingTail
-+        (caption as NSString).draw(in: NSRect(x: 0, y: 90, width: bounds.width, height: 18), withAttributes: [
++        (layout.title as NSString).draw(in: NSRect(x: 0, y: 90, width: bounds.width, height: 18), withAttributes: [
 +            .font: NSFont.systemFont(ofSize: 11, weight: isSelected ? .semibold : .regular),
-+            .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha), .paragraphStyle: style])
++            .foregroundColor: NSColor.labelColor, .paragraphStyle: style])
 +    }
 +}
 +
@@ -24265,4 +24670,430 @@
 +        (preset.name as NSString).draw(in: NSRect(x: 0, y: 40, width: bounds.width, height: 14), withAttributes: [
 +            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
 +    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/TabLayoutGeometry.swift
+@@ -0,0 +1,73 @@
++import Foundation
++
++public enum SidebarEdge: Sendable { case left, right }
++
++public extension TabLayout {
++    /// The window edge the sidebar docks to; nil when tabs sit in a strip above the page.
++    var sidebarEdge: SidebarEdge? {
++        switch self {
++        case .sidebar: .left
++        case .sidebarRight: .right
++        case .top: nil
++        }
++    }
++
++    /// Fullscreen has no room for a strip over the page; top tabs fall back to the floating sidebar there.
++    func displayed(inFullscreen fullscreen: Bool) -> TabLayout {
++        fullscreen && self == .top ? .sidebar : self
++    }
++
++    /// Value of the engine's layout argument; must match `NativeTabLayout` in the engine overlay.
++    var engineCode: Int32 {
++        switch self {
++        case .sidebar: 0
++        case .sidebarRight: 1
++        case .top: 2
++        }
++    }
++
++    var symbolName: String {
++        switch self {
++        case .sidebar, .top: "sidebar.left"
++        case .sidebarRight: "sidebar.right"
++        }
++    }
++}
++
++/// Where the content card and the tint around it fall inside the window, in flipped coordinates (y down).
++public enum ChromeGeometry {
++    /// Gutter around the card; must equal `kNativeCardMargin` in the engine overlay.
++    public static let cardMargin: CGFloat = 8
++    /// Height of the tab strip above the card in the top layout; must equal `kNativeTopStripHeight` in the engine overlay.
++    public static let topStripHeight: CGFloat = 54
++
++    /// `reservation` is the docked sidebar's width, 0 when it is hidden or floating.
++    public static func cardRect(in size: CGSize, layout: TabLayout, reservation: CGFloat) -> CGRect {
++        let margin = cardMargin
++        let x: CGFloat, top: CGFloat, width: CGFloat
++        switch layout {
++        case .sidebar:
++            x = reservation + margin
++            top = margin
++            width = size.width - reservation - 2 * margin
++        case .sidebarRight:
++            x = margin
++            top = margin
++            width = size.width - reservation - 2 * margin
++        case .top:
++            x = margin
++            top = topStripHeight
++            width = size.width - 2 * margin
++        }
++        return CGRect(x: x, y: top, width: max(0, width), height: max(0, size.height - top - margin))
++    }
++
++    /// The part of the window the native sidebar or strip paints for itself, which the tint must not cover.
++    public static func coverRect(in size: CGSize, layout: TabLayout, coverWidth: CGFloat) -> CGRect {
++        switch layout {
++        case .sidebar: CGRect(x: 0, y: 0, width: coverWidth, height: size.height)
++        case .sidebarRight: CGRect(x: max(0, size.width - coverWidth), y: 0, width: coverWidth, height: size.height)
++        case .top: CGRect(x: 0, y: 0, width: size.width, height: min(topStripHeight, size.height))
++        }
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoCore/TopTabStrip.swift
+@@ -0,0 +1,53 @@
++import Foundation
++
++/// A tab in the top strip: favorites and pins draw as icons, tabs share the remaining width.
++public struct TopTabItem: Equatable, Sendable {
++    public let id: UUID
++    public let isIconOnly: Bool
++
++    public init(id: UUID, isIconOnly: Bool) {
++        self.id = id
++        self.isIconOnly = isIconOnly
++    }
++}
++
++/// Horizontal layout of the top tab strip, in the strip's own coordinates (x from the left edge).
++public enum TopTabStrip {
++    public static let tabHeight: CGFloat = 32
++    /// Centre line of the strip's controls and tabs: where AppKit centres the traffic lights, so they share a row.
++    public static let rowCenterY: CGFloat = 31
++    public static let iconTabWidth: CGFloat = 36
++    public static let maxTabWidth: CGFloat = 220
++    public static let minTabWidth: CGFloat = 34
++    public static let gap: CGFloat = 4
++    /// Extra room between the icon-only group and the tabs.
++    public static let groupGap: CGFloat = 8
++
++    /// Frames for `items` between `start` and `end`. Icon-only items keep their width; tabs shrink evenly
++    /// from `maxTabWidth` down to `minTabWidth`, and any beyond that are clipped by the strip.
++    public static func frames(for items: [TopTabItem], from start: CGFloat, to end: CGFloat) -> [CGRect] {
++        let icons = items.filter(\.isIconOnly).count
++        let tabs = items.count - icons
++        var x = start
++        let iconsWidth = CGFloat(icons) * (iconTabWidth + gap)
++        let groupSpace = icons > 0 && tabs > 0 ? groupGap : 0
++        let room = end - start - iconsWidth - groupSpace
++        let width = tabs > 0 ? min(maxTabWidth, max(minTabWidth, room / CGFloat(tabs) - gap)) : maxTabWidth
++        let y = rowCenterY - tabHeight / 2
++        var seenTab = false
++        return items.map { item in
++            if !item.isIconOnly, !seenTab {
++                seenTab = true
++                x += groupSpace
++            }
++            let frame = CGRect(x: x, y: y, width: item.isIconOnly ? iconTabWidth : width.rounded(.down), height: tabHeight)
++            x = frame.maxX + gap
++            return frame
++        }
++    }
++
++    /// The gap a dragged tab would drop into, 0 through `frames.count`, from the drag's horizontal position.
++    public static func insertionSlot(atX x: CGFloat, among frames: [CGRect]) -> Int {
++        frames.firstIndex { x < $0.midX } ?? frames.count
++    }
++}
+--- /dev/null
++++ b/cef/tests/cefsimple/bato/BatoBrowserUI/TopTabStripView.swift
+@@ -0,0 +1,291 @@
++import AppKit
++import BatoCore
++
++/// One tab of the top strip, as the strip draws it.
++struct TopTabModel {
++    let id: UUID
++    let title: String
++    let url: URL
++    let icon: NSImage?
++    let section: BrowserState.SidebarSection
++    let isIconOnly: Bool
++    let isSelected: Bool
++    let canClose: Bool
++}
++
++/// The horizontal tab strip of the top layout. It paints nothing itself: the workspace root behind it
++/// carries the Space theme, so the strip always wears the active Space's colours.
++@MainActor
++final class TopTabStripView: NSView {
++    let switcherButton = NSButton(frame: .zero)
++    private let newTabButton = NSButton(frame: .zero)
++    private let splitButton = NSButton(frame: .zero)
++    private var tabViews: [TopTabView] = []
++    private var dragged: TopTabView?
++    private var dragSlot: Int?
++    private let indicator = NSView()
++    private var pending: [TopTabModel]?
++
++    var select: (UUID) -> Void = { _ in }
++    var close: (UUID) -> Void = { _ in }
++    var newTab: () -> Void = {}
++    var showSplitMenu: (NSView) -> Void = { _ in }
++    var menuFor: (UUID) -> NSMenu? = { _ in nil }
++    /// Called with the dragged tab, its section and the gap it was dropped into among that section's tabs.
++    var reorder: (UUID, BrowserState.SidebarSection, Int) -> Void = { _, _, _ in }
++    var canReorder: (UUID, BrowserState.SidebarSection) -> Bool = { _, _ in false }
++    var canSplit = false { didSet { splitButton.isEnabled = canSplit } }
++
++    private static let controlSide: CGFloat = 28
++    private static let edgeInset: CGFloat = 10
++    private static let switcherMaxWidth: CGFloat = 150
++
++    override var isFlipped: Bool { true }
++
++    override init(frame: NSRect) {
++        super.init(frame: frame)
++        configureSwitcher()
++        configureControl(newTabButton, symbol: "plus", label: "New Tab", identifier: "bato-strip-new-tab", action: #selector(newTabClicked))
++        configureControl(splitButton, symbol: "rectangle.split.2x1", label: "Split view", identifier: "bato-toolbar-split", action: #selector(splitClicked))
++        indicator.wantsLayer = true
++        indicator.layer?.cornerRadius = 1
++        indicator.isHidden = true
++        [switcherButton, newTabButton, splitButton, indicator].forEach(addSubview)
++        setAccessibilityIdentifier("bato-top-tab-strip")
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    private func configureSwitcher() {
++        switcherButton.isBordered = false
++        switcherButton.bezelStyle = .recessed
++        switcherButton.font = .systemFont(ofSize: 13, weight: .semibold)
++        switcherButton.contentTintColor = .labelColor
++        switcherButton.alignment = .left
++        switcherButton.lineBreakMode = .byTruncatingTail
++        switcherButton.imagePosition = .imageLeading
++        switcherButton.imageHugsTitle = true
++        switcherButton.setAccessibilityLabel("Current workspace")
++        switcherButton.setAccessibilityIdentifier("bato-space-name")
++    }
++
++    private func configureControl(_ button: NSButton, symbol: String, label: String, identifier: String, action: Selector) {
++        button.image = sidebarSymbol(symbol, size: 13)
++        button.imagePosition = .imageOnly
++        button.isBordered = false
++        button.bezelStyle = .recessed
++        button.contentTintColor = .secondaryLabelColor
++        button.setAccessibilityLabel(label)
++        button.setAccessibilityIdentifier(identifier)
++        button.toolTip = label
++        button.target = self
++        button.action = action
++    }
++
++    @objc private func newTabClicked() { newTab() }
++    @objc private func splitClicked() { showSplitMenu(splitButton) }
++
++    func apply(_ models: [TopTabModel]) {
++        guard dragged == nil else { pending = models; return }
++        tabViews.forEach { $0.removeFromSuperview() }
++        tabViews = models.map { model in
++            let view = TopTabView(model: model)
++            view.onSelect = { [weak self] in self?.select(model.id) }
++            view.onClose = { [weak self] in self?.close(model.id) }
++            view.menuProvider = { [weak self] in self?.menuFor(model.id) }
++            view.onDrag = { [weak self] view, event in self?.drag(view, event: event) }
++            view.onDrop = { [weak self] view in self?.drop(view) }
++            addSubview(view, positioned: .below, relativeTo: indicator)
++            return view
++        }
++        needsLayout = true
++    }
++
++    /// The x where the traffic lights end, so the Space switcher starts clear of them.
++    private var lightsEnd: CGFloat {
++        guard let window, let zoom = window.standardWindowButton(.zoomButton) else { return 78 }
++        return convert(zoom.convert(zoom.bounds, to: nil), from: nil).maxX
++    }
++
++    private var tabRegion: ClosedRange<CGFloat> {
++        let start = switcherButton.frame.maxX + 10
++        let end = splitButton.frame.minX - 6 - Self.controlSide - 6
++        return start...max(start, end)
++    }
++
++    override func layout() {
++        super.layout()
++        let side = Self.controlSide
++        let midY = TopTabStrip.rowCenterY
++        splitButton.frame = NSRect(x: bounds.width - Self.edgeInset - side, y: midY - side / 2, width: side, height: side)
++        newTabButton.frame = NSRect(x: splitButton.frame.minX - 6 - side, y: midY - side / 2, width: side, height: side)
++        let switcherWidth = min(Self.switcherMaxWidth, ceil(switcherButton.intrinsicContentSize.width))
++        switcherButton.frame = NSRect(x: lightsEnd + SidebarMetrics.trafficLightGap, y: midY - side / 2, width: switcherWidth, height: side)
++        let items = tabViews.map { TopTabItem(id: $0.model.id, isIconOnly: $0.model.isIconOnly) }
++        let region = tabRegion
++        let frames = TopTabStrip.frames(for: items, from: region.lowerBound, to: region.upperBound)
++        for (view, frame) in zip(tabViews, frames) where view !== dragged {
++            view.frame = frame
++            view.isHidden = frame.minX >= region.upperBound
++        }
++    }
++
++    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
++
++    private func drag(_ view: TopTabView, event: NSEvent) {
++        guard canReorder(view.model.id, view.model.section) else { return }
++        if dragged == nil {
++            dragged = view
++            view.alphaValue = 0.7
++            addSubview(view, positioned: .above, relativeTo: nil)
++        }
++        let x = convert(event.locationInWindow, from: nil).x
++        let region = tabRegion
++        view.frame.origin.x = min(max(x - view.frame.width / 2, region.lowerBound), region.upperBound - view.frame.width)
++        let siblings = tabViews.filter { $0.model.section == view.model.section }
++        let slot = TopTabStrip.insertionSlot(atX: view.frame.midX, among: siblings.map(\.slotFrame))
++        dragSlot = slot
++        let marker = slot < siblings.count ? siblings[slot].slotFrame.minX - TopTabStrip.gap / 2
++                                           : (siblings.last?.slotFrame.maxX ?? 0) + TopTabStrip.gap / 2
++        indicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
++        indicator.frame = NSRect(x: marker - 1, y: view.frame.minY, width: 2, height: view.frame.height)
++        indicator.isHidden = false
++    }
++
++    private func drop(_ view: TopTabView) {
++        guard dragged === view else { return }
++        let slot = dragSlot
++        dragged = nil
++        dragSlot = nil
++        view.alphaValue = 1
++        indicator.isHidden = true
++        if let slot { reorder(view.model.id, view.model.section, slot) }
++        if let pending {
++            self.pending = nil
++            apply(pending)
++        }
++        needsLayout = true
++    }
++}
++
++/// A tab's resting frame, so a dragged tab is measured against where the others sit rather than where it floats.
++private extension TopTabView {
++    var slotFrame: NSRect { restingFrame }
++}
++
++@MainActor
++private final class TopTabView: NSView {
++    let model: TopTabModel
++    var onSelect: () -> Void = {}
++    var onClose: () -> Void = {}
++    var menuProvider: () -> NSMenu? = { nil }
++    var onDrag: (TopTabView, NSEvent) -> Void = { _, _ in }
++    var onDrop: (TopTabView) -> Void = { _ in }
++    private let iconView = NSImageView()
++    private let titleLabel = NSTextField(labelWithString: "")
++    private let closeButton = NSButton(frame: .zero)
++    private var hovered = false { didSet { needsLayout = true; needsDisplay = true } }
++    private var tracking: NSTrackingArea?
++    private var pressOrigin: NSPoint?
++    private var didDrag = false
++    private(set) var restingFrame = NSRect.zero
++
++    override var frame: NSRect { didSet { if !didDrag { restingFrame = frame } } }
++    override var isFlipped: Bool { true }
++
++    init(model: TopTabModel) {
++        self.model = model
++        super.init(frame: .zero)
++        iconView.imageScaling = .scaleProportionallyDown
++        iconView.image = model.icon ?? SidebarStyle.letterIcon(for: model.title, url: model.url, size: SidebarStyle.rowIconSize)
++        titleLabel.stringValue = model.title
++        titleLabel.font = .systemFont(ofSize: 12.5, weight: model.isSelected ? .semibold : .regular)
++        titleLabel.textColor = model.isSelected ? .labelColor : .secondaryLabelColor
++        titleLabel.lineBreakMode = .byTruncatingTail
++        titleLabel.isHidden = model.isIconOnly
++        closeButton.image = sidebarSymbol("xmark", size: 9)
++        closeButton.imagePosition = .imageOnly
++        closeButton.isBordered = false
++        closeButton.bezelStyle = .recessed
++        closeButton.focusRingType = .none
++        closeButton.contentTintColor = .secondaryLabelColor
++        closeButton.target = self
++        closeButton.action = #selector(closeClicked)
++        closeButton.setAccessibilityLabel("Close \(model.title)")
++        closeButton.setAccessibilityIdentifier("bato-close-\(model.id.uuidString)")
++        [iconView, titleLabel, closeButton].forEach(addSubview)
++        setAccessibilityElement(true)
++        setAccessibilityRole(.radioButton)
++        setAccessibilityLabel(model.title)
++        setAccessibilityValue(model.isSelected)
++        setAccessibilityIdentifier("bato-page-\(model.id.uuidString)")
++        toolTip = model.title
++    }
++
++    required init?(coder: NSCoder) { fatalError("Not supported") }
++
++    @objc private func closeClicked() { onClose() }
++
++    override func accessibilityPerformPress() -> Bool { onSelect(); return true }
++
++    private var showsClose: Bool { !model.isIconOnly && model.canClose && (hovered || model.isSelected) && bounds.width >= 72 }
++
++    override func layout() {
++        super.layout()
++        let icon = SidebarStyle.rowIconSize
++        let leading: CGFloat = model.isIconOnly ? (bounds.width - icon) / 2 : (bounds.width < 56 ? (bounds.width - icon) / 2 : 10)
++        iconView.frame = NSRect(x: leading, y: (bounds.height - icon) / 2, width: icon, height: icon)
++        closeButton.isHidden = !showsClose
++        closeButton.frame = NSRect(x: bounds.width - 24, y: (bounds.height - 20) / 2, width: 20, height: 20)
++        let titleStart = leading + icon + 7
++        let titleEnd = showsClose ? bounds.width - 26 : bounds.width - 8
++        titleLabel.isHidden = model.isIconOnly || titleEnd - titleStart < 24
++        let height = ceil(titleLabel.intrinsicContentSize.height)
++        titleLabel.frame = NSRect(x: titleStart, y: (bounds.height - height) / 2, width: max(0, titleEnd - titleStart), height: height)
++    }
++
++    override func updateTrackingAreas() {
++        super.updateTrackingAreas()
++        if let tracking { removeTrackingArea(tracking) }
++        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
++        addTrackingArea(area)
++        tracking = area
++    }
++
++    override func mouseEntered(with event: NSEvent) { hovered = true }
++    override func mouseExited(with event: NSEvent) { hovered = false }
++
++    override func draw(_ dirtyRect: NSRect) {
++        guard let fill = SidebarStyle.rowFill(selected: model.isSelected, hovered: hovered, tile: false) else { return }
++        fill.setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: SidebarMetrics.cornerRadius, yRadius: SidebarMetrics.cornerRadius).fill()
++    }
++
++    override func mouseDown(with event: NSEvent) {
++        pressOrigin = event.locationInWindow
++        didDrag = false
++    }
++
++    override func mouseDragged(with event: NSEvent) {
++        guard let origin = pressOrigin else { return }
++        if !didDrag, abs(event.locationInWindow.x - origin.x) < 4 { return }
++        didDrag = true
++        onDrag(self, event)
++    }
++
++    override func mouseUp(with event: NSEvent) {
++        defer { pressOrigin = nil }
++        guard didDrag else { return onSelect() }
++        didDrag = false
++        onDrop(self)
++    }
++
++    override func otherMouseUp(with event: NSEvent) {
++        guard event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) else {
++            return super.otherMouseUp(with: event)
++        }
++        onClose()
++    }
++
++    override func menu(for event: NSEvent) -> NSMenu? { menuProvider() }
 +}
