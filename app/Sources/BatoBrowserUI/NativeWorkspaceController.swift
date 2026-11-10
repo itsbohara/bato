@@ -4086,7 +4086,8 @@ public final class ContentCardFrameView: NSView {
         if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
         if splitToolbarButton.superview !== container { container.addSubview(splitToolbarButton) }
         // The engine keeps Chrome's toolbar clear of this slot (kNativeSplitButtonSlot).
-        let splitX = container.bounds.width - Self.margin - 6 - side
+        let cardMaxX = container.convert(convert(cardRect, to: nil), from: nil).maxX
+        let splitX = min(container.bounds.width - Self.margin, cardMaxX) - 6 - side
         splitToolbarButton.frame = NSRect(x: splitX, y: zoom.frame.midY - side / 2, width: side, height: side)
         // With the sidebar on the right the traffic lights keep the leading edge, so the way back sits beside the split button.
         let showX = tabLayout == .sidebarRight ? splitX - 2 - side : zoom.frame.maxX + SidebarMetrics.trafficLightGap
