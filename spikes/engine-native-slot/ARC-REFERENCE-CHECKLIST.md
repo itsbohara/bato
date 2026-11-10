@@ -234,6 +234,15 @@ Second pass (2026-11-09, own example.com/org/net tabs, 1920x1080, private shots 
 Arc (`arc-drag-split/`): Arc has the equivalent, with a different look. Dragging a sidebar tab over the page splits it live: the current page shrinks to the other half and a dark rounded placeholder card (favicon plus title, ~168x250) shows where the tab will land, with a divider handle between; the half follows the pointer side (left half when the pointer is left of the middle, right half when right). Over the middle strip or toward top/bottom the card just floats on the full page (no split; a purple page outline appears when the drag is over the page in another Space). Drop on a half: split row with both titles appears in the sidebar and each pane gets its own header (URL, X). Escape cancels with nothing changed. Dragging near the sidebar edge can switch Space mid-drag.
 - [ ] Not verified: grow animation timing, fade timing, drop animation, dragging a pinned tab or a Favorite, Arc top/bottom splits, Dia zone order with more than three panes.
 
+## 9. Profile per Space (Create a Space Profile pill, reference supplied by the owner, 2026-11-10)
+
+Source is a screenshot of the Create a Space page with the Profile pill menu open; Arc itself was not driven for this section and nothing was created in it.
+- [ ] The pill opens a small dark popup menu directly under it: one row per Profile with a checkmark on the current choice, a separator, then "New Profile...".
+- [ ] "New Profile..." creates a Profile and selects it for the Space being created.
+- [ ] The info (i) button explains that Profiles keep logins and cookies separate.
+- [ ] Spaces of different Profiles share one window; switching to a Space of another Profile changes the page area in place (design: PROFILE-SPACES.md).
+- [ ] Space header menu has "Set Profile >" (section 7); Bato does not implement it yet.
+
 ## Not captured / caveats
 
 - Grabber "dragging" colour is indistinguishable from hover; no distinct pressed style seen.
