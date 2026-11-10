@@ -55,7 +55,7 @@
        content::WebContents* source_contents,
 --- a/cef/libcef/browser/chrome/browser_util.h
 +++ b/cef/libcef/browser/chrome/browser_util.h
-@@ -10,12 +10,42 @@
+@@ -10,12 +10,47 @@
  #include "build/build_config.h"
  #include "chrome/browser/ui/browser.h"
 
@@ -83,6 +83,11 @@
 +int NativeTabLayout(const BrowserView* view);
 +// Height the top strip takes above Chrome's toolbar; 0 unless that layout is shown.
 +int NativeTopStripHeight(const BrowserView* view);
++// Width of Chrome's toolbar segment at the trailing end of the strip's row, for a window
++// `window_width` wide. Must match ChromeGeometry.topToolbarWidth in the client.
++int NativeTopToolbarWidthFor(int window_width);
++// That width for this window; 0 unless the top strip is shown.
++int NativeTopToolbarWidth(const BrowserView* view);
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds);
 +// Reports displayed split pane frames (BrowserView coordinates, toolbar band included) to the
 +// client. `in_split` false clears them. Only windows that own a native sidebar report.
@@ -167,7 +172,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,1394 @@
+@@ -49,3 +49,1404 @@
  }
 
  }  // namespace cef
@@ -1406,6 +1411,16 @@
 +  return !view->IsFullscreen() && NativeSidebarOwnsTabs(view) && NativeTabLayout(view) == 2
 +      ? kNativeTopStripHeight : 0;
 +}
++// Must equal ChromeGeometry.topToolbarWidth in the client: 40% of the window,
++// at least 360, at most 640, and never more than 60% so the tabs keep room.
++int NativeTopToolbarWidthFor(int window_width) {
++  const int width = std::clamp(window_width * 2 / 5, 360, 640);
++  return std::max(0, std::min(width, window_width * 3 / 5));
++}
++int NativeTopToolbarWidth(const BrowserView* view) {
++  CEF_REQUIRE_UIT_RETURN(0);
++  return NativeTopStripHeight(view) > 0 ? NativeTopToolbarWidthFor(view->width()) : 0;
++}
 +void NativeSplitLayout(BrowserView* view, bool in_split, bool stacked,
 +                       const gfx::Rect& first, const gfx::Rect& second) {
 +  CEF_REQUIRE_UIT();
@@ -1733,7 +1748,7 @@
 
  BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
      BrowserView& browser_view)
-@@ -123,18 +141,124 @@
+@@ -123,18 +141,131 @@
      auto local_params = params.InLocalCoordinates(
          use_browser_bounds ? browser_bounds : params.visual_client_area);
  #if BUILDFLAG(IS_MAC)
@@ -1782,14 +1797,19 @@
 +#endif
 +      const bool sidebar_right = sidebar_owns_tabs && tab_layout == 1;
 +      const bool top_strip = sidebar_owns_tabs && tab_layout == 2;
++      int top_toolbar_width = 0;
 +      const int top_row = sidebar_owns_tabs ? kNativeSidebarTopRowHeight : 44;
 +      if (top_strip) {
-+        // The strip owns the lights' row, so Chrome's toolbar sits right under it
-+        // and needs no room for the lights or the split button.
++        // Chrome's toolbar shares the strip's row: the leading exclusion covers
++        // the strip, so the toolbar takes the trailing segment and the page card
++        // starts right under the row. The exclusion's height sets that row.
++        top_toolbar_width = cef::NativeTopToolbarWidthFor(original_area.width());
 +        local_params.Inset(gfx::Insets::TLBR(
-+            kNativeTopStripHeight, kNativeCardMargin, kNativeCardMargin,
-+            kNativeCardMargin));
-+        local_params.leading_exclusion.content = gfx::SizeF();
++            0, kNativeCardMargin, kNativeCardMargin, kNativeCardMargin));
++        local_params.leading_exclusion.content = gfx::SizeF(
++            std::max(0, original_area.width() - top_toolbar_width -
++                            kNativeCardMargin),
++            static_cast<float>(kNativeTopStripHeight));
 +        local_params.leading_exclusion.vertical_padding = 0;
 +        local_params.trailing_exclusion.content = gfx::SizeF();
 +      } else if (sidebar_owns_tabs) {
@@ -1833,8 +1853,10 @@
 +          original_area.y() + sidebar_top, sidebar_width,
 +          std::max(0, original_area.height() - sidebar_top));
 +      if (top_strip) {
-+        native_slot_bounds = gfx::Rect(original_area.x(), original_area.y(),
-+                                       original_area.width(), kNativeTopStripHeight);
++        // Ends where the toolbar segment begins, so the strip's NSView never overlaps it.
++        native_slot_bounds = gfx::Rect(
++            original_area.x(), original_area.y(),
++            original_area.width() - top_toolbar_width, kNativeTopStripHeight);
 +      }
 +    }
 +#if BUILDFLAG(ENABLE_CEF)
@@ -1860,7 +1882,7 @@
  #endif
      return local_params;
    }
-@@ -175,6 +299,15 @@
+@@ -175,6 +306,15 @@
  }
 
  bool BrowserViewLayoutDelegateImpl::IsToolbarVisible() const {
@@ -1986,22 +2008,24 @@
    const int active_index = browser_->GetTabStripModel()->active_index();
 
    std::optional<split_tabs::SplitTabId> split_tab_id =
-@@ -4775,6 +4825,14 @@
+@@ -4775,6 +4825,16 @@
    gfx::Point point_in_browser_view_coords(point);
    views::View::ConvertPointToTarget(parent(), this,
                                      &point_in_browser_view_coords);
 +#if BUILDFLAG(ENABLE_CEF)
 +  // The native top strip holds Bato's tabs; as a caption it would turn every
-+  // press into a window drag before AppKit reached the strip's NSView.
++  // press into a window drag before AppKit reached the strip's NSView. The
++  // toolbar segment at its trailing end stays Chromium's, so it is excluded.
 +  if (point_in_browser_view_coords.y() >= 0 &&
-+      point_in_browser_view_coords.y() < cef::NativeTopStripHeight(this)) {
++      point_in_browser_view_coords.y() < cef::NativeTopStripHeight(this) &&
++      point_in_browser_view_coords.x() < width() - cef::NativeTopToolbarWidth(this)) {
 +    return HTCLIENT;
 +  }
 +#endif
 
    // Check if the point is in the web_app_frame_toolbar_. Because this toolbar
    // can entirely be within the window controls overlay area, this check needs
-@@ -4933,7 +4991,27 @@
+@@ -4933,7 +4993,27 @@
 
  gfx::Size BrowserView::GetMinimumSize() const {
    auto* const layout = GetBrowserViewLayout();
@@ -2030,7 +2054,7 @@
  }
 
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5070,24 @@
+@@ -4992,6 +5072,24 @@
    }
 
    LayoutSuperclass<views::View>(this);
@@ -2055,7 +2079,7 @@
 
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5705,13 @@
+@@ -5609,6 +5707,13 @@
  }
 
  void BrowserView::PrepareFullscreen(bool fullscreen) {

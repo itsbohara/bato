@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "ac9d4cacea96f5c3398f489ab98f3f19d67a1b4912f4a1d61507cd30e1bf6a6a",
+  "patch_sha256": "fc2f880dbf4cbbe07bdcbd6bf707eda9d9869358021d614820e872effa09efab",
   "files": [
     {
       "root": "cef",
@@ -20,7 +20,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/browser_util.h",
       "original_sha256": "362177eca7a3a1d3cf64794edbd9b3e6ff3bd1e03d083579026249a66efcc106",
-      "patched_sha256": "637418baf7af4326f89041ff045340adc2e49b9ff3b9d552bd211c5799c9b8fe"
+      "patched_sha256": "cfb74a25030a39a8770fe7ab2f84f6398d566beda2504fc871a431a006014db2"
     },
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm",
       "original_sha256": "1253ce305d4ac135ac3571f23eb07a5ad8dd0bb7731210f8047415f9246000e4",
-      "patched_sha256": "a300e15c42007e071359446e93eb0b07de82f67c5dab1b99093a6a16b0b74c23"
+      "patched_sha256": "7202ebb4916f2ceafc908f64a838e8346fec4c7ed250b0127ad9c4abe7db799f"
     },
     {
       "root": "cef",
@@ -56,13 +56,13 @@
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc",
       "original_sha256": "1332ecbaa3bb52f617dec0265b28b743039ef8fcdcdbc231d5f4a7bc6a42ff15",
-      "patched_sha256": "6b00baaf094f04a02dc9f7e41055a265d0913c6cfa89a0d579be5ba4c324b35b"
+      "patched_sha256": "f1a23f4a59ffd9d731f3bdcbfef338283a2b93c89c64ea13da4fc651afb6c74c"
     },
     {
       "root": "chromium",
       "path": "chrome/browser/ui/views/frame/browser_view.cc",
       "original_sha256": "ad4d4bade1172cf2efd25af2b31ee1f049479885eae322fe1df7e7938f94e877",
-      "patched_sha256": "e0de5937629a20b3b5beac0ae08eab7fb5466cdba6317797e0e3d91b8b79554c"
+      "patched_sha256": "14bc6a09c91bae9adaac6f065a253f91799bc5beabc140201bda0a489ec64700"
     },
     {
       "root": "chromium",

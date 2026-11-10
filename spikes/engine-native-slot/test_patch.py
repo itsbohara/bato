@@ -73,7 +73,7 @@ class NativeSlotPatchTest(unittest.TestCase):
                           if line.startswith('+') and not line.startswith('+++'))
         self.assertIn('sidebar_owns_tabs = cef::NativeSidebarOwnsTabs(&browser_view_.get())', added)
         self.assertIn('(sidebar_right ? 0 : reserved_width) + kNativeCardMargin', added)
-        self.assertIn('kNativeTopStripHeight, kNativeCardMargin, kNativeCardMargin', added)
+        self.assertIn('cef::NativeTopToolbarWidthFor(original_area.width())', added)
         self.assertIn('Inset(gfx::Insets::TLBR(top_row, reserved_width, 0, 0))', added)
         self.assertIn('leading_exclusion.vertical_padding', added)
         self.assertIn('cef::NativeSidebarOwnsTabs(this) ? cef::NativeTopStripHeight(this) : 44', added)
