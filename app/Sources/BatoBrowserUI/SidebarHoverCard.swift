@@ -18,6 +18,8 @@ struct SidebarHoverCardContent: Equatable {
 @MainActor
 final class SidebarHoverCard {
     static let delay: TimeInterval = 0.6
+    /// The sidebar is on the right, so the card opens over the page on its left.
+    var opensTowardsLeft = false
     private var timer: Timer?
     private var panel: NSPanel?
     private var monitor: Any?
@@ -101,7 +103,8 @@ final class SidebarHoverCard {
         panel.isReleasedWhenClosed = false
         panel.setAccessibilityElement(false)
         let rowInScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-        panel.setFrameOrigin(NSPoint(x: rowInScreen.maxX + 8, y: rowInScreen.midY - size.height / 2))
+        let x = opensTowardsLeft ? rowInScreen.minX - 8 - size.width : rowInScreen.maxX + 8
+        panel.setFrameOrigin(NSPoint(x: x, y: rowInScreen.midY - size.height / 2))
         window.addChildWindow(panel, ordered: .above)
         self.panel = panel
     }

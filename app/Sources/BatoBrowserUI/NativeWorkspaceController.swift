@@ -91,6 +91,14 @@ public final class NativeWorkspaceController: NSObject {
     private var theme: SpaceTheme { themePreview ?? sidebarState.currentWorkspace.effectiveTheme }
     private var accent: NSColor { themePreview?.primaryNSColor ?? workspaceColor(sidebarState.currentWorkspace.color) }
     private let sidebarScroll = SidebarScrollView()
+    private let strip = TopTabStripView(frame: .zero)
+    private var sidebarStack: NSStackView?
+    private var layoutPreview: TabLayout?
+    private var inFullscreen = false
+    /// What the window shows now: the chosen layout, or its stand-in in fullscreen, or a preview.
+    public private(set) var displayedLayout = TabLayout.sidebar
+    /// The host reserves window space for the layout: called whenever `displayedLayout` changes.
+    public var layoutDidChange: ((TabLayout) -> Void)?
     private var slide: SpaceSlide?
     private var createSpacePage: CreateSpacePageView?
     private var themePopover: SpaceThemePopover?
@@ -101,6 +109,7 @@ public final class NativeWorkspaceController: NSObject {
     /// One per window; the host adds it above the Chrome views and it follows the workspace tint.
     public func makeCardFrame() -> ContentCardFrameView {
         let frame = ContentCardFrameView(theme: theme)
+        frame.tabLayout = displayedLayout
         frame.showsEmptyState = runtime.state.showsEmptySpace
         frame.onShowSidebar = { [weak self] in self?.requestSidebarToggle?() }
         frame.onAddSplit = { [weak self] side in self?.addSplit(side) }
@@ -131,6 +140,7 @@ public final class NativeWorkspaceController: NSObject {
     /// One per window; shows a native toolbar row over each pane of a displayed pair.
     public func makeSplitPaneOverlay() -> SplitPaneOverlayView {
         let overlay = SplitPaneOverlayView(frame: .zero)
+        overlay.tabLayout = displayedLayout
         overlay.provider = { [weak self] in self?.splitPaneStates() ?? [] }
         overlay.actions = SplitPaneActions(
             focus: { [weak self] id in self?.focusPane(id) },
@@ -217,6 +227,8 @@ public final class NativeWorkspaceController: NSObject {
         super.init()
         sidebar.windowChanged = { [weak self] in DispatchQueue.main.async { self?.fitTrafficLightClearance() } }
         configureView()
+        displayedLayout = preferences.current().tabLayout
+        applyLayout()
         runtime.onStateChange = { [weak self] _ in self?.render() }
         render()
     }
@@ -272,8 +284,8 @@ public final class NativeWorkspaceController: NSObject {
             commitImport: { [weak self] snapshot, items in
                 self?.commitBrowserImport(snapshot, items: items) ?? .failure(OnboardingImportFailure("Import is no longer available."))
             },
-            applyLook: { [weak self] theme, appearance in self?.applyOnboardingLook(theme: theme, appearance: appearance) },
-            previewLook: { [weak self] theme, appearance in self?.previewOnboardingLook(theme: theme, appearance: appearance) },
+            applyLook: { [weak self] theme, appearance, layout in self?.applyOnboardingLook(theme: theme, appearance: appearance, layout: layout) },
+            previewLook: { [weak self] theme, appearance, layout in self?.previewOnboardingLook(theme: theme, appearance: appearance, layout: layout) },
             endPreview: { [weak self] in self?.endOnboardingPreview() },
             finished: { [weak self] in
                 try? self?.preferences.update { $0.onboardingCompleted = true }
@@ -313,21 +325,62 @@ public final class NativeWorkspaceController: NSObject {
         return .success(parts.isEmpty ? "Everything was already here." : "Brought over " + parts.joined(separator: ", ") + ".")
     }
 
-    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
+    private func applyOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance, layout: TabLayout) {
         try? preferences.update { $0.appearance = appearance }
         NSApp.appearance = appearance.nsAppearance
         if let theme { _ = runtime.updateWorkspaceTheme(runtime.state.activeWorkspaceID, theme: theme) }
+        setTabLayout(layout)
     }
 
-    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance) {
+    private func previewOnboardingLook(theme: SpaceTheme?, appearance: AppAppearance, layout: TabLayout) {
         NSApp.appearance = appearance.nsAppearance
+        layoutPreview = layout
+        refreshLayout()
         guard let theme else { return endThemePreview() }
         previewTheme(theme)
     }
 
     private func endOnboardingPreview() {
         NSApp.appearance = preferences.current().appearance.nsAppearance
+        layoutPreview = nil
+        refreshLayout()
         endThemePreview()
+    }
+
+    /// Saves the choice and lays the window out for it at once.
+    private func setTabLayout(_ layout: TabLayout) {
+        try? preferences.update { $0.tabLayout = layout }
+        layoutPreview = nil
+        refreshLayout()
+        settingsWindow?.reload()
+    }
+
+    /// Fullscreen has no room for a strip over the page, so top tabs show as the floating sidebar there.
+    public func setFullscreen(_ fullscreen: Bool) {
+        inFullscreen = fullscreen
+        refreshLayout()
+    }
+
+    private func refreshLayout() {
+        let next = (layoutPreview ?? preferences.current().tabLayout).displayed(inFullscreen: inFullscreen)
+        guard next != displayedLayout else { return }
+        finishSlideNow()
+        if createSpacePage != nil { dismissCreateSpacePage() }
+        displayedLayout = next
+        applyLayout()
+    }
+
+    private func applyLayout() {
+        let layout = displayedLayout
+        sidebarStack?.isHidden = layout == .top
+        strip.isHidden = layout != .top
+        sidebarToggle.image = sidebarSymbol(layout.symbolName, size: 13)
+        hoverCard.opensTowardsLeft = layout == .sidebarRight
+        fitTrafficLightClearance()
+        cardFrames.allObjects.forEach { $0.tabLayout = layout }
+        paneOverlays.allObjects.forEach { $0.tabLayout = layout }
+        renderStrip()
+        layoutDidChange?(layout)
     }
 
     private func endThemePreview() {
@@ -546,7 +599,9 @@ public final class NativeWorkspaceController: NSObject {
             searchSuggestions: { [weak self] in self?.preferences.current().searchSuggestions ?? true },
             setSearchSuggestions: { [weak self] enabled in
                 try? self?.preferences.update { $0.searchSuggestions = enabled }
-            }))
+            },
+            tabLayout: { [weak self] in self?.preferences.current().tabLayout ?? .sidebar },
+            setTabLayout: { [weak self] in self?.setTabLayout($0) }))
         settingsWindow = window
         window.show(pane)
     }
@@ -956,6 +1011,8 @@ public final class NativeWorkspaceController: NSObject {
         stack.spacing = 11
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
+        sidebarStack = stack
+        configureStrip()
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: SidebarMetrics.sideInset),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -SidebarMetrics.sideInset),
@@ -973,6 +1030,62 @@ public final class NativeWorkspaceController: NSObject {
         ])
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+    }
+
+    private func configureStrip() {
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.isHidden = true
+        root.addSubview(strip)
+        NSLayoutConstraint.activate([
+            strip.leadingAnchor.constraint(equalTo: root.leadingAnchor), strip.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            strip.topAnchor.constraint(equalTo: root.topAnchor), strip.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+        ])
+        strip.switcherButton.target = self
+        strip.switcherButton.action = #selector(showWorkspaceSwitcher)
+        strip.select = { [weak self] id in self?.perform { self?.runtime.selectEntry(id) ?? false } }
+        strip.close = { [weak self] id in self?.perform { self?.runtime.closeEntry(id) ?? false } }
+        strip.newTab = { [weak self] in self?.newTab() }
+        strip.showSplitMenu = { [weak self] anchor in
+            guard let self else { return }
+            let menu = makeSplitMenu(isEnabled: self.runtime.supportsSplits && self.runtime.state.canSplitSelection) { [weak self] side in
+                self?.addSplit(side)
+            }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+        }
+        strip.menuFor = { [weak self] id in self?.stripMenu(for: id) }
+        strip.canReorder = { [weak self] id, section in
+            guard let self else { return false }
+            return self.runtime.state.split(containingEntry: id) == nil && self.runtime.state.canPlaceEntry(id, in: section)
+        }
+        strip.reorder = { [weak self] id, section, slot in self?.perform { self?.runtime.placeEntry(id, in: section, at: slot) ?? false } }
+    }
+
+    /// Favorites and pins as icons, then the Space's tabs, in model order whether or not the sidebar collapsed its pins.
+    private func renderStrip() {
+        guard displayedLayout == .top else { return }
+        let state = sidebarState
+        let workspace = state.currentWorkspace
+        let sections: [BrowserState.SidebarSection] = [.favorites, .pinned(folder: nil)]
+            + workspace.folders.map { .pinned(folder: $0.id) } + [.tabs]
+        strip.apply(sections.flatMap { section in
+            state.sidebarEntries(in: section).map { entry in
+                let icon = (pageIcons[entry.id]?.copy() as? NSImage).map { icon -> NSImage in
+                    icon.size = NSSize(width: SidebarStyle.rowIconSize, height: SidebarStyle.rowIconSize)
+                    return icon
+                }
+                return TopTabModel(id: entry.id, title: pageTitle(entry), url: entry.lastURL, icon: icon, section: section,
+                                   isIconOnly: section != .tabs, isSelected: workspace.activeEntryID == entry.id,
+                                   canClose: !runtime.pendingClose.contains { $0.entryID == entry.id })
+            }
+        })
+        strip.canSplit = runtime.supportsSplits && state.canSplitSelection
+    }
+
+    private func stripMenu(for id: UUID) -> NSMenu? {
+        guard let page = runtime.state.visibleEntries.first(where: { $0.id == id }) else { return nil }
+        let carrier = NSButton(frame: .zero)
+        configurePageMenu(carrier, page: page)
+        return carrier.menu
     }
 
     /// Mounts the downloads button in the workspace footer row. `profileKey` maps a Profile to the key
@@ -1013,8 +1126,12 @@ public final class NativeWorkspaceController: NSObject {
 
     /// Keeps the workspace label clear of the real window buttons, which differ with the system's window style.
     private func fitTrafficLightClearance() {
-        guard let constraint = trafficLightClearanceWidth, let window = root.window,
-              let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
+        guard let constraint = trafficLightClearanceWidth else { return }
+        guard displayedLayout == .sidebar else {
+            constraint.constant = 0
+            return
+        }
+        guard let window = root.window, let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
         let lightsEnd = container.convert(zoom.frame, to: nil).maxX
         let rowStart = root.convert(NSPoint(x: SidebarMetrics.sideInset, y: 0), to: nil).x
         let fitted = max(SidebarMetrics.trafficLightClearance, ceil(lightsEnd - rowStart + SidebarMetrics.trafficLightGap))
@@ -1080,6 +1197,11 @@ public final class NativeWorkspaceController: NSObject {
         switcherButton.image = colorDot(workspaceColor(workspace.color))
         switcherButton.toolTip = "\(workspace.name) · Profile \(currentProfile?.name ?? "")"
         switcherButton.setAccessibilityValue("\(workspace.name), Profile \(currentProfile?.name ?? "")")
+        strip.switcherButton.title = workspace.name
+        strip.switcherButton.image = switcherButton.image
+        strip.switcherButton.toolTip = switcherButton.toolTip
+        strip.switcherButton.setAccessibilityValue(switcherButton.accessibilityValue())
+        strip.needsLayout = true
         let focusedControl = pageControls.first { _, controls in
             root.window?.firstResponder === controls.select || root.window?.firstResponder === controls.close
         }.map { (id: $0.key, close: root.window?.firstResponder === $0.value.close) }
@@ -1140,6 +1262,7 @@ public final class NativeWorkspaceController: NSObject {
             statusLabel.stringValue = "A Peek is already open. Close it or open it as a tab first."
         }
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
+        renderStrip()
     }
 
     /// Split controls address organization identities, never Chromium tab indices.
@@ -2253,9 +2376,11 @@ public final class NativeWorkspaceController: NSObject {
         let state = runtime.state
         let profileID = state.currentWorkspace.profileID
         let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
+        guard displayedLayout != .top else { return createSpaceInSheet(color: color, window: window) }
         var draft = SpaceTheme(color: color)
         draft.intensity = Self.newSpaceIntensity
         let page = CreateSpacePageView(theme: draft, profiles: state.profiles.map { ($0.id, $0.name) }, selected: profileID)
+        page.themePopoverEdge = displayedLayout == .sidebarRight ? .minX : .maxX
         page.onNewProfile = { [weak self, weak page] in self?.draftProfile(for: page) }
         page.onThemeChange = { [weak self] in self?.previewTheme($0) }
         page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
@@ -2290,6 +2415,20 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private static let newSpaceIntensity = 0.6
+
+    /// The top strip has no sidebar page to slide in, so a new Space is named and coloured in a sheet.
+    private func createSpaceInSheet(color: String, window: NSWindow) {
+        let editor = WorkspaceEditor(creating: true, name: "", color: color) { [weak self] name, color in
+            guard let self else { return "Bato is no longer available." }
+            guard self.runtime.addWorkspace(name: name, color: color) else { return "The Space couldn’t be created. Check its name and try again." }
+            self.render()
+            return nil
+        }
+        workspaceEditor = editor
+        guard let sheet = editor.window else { workspaceEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] _ in self?.workspaceEditor = nil }
+        editor.focusName()
+    }
 
     /// Asks for a Profile name and colour for the Space being created; the Profile is only created with the Space.
     private func draftProfile(for page: CreateSpacePageView?) {
@@ -2427,7 +2566,8 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private var canSlide: Bool {
-        hasStarted && root.window?.attachedSheet == nil && NSApp.modalWindow == nil && !pinsAnimating && createSpacePage == nil
+        hasStarted && displayedLayout != .top && root.window?.attachedSheet == nil && NSApp.modalWindow == nil
+            && !pinsAnimating && createSpacePage == nil
     }
 
     private func trackSlide(offset: CGFloat) {
@@ -2589,7 +2729,7 @@ public final class NativeWorkspaceController: NSObject {
         entries.append(switcherAction("Profile Settings", symbol: "gearshape", id: "settings") { [weak self] in
             self?.showSettings(.profiles)
         })
-        switcherPopover.show(entries, relativeTo: switcherButton)
+        switcherPopover.show(entries, relativeTo: displayedLayout == .top ? strip.switcherButton : switcherButton)
     }
 
     @objc private func showProfileMenu() {
@@ -3775,11 +3915,22 @@ public final class ContentCardFrameView: NSView {
             needsDisplay = true
         }
     }
-    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card starts one margin after it.
+    /// Width the docked sidebar reserves, 0 when it is hidden or floating; the card stays one margin clear of it.
     public var sidebarWidth: CGFloat = 0 { didSet { needsDisplay = true } }
     /// Width of the sidebar itself, docked or floating; it is drawn by the sidebar, not by this view.
     public var sidebarCoverWidth: CGFloat = 0 { didSet { needsDisplay = true; updateShowSidebarButton() } }
     public var isCardShown = true { didSet { isHidden = !isCardShown; updateShowSidebarButton() } }
+    /// Which side the sidebar docks to, or the strip above the card; the card and the tint around it follow.
+    public var tabLayout = TabLayout.sidebar {
+        didSet {
+            guard tabLayout != oldValue else { return }
+            needsDisplay = true
+            needsLayout = true
+            showSidebarButton.image = sidebarSymbol(tabLayout.symbolName, size: 13)
+            updateShowSidebarButton()
+            updateSplitButton()
+        }
+    }
     /// Displayed split panes in this view's flipped coordinates; each is its own rounded card with the tint between.
     public var paneCards: [NSRect] = [] {
         didSet {
@@ -3829,6 +3980,14 @@ public final class ContentCardFrameView: NSView {
 
     /// The way back to a hidden sidebar; once the sidebar is docked or floating its own header toggle takes over.
     static func showsSidebarButton(sidebarCoverWidth: CGFloat) -> Bool { sidebarCoverWidth == 0 }
+
+    /// The tint the card leaves around itself, minus what the native sidebar or strip paints for itself.
+    private var tintRegion: NSBezierPath {
+        let region = NSBezierPath(rect: bounds)
+        region.append(NSBezierPath(rect: ChromeGeometry.coverRect(in: bounds.size, layout: tabLayout, coverWidth: sidebarCoverWidth)))
+        region.windingRule = .evenOdd
+        return region
+    }
 
     init(theme: SpaceTheme) {
         self.theme = theme
@@ -3902,12 +4061,13 @@ public final class ContentCardFrameView: NSView {
     }
 
     private func updateSplitButton() {
-        splitToolbarButton.isHidden = !isCardShown || !paneCards.isEmpty || showsEmptyState || blanksPages
+        splitToolbarButton.isHidden = !isCardShown || tabLayout == .top || !paneCards.isEmpty || showsEmptyState || blanksPages
         needsLayout = true
     }
 
     private func updateShowSidebarButton() {
-        showSidebarButton.isHidden = !isCardShown || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
+        showSidebarButton.isHidden = !isCardShown || tabLayout.sidebarEdge == nil
+            || !Self.showsSidebarButton(sidebarCoverWidth: sidebarCoverWidth)
         needsLayout = true
     }
 
@@ -3924,12 +4084,13 @@ public final class ContentCardFrameView: NSView {
         let side = SidebarMetrics.revealButtonSide
         guard let window, let zoom = window.standardWindowButton(.zoomButton), let container = zoom.superview else { return }
         if showSidebarButton.superview !== container { container.addSubview(showSidebarButton) }
-        showSidebarButton.frame = NSRect(x: zoom.frame.maxX + SidebarMetrics.trafficLightGap, y: zoom.frame.midY - side / 2,
-                                         width: side, height: side)
         if splitToolbarButton.superview !== container { container.addSubview(splitToolbarButton) }
         // The engine keeps Chrome's toolbar clear of this slot (kNativeSplitButtonSlot).
-        splitToolbarButton.frame = NSRect(x: container.bounds.width - Self.margin - 6 - side, y: zoom.frame.midY - side / 2,
-                                          width: side, height: side)
+        let splitX = container.bounds.width - Self.margin - 6 - side
+        splitToolbarButton.frame = NSRect(x: splitX, y: zoom.frame.midY - side / 2, width: side, height: side)
+        // With the sidebar on the right the traffic lights keep the leading edge, so the way back sits beside the split button.
+        let showX = tabLayout == .sidebarRight ? splitX - 2 - side : zoom.frame.maxX + SidebarMetrics.trafficLightGap
+        showSidebarButton.frame = NSRect(x: showX, y: zoom.frame.midY - side / 2, width: side, height: side)
     }
 
     // MARK: Split grabber
@@ -4021,10 +4182,7 @@ public final class ContentCardFrameView: NSView {
     }
 
     private var cardRect: NSRect {
-        let margin = Self.margin
-        let leading = sidebarWidth + margin
-        return NSRect(x: leading, y: margin, width: max(0, bounds.width - leading - margin),
-                      height: max(0, bounds.height - 2 * margin))
+        ChromeGeometry.cardRect(in: bounds.size, layout: tabLayout, reservation: sidebarWidth)
     }
 
     /// One card normally; one per pane while a pair is displayed.
@@ -4045,7 +4203,7 @@ public final class ContentCardFrameView: NSView {
         ring.windingRule = .evenOdd
         NSGraphicsContext.saveGraphicsState()
         ring.addClip()
-        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
+        tintRegion.addClip()
         ThemeFill.draw(theme, in: bounds, appearance: effectiveAppearance)
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(effectiveAppearance.isDark ? 0.45 : 0.22)
@@ -4083,7 +4241,7 @@ public final class ContentCardFrameView: NSView {
         let width = SplitPaneChrome.focusOutlineWidth
         NSGraphicsContext.saveGraphicsState()
         ring.addClip()
-        NSBezierPath(rect: NSRect(x: sidebarCoverWidth, y: 0, width: max(0, bounds.width - sidebarCoverWidth), height: bounds.height)).addClip()
+        tintRegion.addClip()
         let glow = NSShadow()
         glow.shadowColor = Self.focusColor.withAlphaComponent(0.55)
         glow.shadowBlurRadius = SplitPaneChrome.focusGlowBlur

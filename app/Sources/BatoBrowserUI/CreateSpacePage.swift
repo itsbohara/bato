@@ -13,6 +13,8 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
 
     var onCreate: ((String, String?, SpaceTheme, ProfileChoice) -> Void)?
     var onNewProfile: (() -> Void)?
+    /// The side the theme popover opens toward; away from a sidebar docked on the right.
+    var themePopoverEdge: NSRectEdge = .maxX
     var onCancel: (() -> Void)?
 
     private(set) var theme: SpaceTheme
@@ -335,7 +337,7 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
             self?.refresh()
         })
         themePopover = popover
-        popover.show(relativeTo: themeRow.bounds, of: themeRow, preferredEdge: .maxX)
+        popover.show(relativeTo: themeRow.bounds, of: themeRow, preferredEdge: themePopoverEdge)
         refresh()
     }
 }

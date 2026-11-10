@@ -21,6 +21,8 @@ struct SettingsHooks {
     let setSearchProvider: (CommandBarSearchProvider) -> Void
     let searchSuggestions: () -> Bool
     let setSearchSuggestions: (Bool) -> Void
+    let tabLayout: () -> TabLayout
+    let setTabLayout: (TabLayout) -> Void
 }
 
 extension DefaultBrowser {
@@ -219,7 +221,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                               title: "Search engine",
                               detail: "Used when you type a search in the command bar. Chromium’s own search engine setting is separate.",
                               trailing: picker)
-        return [sectionHeading("Search"), SettingsGroup(rows: [row])]
+        let layoutPicker = TabLayoutPicker(selected: hooks.tabLayout()) { [weak self] in self?.hooks.setTabLayout($0) }
+        let layoutRow = SettingsRow(leading: SymbolTile(symbol: "sidebar.left", color: .systemPurple),
+                                    title: "Tab location",
+                                    detail: "Keep tabs in a sidebar on either side, or in a strip above the page.",
+                                    trailing: layoutPicker)
+        return [sectionHeading("Search"), SettingsGroup(rows: [row]),
+                sectionHeading("Tabs"), SettingsGroup(rows: [layoutRow])]
     }
 
     private func aboutPane() -> [NSView] {
@@ -689,6 +697,27 @@ private final class SearchProviderPicker: NSPopUpButton {
         action = #selector(ActionTarget.fire)
         setAccessibilityLabel("Search engine")
         setAccessibilityIdentifier("bato-settings-search-provider")
+    }
+
+    required init?(coder: NSCoder) { fatalError("Not used") }
+}
+
+private final class TabLayoutPicker: NSPopUpButton {
+    private let handler: ActionTarget
+
+    init(selected: TabLayout, choose: @escaping (TabLayout) -> Void) {
+        let layouts = TabLayout.allCases
+        var picker: (() -> Int)?
+        handler = ActionTarget { choose(layouts[picker?() ?? 0]) }
+        super.init(frame: .zero, pullsDown: false)
+        picker = { [unowned self] in indexOfSelectedItem }
+        addItems(withTitles: layouts.map(\.title))
+        selectItem(at: layouts.firstIndex(of: selected) ?? 0)
+        controlSize = .large
+        target = handler
+        action = #selector(ActionTarget.fire)
+        setAccessibilityLabel("Tab location")
+        setAccessibilityIdentifier("bato-settings-tab-layout")
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }

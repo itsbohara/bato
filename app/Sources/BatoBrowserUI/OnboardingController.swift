@@ -8,9 +8,9 @@ public struct OnboardingHooks {
     public var defaultSource: () -> ImportSource?
     /// Saves the snapshot into the current Profile as one transaction and returns a one-line result.
     public var commitImport: (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>
-    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
+    public var applyLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance, _ layout: TabLayout) -> Void
     /// Shows a look without saving it; nil theme keeps the Space's own.
-    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance) -> Void
+    public var previewLook: (_ theme: SpaceTheme?, _ appearance: AppAppearance, _ layout: TabLayout) -> Void
     /// Drops any preview and returns to the saved look.
     public var endPreview: () -> Void
     /// Called once when the card ends by any route, including Skip Setup.
@@ -18,8 +18,8 @@ public struct OnboardingHooks {
 
     public init(importer: BrowserImporter, defaultSource: @escaping () -> ImportSource?,
                 commitImport: @escaping (BrowserSnapshot, Set<ImportItem>) -> Result<String, OnboardingImportFailure>,
-                applyLook: @escaping (SpaceTheme?, AppAppearance) -> Void,
-                previewLook: @escaping (SpaceTheme?, AppAppearance) -> Void, endPreview: @escaping () -> Void,
+                applyLook: @escaping (SpaceTheme?, AppAppearance, TabLayout) -> Void,
+                previewLook: @escaping (SpaceTheme?, AppAppearance, TabLayout) -> Void, endPreview: @escaping () -> Void,
                 finished: @escaping () -> Void) {
         self.importer = importer
         self.defaultSource = defaultSource
@@ -125,11 +125,11 @@ public final class OnboardingController: NSObject {
     }
 
     private func previewChoices() {
-        hooks.previewLook(choices.theme, choices.appearance)
+        hooks.previewLook(choices.theme, choices.appearance, choices.tabLayout)
     }
 
     private func finishLook() {
-        hooks.applyLook(choices.theme, choices.appearance)
+        hooks.applyLook(choices.theme, choices.appearance, choices.tabLayout)
         advance()
     }
 
@@ -406,7 +406,8 @@ public final class OnboardingController: NSObject {
     private func makeItYoursView() -> NSView {
         let tiles = NSStackView(views: TabLayout.allCases.map { layout in
             LayoutTile(layout: layout, isSelected: choices.tabLayout == layout) { [weak self] in
-                guard let self, self.choices.select(layout) else { return }
+                guard let self else { return }
+                self.choices.tabLayout = layout
                 self.present(animated: false)
             }
         })
@@ -781,21 +782,20 @@ private final class LayoutTile: NSControl {
         heightAnchor.constraint(equalToConstant: 112).isActive = true
         setAccessibilityElement(true)
         setAccessibilityRole(.radioButton)
-        setAccessibilityLabel(layout.isAvailable ? layout.title : "\(layout.title), coming soon")
+        setAccessibilityLabel(layout.title)
     }
 
     required init?(coder: NSCoder) { nil }
 
     override var isFlipped: Bool { true }
-    override func mouseDown(with event: NSEvent) { if layout.isAvailable { handler() } }
+    override func mouseDown(with event: NSEvent) { handler() }
 
     override func draw(_ dirtyRect: NSRect) {
-        let alpha: CGFloat = layout.isAvailable ? 1 : 0.4
         let frame = NSRect(x: 0, y: 0, width: bounds.width, height: 84).insetBy(dx: 1, dy: 1)
-        NSColor.white.withAlphaComponent(0.08 * alpha).setFill()
+        NSColor.white.withAlphaComponent(0.08).setFill()
         NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8).fill()
-        let strip = NSColor.white.withAlphaComponent(0.28 * alpha)
-        let page = NSColor.white.withAlphaComponent(0.12 * alpha)
+        let strip = NSColor.white.withAlphaComponent(0.28)
+        let page = NSColor.white.withAlphaComponent(0.12)
         let inner = frame.insetBy(dx: 6, dy: 6)
         let stripRect: NSRect, pageRect: NSRect
         switch layout {
@@ -819,13 +819,12 @@ private final class LayoutTile: NSControl {
             outline.lineWidth = 2
             outline.stroke()
         }
-        let caption = layout.isAvailable ? layout.title : "\(layout.title) · Coming soon"
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         style.lineBreakMode = .byTruncatingTail
-        (caption as NSString).draw(in: NSRect(x: 0, y: 90, width: bounds.width, height: 18), withAttributes: [
+        (layout.title as NSString).draw(in: NSRect(x: 0, y: 90, width: bounds.width, height: 18), withAttributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: isSelected ? .semibold : .regular),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha), .paragraphStyle: style])
+            .foregroundColor: NSColor.labelColor, .paragraphStyle: style])
     }
 }
 

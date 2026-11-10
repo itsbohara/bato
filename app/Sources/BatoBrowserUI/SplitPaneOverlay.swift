@@ -263,6 +263,7 @@ public struct SplitPaneActions {
                                           addSplit: { _ in }, toggleSidebar: {})
     /// The sidebar is hidden, so the first pane's row also clears the traffic lights and show-sidebar button.
     public var sidebarHidden = false { didSet { needsLayout = true } }
+    public var tabLayout = TabLayout.sidebar { didSet { needsLayout = true } }
     public private(set) var paneFrames: [NSRect] = []
     private var toolbars: [SplitPaneToolbarView] = []
     private var poll: Timer?
@@ -344,10 +345,11 @@ public struct SplitPaneActions {
     }
 
     private func leadingInset(forPane index: Int, frame: NSRect) -> CGFloat {
-        guard SplitPaneChrome.showsSidebarToggle(paneIndex: index, sidebarHidden: sidebarHidden),
+        guard SplitPaneChrome.clearsTrafficLights(paneIndex: index, layout: tabLayout, sidebarHidden: sidebarHidden),
               let window, let zoom = window.standardWindowButton(.zoomButton) else { return 0 }
         let lightsEnd = convert(zoom.convert(zoom.bounds, to: nil), from: nil).maxX
-        let slot = SidebarMetrics.trafficLightGap + SidebarMetrics.revealButtonSide + 4
+        let slot = tabLayout == .sidebar ? SidebarMetrics.trafficLightGap + SidebarMetrics.revealButtonSide + 4
+                                         : SidebarMetrics.trafficLightGap
         return max(0, lightsEnd + slot - frame.minX - 8)
     }
 
