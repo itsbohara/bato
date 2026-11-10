@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "0b31b5700741edc115c4dc74f7d2cd57f9a7e3b7ca067b1b244fbfb20d1d9328",
+  "patch_sha256": "1471450fdafd5e4817d8dcc546955baf76f49cd6006a631867ba08e3a3ef180e",
   "files": [
     {
       "root": "cef",
@@ -32,7 +32,7 @@
       "root": "cef",
       "path": "tests/cefsimple/compile_native_slot.py",
       "original_sha256": null,
-      "patched_sha256": "f489ef553349aa268eb55ae6f2d86a93e1f134a3e901a70eb8d21950fd998a17"
+      "patched_sha256": "9ea2c5182b0ecd2255a49775a6a74b2026dd95367acd51b821571facb1d96878"
     },
     {
       "root": "cef",
