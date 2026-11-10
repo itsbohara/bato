@@ -621,7 +621,8 @@ public struct BrowserState: Codable, Equatable, Sendable {
     /// Adds a Profile and its first workspace together; an invalid name or color leaves both absent.
     /// Selection is unchanged so callers choose whether to enter the new Profile.
     @discardableResult
-    public mutating func createProfile(name: String, color: String, workspaceName: String) throws
+    public mutating func createProfile(name: String, color: String, workspaceName: String,
+                                       theme: SpaceTheme? = nil, icon: String? = nil) throws
         -> (profileID: UUID, workspaceID: UUID) {
         try transact { draft in
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -631,7 +632,13 @@ public struct BrowserState: Codable, Equatable, Sendable {
             try Self.validateColor(color)
             guard draft.isProfileNameAvailable(name) else { throw BrowserStateError.duplicateProfileName }
             let profile = BrowserProfile(name: name, color: color.uppercased())
-            let workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
+            var workspace = Workspace(profileID: profile.id, name: workspaceName, color: color.uppercased())
+            if let theme {
+                guard theme.isValid else { throw BrowserStateError.invalidColor }
+                workspace.theme = theme
+                workspace.color = theme.primaryColor
+            }
+            workspace.icon = icon
             draft.profiles.append(profile)
             draft.workspaces.append(workspace)
             return (profile.id, workspace.id)

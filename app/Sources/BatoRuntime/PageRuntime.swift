@@ -236,9 +236,10 @@ public final class PageRuntime {
     }
 
     @discardableResult
-    public func addWorkspace(name: String, color: String? = nil, theme: SpaceTheme? = nil, icon: String? = nil) -> Bool {
+    public func addWorkspace(name: String, profileID: UUID? = nil, color: String? = nil, theme: SpaceTheme? = nil,
+                             icon: String? = nil) -> Bool {
         change { candidate in
-            let id = try candidate.addWorkspace(name: name, profileID: candidate.currentWorkspace.profileID,
+            let id = try candidate.addWorkspace(name: name, profileID: profileID ?? candidate.currentWorkspace.profileID,
                                                 color: color, theme: theme, icon: icon)
             try candidate.activateWorkspace(id)
         }
@@ -289,10 +290,11 @@ public final class PageRuntime {
     /// Creates the Profile and enters its first workspace in one validated step, so a Profile the engine
     /// cannot open is never saved.
     @discardableResult
-    public func createProfile(name: String, color: String, workspaceName: String,
-                              deferPageSelection: Bool = false) -> Bool {
+    public func createProfile(name: String, color: String, workspaceName: String, theme: SpaceTheme? = nil,
+                              icon: String? = nil, deferPageSelection: Bool = false) -> Bool {
         change(reconcileSelection: !deferPageSelection) { candidate in
-            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName)
+            let created = try candidate.createProfile(name: name, color: color, workspaceName: workspaceName,
+                                                      theme: theme, icon: icon)
             try candidate.activateWorkspace(created.workspaceID)
         }
     }
