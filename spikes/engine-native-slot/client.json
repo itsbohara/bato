@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "53bf839e2fb6ee0db4d9f7b868643b5efe9061b21d9044628b9335c58be017d7",
+  "patch_sha256": "549ad61ea9af04b82eba258c690109ba5606282bb2b82a8e64cf980473c448db",
   "files": [
     {
       "root": "cef",
@@ -524,7 +524,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/TopTabStripView.swift",
       "original_sha256": null,
-      "patched_sha256": "ea1750b089255efdca0f2c670d5ecd5d79b76dd1bbe2e6d0294dbbb9192b0078"
+      "patched_sha256": "6784b728a07686efdd699c52eab9b45c83d75e95fafc417bb4adb8dac7e8f0c6"
     }
   ],
   "source_mirrors": {
