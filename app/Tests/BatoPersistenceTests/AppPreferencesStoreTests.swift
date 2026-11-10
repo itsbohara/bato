@@ -28,6 +28,22 @@ struct AppPreferencesStoreTests {
         #expect(store.current().searchSuggestions)
     }
 
+    @Test func tabLayoutDefaultsToSidebarAndPersists() throws {
+        let dir = directory()
+        #expect(AppPreferencesStore(directory: dir).current().tabLayout == .sidebar)
+        try AppPreferencesStore(directory: dir).update { $0.tabLayout = .top }
+        #expect(AppPreferencesStore(directory: dir).current().tabLayout == .top)
+    }
+
+    @Test func unknownTabLayoutFallsBackToSidebarWithoutDroppingTheFile() throws {
+        let dir = directory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let store = AppPreferencesStore(directory: dir)
+        try Data(#"{"searchProvider":"brave","tabLayout":"floating"}"#.utf8).write(to: store.fileURL)
+        #expect(store.current().tabLayout == .sidebar)
+        #expect(store.current().searchProvider == .brave)
+    }
+
     @Test func chosenProviderSurvivesANewStore() throws {
         let dir = directory()
         try AppPreferencesStore(directory: dir).update { $0.searchProvider = .brave }
