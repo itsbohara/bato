@@ -139,6 +139,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('check', 'patch', 'build', 'artifacts'))
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--release', action='store_true',
+                        help='build/artifacts against out/Release_GN_arm64 (Debug stays the default)')
     args = parser.parse_args()
     root = engine.DEFAULT_ROOT
     engine.preflight(root)
@@ -161,17 +163,21 @@ def main():
         else:
             if state != 'patched':
                 raise RuntimeError('Native slot overlay is not applied')
-            output = source / 'out' / engine.LOCK['configuration']
-            runtime.require_configuration(output)
-            command, cwd = engine.stage_command('build', root)
+            output = source / 'out' / engine.configuration(args.release)
+            if args.release and args.phase == 'build' and args.execute:
+                engine.generate_release(root)
+            runtime.require_configuration(output, args.release)
+            command, cwd = engine.stage_command('build', root, args.release)
             if args.phase == 'build':
                 print(json.dumps({'command': command, 'execute': args.execute}), flush=True)
                 if args.execute:
-                    engine.guarded_run(command, cwd, engine.environment(root),
-                                       root / 'logs/build.log', root, engine.LOCK['reserve_bytes'])
+                    log = 'logs/build-release.log' if args.release else 'logs/build.log'
+                    engine.guarded_run(command, cwd, engine.environment(root), root / log, root,
+                                       engine.LOCK['reserve_bytes'],
+                                       state_name=engine.run_state_name(args.release))
                     bundle_blocking_library(output)
             else:
-                runtime.require_build(root)
+                runtime.require_build(root, args.release)
                 _, images = runtime.artifact_images(output)
                 closure = runtime.dependency_closure(images, output)
                 print(json.dumps({'checked_images': len(closure), 'launch': False}))

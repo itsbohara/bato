@@ -26,6 +26,46 @@ QUIT_DIR = HERE.parent / 'engine-quit'
 DEFAULT_ROOT = Path('/Volumes/Mahesh/personal/bato-build')
 MARKER = '.bato-engine-workspace.json'
 CHECKOUT_MARKER = 'checkout-complete.json'
+RELEASE_CONFIGURATION = 'Release_GN_arm64'
+# Mirrors the Debug args CEF generated, flipping only the debug-specific ones. thin LTO stays off:
+# the 16 GB build host cannot link with it.
+RELEASE_ARGS = {
+    'alternate_cdm_storage_id_key': '"968b476909da4373b08903c28e859454"',
+    'clang_use_chrome_plugins': 'false',
+    'dcheck_always_on': 'false',
+    'enable_background_mode': 'false',
+    'enable_cdm_host_verification': 'true',
+    'enable_cdm_storage_id': 'true',
+    'enable_downgrade_processing': 'false',
+    'enable_gwp_asan_malloc': 'false',
+    'enable_gwp_asan_partitionalloc': 'false',
+    'enable_precompiled_headers': 'false',
+    'enable_resource_allowlist_generation': 'false',
+    'enable_rlz': 'true',
+    'enable_widevine': 'true',
+    'is_component_build': 'false',
+    'is_debug': 'false',
+    'is_official_build': 'false',
+    'optimize_webui': 'true',
+    'symbol_level': '0',
+    'target_cpu': '"arm64"',
+    'use_remoteexec': 'false',
+    'use_system_xcode': 'true',
+    'use_thin_lto': 'false',
+}
+RELEASE_JOBS = '6'
+
+
+def configuration(release=False):
+    return RELEASE_CONFIGURATION if release else LOCK['configuration']
+
+
+def release_args_text():
+    return ''.join(f'{key} = {value}\n' for key, value in RELEASE_ARGS.items())
+
+
+def run_state_name(release=False):
+    return 'run-state-release.json' if release else 'run-state.json'
 
 
 def command_output(command, cwd=None):
@@ -99,11 +139,22 @@ def require_checkout(root):
 
 
 def require_idle(root):
-    state = root / 'logs/run-state.json'
-    if state.is_file():
-        record = json.loads(state.read_text())
-        if (record.get('running') or record.get('cleanup_error')) and group_alive(record['pid']):
-            raise RuntimeError('Previous owned group still exists; inspect run-state before resuming')
+    for release in (False, True):
+        state = root / 'logs' / run_state_name(release)
+        if state.is_file():
+            record = json.loads(state.read_text())
+            if (record.get('running') or record.get('cleanup_error')) and group_alive(record['pid']):
+                raise RuntimeError('Previous owned group still exists; inspect run-state before resuming')
+
+
+def generate_release(root):
+    """Write the Release args and run gn gen; Debug's out dir and CEF's configure step are untouched."""
+    source, _ = source_paths(root)
+    output = source / 'out' / RELEASE_CONFIGURATION
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'args.gn').write_text(release_args_text())
+    subprocess.run([str(root / 'depot_tools/gn'), 'gen', str(output)], cwd=source,
+                   env=environment(root), check=True)
 
 
 def environment(root):
@@ -177,11 +228,12 @@ def terminate_owned(process, term_timeout=10, kill_timeout=5):
         raise RuntimeError('Owned process group remains after KILL; inspect run-state before resuming')
 
 
-def guarded_run(command, cwd, env, log_path, volume, reserve, interval=5, free_fn=None):
+def guarded_run(command, cwd, env, log_path, volume, reserve, interval=5, free_fn=None,
+                state_name='run-state.json'):
     free_fn = free_fn or (lambda: shutil.disk_usage(volume).free)
     if free_fn() < reserve:
         raise RuntimeError('Disk reserve reached before child launch')
-    state = log_path.parent / 'run-state.json'
+    state = log_path.parent / state_name
     with log_path.open('a') as log:
         process = None
         record = {'phase_log': log_path.name, 'command': command,
@@ -279,7 +331,7 @@ def source_paths(root):
     return source, source / 'cef'
 
 
-def stage_command(phase, root):
+def stage_command(phase, root, release=False):
     source, cef = source_paths(root)
     if phase == 'bootstrap':
         # Initialize only the Python shim required by gn. Unlike the broad
@@ -300,7 +352,8 @@ def stage_command(phase, root):
         return [sys.executable, str(cef / 'tools/gclient_hook.py')], cef
     if phase == 'build':
         return [str(root / 'depot_tools/autoninja'), '-C',
-                'out/' + LOCK['configuration'], '-j', '2', 'cefsimple'], source
+                'out/' + configuration(release), '-j', RELEASE_JOBS if release else '2',
+                'cefsimple'], source
     raise RuntimeError('Unknown command phase')
 
 

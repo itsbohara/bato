@@ -85,6 +85,28 @@ class RuntimeGateTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Duplicate'):
                 runtime.require_configuration(output)
 
+    def test_release_args_satisfy_release_configuration_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve()
+            (output / 'args.gn').write_text(runtime.engine.release_args_text())
+            runtime.require_configuration(output, release=True)
+            with self.assertRaisesRegex(RuntimeError, 'is_component_build'):
+                runtime.require_configuration(output)
+            (output / 'args.gn').write_text(
+                runtime.engine.release_args_text().replace('use_thin_lto = false', 'use_thin_lto = true'))
+            with self.assertRaisesRegex(RuntimeError, 'use_thin_lto'):
+                runtime.require_configuration(output, release=True)
+
+    def test_release_build_command_and_state_are_separate_from_debug(self):
+        root = Path('/nonexistent-root')
+        debug, _ = runtime.engine.stage_command('build', root)
+        release, _ = runtime.engine.stage_command('build', root, release=True)
+        self.assertIn('out/Debug_GN_arm64', debug)
+        self.assertEqual(debug[debug.index('-j') + 1], '2')
+        self.assertIn('out/Release_GN_arm64', release)
+        self.assertEqual(release[release.index('-j') + 1], '6')
+        self.assertNotEqual(runtime.engine.run_state_name(), runtime.engine.run_state_name(True))
+
     def test_dependency_resolution_and_missing_or_external_library(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory).resolve()

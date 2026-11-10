@@ -18,10 +18,10 @@ FIXTURE = 'http://127.0.0.1:18765/login.html'
 SYSTEM_PREFIXES = ('/System/Library/', '/usr/lib/')
 
 
-def require_build(root):
-    state = json.loads((root / 'logs/run-state.json').read_text())
-    command, _ = engine.stage_command('build', root)
-    if (state.get('phase_log') != 'build.log' or state.get('command') != command or
+def require_build(root, release=False):
+    state = json.loads((root / 'logs' / engine.run_state_name(release)).read_text())
+    command, _ = engine.stage_command('build', root, release)
+    if (state.get('phase_log') != ('build-release.log' if release else 'build.log') or state.get('command') != command or
             state.get('running') is not False or state.get('exit_code') != 0 or
             not isinstance(state.get('finished'), (int, float)) or
             state.get('cleanup_error') or state.get('stopped_for_disk_reserve')):
@@ -29,7 +29,7 @@ def require_build(root):
     engine.require_idle(root)
 
 
-def require_configuration(output):
+def require_configuration(output, release=False):
     # Parse assignments exactly; substring checks could accept commented settings.
     values = {}
     for line in (output / 'args.gn').read_text().splitlines():
@@ -38,9 +38,12 @@ def require_configuration(output):
             if match[1] in values:
                 raise RuntimeError('Duplicate GN setting: ' + match[1])
             values[match[1]] = match[2].strip()
-    expected = {'is_component_build': 'true', 'is_debug': 'true',
+    debug = not release
+    expected = {'is_component_build': str(debug).lower(), 'is_debug': str(debug).lower(),
                 'target_cpu': '"arm64"', 'symbol_level': '0',
                 'use_remoteexec': 'false', 'use_system_xcode': 'true'}
+    if release:
+        expected.update(dcheck_always_on='false', use_thin_lto='false', is_official_build='false')
     for key, value in expected.items():
         if values.get(key) != value:
             raise RuntimeError('Unexpected generated GN setting: ' + key)
@@ -188,7 +191,7 @@ def fresh_profile(root, reservation):
     return profile
 
 
-def preview(root, reservation=False):
+def preview(root, reservation=False, release=False):
     engine.preflight(root)
     engine.require_marker(root)
     # Existing wrapper creates this lock during prepare; read-only open does not create it.
@@ -197,12 +200,12 @@ def preview(root, reservation=False):
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Engine workspace command is active; wait for the build to finish') from None
-        require_build(root)
+        require_build(root, release)
         engine.require_checkout(root)
         engine.verify_source(root)
         require_patches(root)
-        output = engine.source_paths(root)[0] / 'out' / engine.LOCK['configuration']
-        require_configuration(output)
+        output = engine.source_paths(root)[0] / 'out' / engine.configuration(release)
+        require_configuration(output, release)
         executable, images = artifact_images(output)
         dependencies = dependency_closure(images, output)
         profile = fresh_profile(root, reservation)
@@ -218,8 +221,9 @@ def preview(root, reservation=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reservation', action='store_true', help='Preview the opt-in reservation case')
+    parser.add_argument('--release', action='store_true', help='Preview against the Release build')
     args = parser.parse_args()
-    print(json.dumps(preview(engine.DEFAULT_ROOT, args.reservation), indent=2))
+    print(json.dumps(preview(engine.DEFAULT_ROOT, args.reservation, args.release), indent=2))
 
 
 if __name__ == '__main__':

@@ -19,9 +19,12 @@ import runtime  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SSD = Path('/Volumes/Mahesh/personal/bato-build')
-BUILD_OUTPUT = SSD / 'source/chromium/src/out/Debug_GN_arm64'
+OUT = SSD / 'source/chromium/src/out'
+BUILD_OUTPUT = OUT / 'Debug_GN_arm64'
+RELEASE_OUTPUT = OUT / 'Release_GN_arm64'
 BUILT_APP = BUILD_OUTPUT / 'cefsimple.app'
 DIST = SSD / 'dist'
+RELEASE_DIST = SSD / 'dist-release'
 APP_NAME = 'Bato'
 OLD_NAME = 'cefsimple'
 OLD_BUNDLE_ID = 'org.cef.cefsimple'
@@ -189,29 +192,33 @@ def verify(app):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dist', type=Path, default=DIST)
+    parser.add_argument('--release', action='store_true',
+                        help='package out/Release_GN_arm64 (no component dylibs) into dist-release')
+    parser.add_argument('--dist', type=Path, help='output directory (default dist, or dist-release with --release)')
     parser.add_argument('--icon', type=Path, help='replacement .icns (otherwise packaging/Bato.icns, else generated)')
     parser.add_argument('--profile', type=Path, default=ALPHA_PROFILE, help='default engine Profile cache path')
     parser.add_argument('--state', type=Path, default=ALPHA_STATE, help='default Bato organization directory')
     args = parser.parse_args()
-    if not BUILT_APP.is_dir():
-        sys.exit(f'Built app missing: {BUILT_APP}')
+    built_app = (RELEASE_OUTPUT if args.release else BUILD_OUTPUT) / 'cefsimple.app'
+    dist = args.dist or (RELEASE_DIST if args.release else DIST)
+    if not built_app.is_dir():
+        sys.exit(f'Built app missing: {built_app}')
     global VERSION
     VERSION = read_version()
-    work = args.dist / 'work'
+    work = dist / 'work'
     work.mkdir(parents=True, exist_ok=True)
     icon = build_icon(work, args.icon)
-    target = args.dist / f'{APP_NAME}.app'
+    target = dist / f'{APP_NAME}.app'
     if target.exists():
         shutil.rmtree(target)
-    run(['cp', '-cR', BUILT_APP, target])
-    libraries = bundle_component_libraries(target)
+    run(['cp', '-cR', built_app, target])
+    libraries = 0 if args.release else bundle_component_libraries(target)
     rename_components(target)
     rebrand_main(target, icon, default_arguments(args.profile, args.state))
     sign(target)
     report = verify(target)
     report.update({'app': str(target), 'component_libraries': libraries, 'bundle_id': BUNDLE_ID, 'version': VERSION[0], 'build': VERSION[1]})
-    (args.dist / 'package-report.json').write_text(json.dumps(report, indent=2) + '\n')
+    (dist / 'package-report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
     return report['codesign_verify']['exit']
 
