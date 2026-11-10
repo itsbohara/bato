@@ -17,6 +17,7 @@ struct TopTabModel {
 /// carries the Space theme, so the strip always wears the active Space's colours.
 @MainActor
 final class TopTabStripView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
     let switcherButton = NSButton(frame: .zero)
     private let newTabButton = NSButton(frame: .zero)
     private let splitButton = NSButton(frame: .zero)
@@ -176,6 +177,8 @@ private extension TopTabView {
 @MainActor
 private final class TopTabView: NSView {
     let model: TopTabModel
+    // The strip sits in the titlebar band, where AppKit would otherwise turn a press into a window move.
+    override var mouseDownCanMoveWindow: Bool { false }
     var onSelect: () -> Void = {}
     var onClose: () -> Void = {}
     var menuProvider: () -> NSMenu? = { nil }
