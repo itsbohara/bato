@@ -250,7 +250,7 @@ public enum CommandBarResults {
             results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
             remainingCommands.removeAll(where: isExactCommand)
         }
-        let pages = state.searchPages(matching: text).map {
+        let pages = Self.oneRowPerPage(state.searchPages(matching: text), preferring: state.activeWorkspaceID).map {
             CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
                 subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
         }
@@ -262,6 +262,18 @@ public enum CommandBarResults {
         guard !text.isEmpty else { return results + pages + remainingCommands }
         results += pages.prefix(leadingPageMatches) + suggestionRows + pages.dropFirst(leadingPageMatches) + remainingCommands
         return Array(results.prefix(queryRowLimit))
+    }
+}
+
+extension CommandBarResults {
+    /// The same address open in several Spaces is offered once, in the current Space when it is open there.
+    static func oneRowPerPage(_ pages: [PageSearchResult], preferring workspaceID: UUID) -> [PageSearchResult] {
+        let ordered = pages.enumerated().sorted {
+            let (lhs, rhs) = ($0.element.workspaceID == workspaceID, $1.element.workspaceID == workspaceID)
+            return lhs == rhs ? $0.offset < $1.offset : lhs
+        }.map(\.element)
+        var seen = Set<String>()
+        return ordered.filter { seen.insert($0.entry.lastURL.absoluteString).inserted }
     }
 }
 

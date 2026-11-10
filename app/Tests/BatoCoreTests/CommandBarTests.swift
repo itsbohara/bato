@@ -142,3 +142,19 @@ final class CurrentPageNavigationTests: XCTestCase {
         XCTAssertNil(CommandBarSelection.rowAfterRefresh(previousID: nil, previousQuery: "", query: "", results: []))
     }
 }
+
+final class CommandBarPageRowTests: XCTestCase {
+    func testSameAddressInSeveralSpacesIsOfferedOnceFromTheCurrentSpace() {
+        let (current, other) = (UUID(), UUID())
+        let google = URL(string: "https://www.google.com/")!
+        func page(_ workspace: UUID, _ name: String, _ url: URL) -> PageSearchResult {
+            PageSearchResult(entryID: UUID(), workspaceID: workspace, workspaceName: name,
+                             entry: PageEntry(title: "Page", lastURL: url, kind: .temporary))
+        }
+        let elsewhere = page(other, "Work", google)
+        let here = page(current, "Personal", google)
+        let unique = page(other, "Work", URL(string: "https://example.com/")!)
+        let rows = CommandBarResults.oneRowPerPage([elsewhere, unique, here], preferring: current)
+        XCTAssertEqual(rows.map(\.entryID), [here.entryID, unique.entryID])
+    }
+}
