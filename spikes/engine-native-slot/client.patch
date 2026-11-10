@@ -12231,7 +12231,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoCore/CommandBar.swift
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,294 @@
 +import Foundation
 +
 +public enum CommandBarDestination: Equatable, Sendable {
@@ -12484,7 +12484,7 @@
 +            results.insert(contentsOf: commands.filter(isExactCommand), at: 0)
 +            remainingCommands.removeAll(where: isExactCommand)
 +        }
-+        let pages = state.searchPages(matching: text).map {
++        let pages = Self.oneRowPerPage(state.searchPages(matching: text), preferring: state.activeWorkspaceID).map {
 +            CommandBarResult(id: "page:\($0.entryID.uuidString)", title: $0.entry.title,
 +                subtitle: "\($0.workspaceName) · \($0.entry.lastURL.absoluteString)", action: .activate($0))
 +        }
@@ -12496,6 +12496,18 @@
 +        guard !text.isEmpty else { return results + pages + remainingCommands }
 +        results += pages.prefix(leadingPageMatches) + suggestionRows + pages.dropFirst(leadingPageMatches) + remainingCommands
 +        return Array(results.prefix(queryRowLimit))
++    }
++}
++
++extension CommandBarResults {
++    /// The same address open in several Spaces is offered once, in the current Space when it is open there.
++    static func oneRowPerPage(_ pages: [PageSearchResult], preferring workspaceID: UUID) -> [PageSearchResult] {
++        let ordered = pages.enumerated().sorted {
++            let (lhs, rhs) = ($0.element.workspaceID == workspaceID, $1.element.workspaceID == workspaceID)
++            return lhs == rhs ? $0.offset < $1.offset : lhs
++        }.map(\.element)
++        var seen = Set<String>()
++        return ordered.filter { seen.insert($0.entry.lastURL.absoluteString).inserted }
 +    }
 +}
 +
@@ -12516,7 +12528,7 @@
 +}
 --- /dev/null
 +++ b/cef/tests/cefsimple/bato/BatoBrowserUI/CommandBarController.swift
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,508 @@
 +import AppKit
 +import BatoCore
 +
@@ -12801,8 +12813,7 @@
 +        case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
 +        case .activate(let page):
 +            symbol = "rectangle.on.rectangle"
-+            detail = page.entry.lastURL.absoluteString
-+            trailing = page.workspaceName.uppercased()
++            trailing = page.workspaceName
 +            selectedTrailing = "Switch to Tab"
 +            image = pageIcon(page.entryID) ?? SidebarStyle.letterIcon(for: page.entry.title, url: page.entry.lastURL, size: 16)
 +        case .command: symbol = "command"; trailing = "Command"; selectedTrailing = "Run"
