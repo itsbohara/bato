@@ -182,8 +182,8 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         guard let window else { return }
         window.contentView?.layoutSubtreeIfNeeded()
         let height = ceil(stack.fittingSize.height)
-        if let card = cardFrame?() {
-            window.setFrame(SidebarStyle.commandBarFrame(card: card, height: height), display: true)
+        if let card = cardFrame?(), let parent {
+            window.setFrame(SidebarStyle.commandBarFrame(card: card, window: parent.frame, height: height), display: true)
         } else {
             window.setContentSize(NSSize(width: SidebarStyle.commandBarWidth, height: height))
         }

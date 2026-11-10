@@ -118,10 +118,27 @@ final class CommandBarAnchorTests: XCTestCase {
     func testTopEdgeIsFixedWhateverTheHeightAndCentredOnTheCard() {
         let card = NSRect(x: 300, y: 100, width: 1000, height: 700)
         let heights: [CGFloat] = [56, 106, 206, 406]
-        let frames = heights.map { SidebarStyle.commandBarFrame(card: card, height: $0) }
+        let window = NSRect(x: 0, y: 50, width: 1400, height: 800)
+        let frames = heights.map { SidebarStyle.commandBarFrame(card: card, window: window, height: $0) }
         XCTAssertEqual(Set(frames.map(\.maxY)).count, 1)
         XCTAssertEqual(frames[0].maxY, card.maxY - card.height * SidebarStyle.commandBarTopFraction, accuracy: 0.5)
         for frame in frames { XCTAssertEqual(frame.midX, card.midX, accuracy: 0.5) }
         XCTAssertEqual(frames.map(\.height), heights)
+    }
+
+    func testNarrowWindowKeepsThePaletteInsideIt() {
+        let window = NSRect(x: 100, y: 50, width: 690, height: 800)
+        let card = NSRect(x: 370, y: 60, width: 410, height: 780)
+        let frame = SidebarStyle.commandBarFrame(card: card, window: window, height: 300)
+        XCTAssertEqual(frame.minX, window.minX + SidebarStyle.commandBarInset, accuracy: 0.5)
+        XCTAssertEqual(frame.maxX, window.maxX - SidebarStyle.commandBarInset, accuracy: 0.5)
+    }
+
+    func testWideWindowKeepsThePaletteCentredOnTheCardAtFullWidth() {
+        let window = NSRect(x: 0, y: 0, width: 1600, height: 900)
+        let card = NSRect(x: 280, y: 10, width: 1310, height: 880)
+        let frame = SidebarStyle.commandBarFrame(card: card, window: window, height: 300)
+        XCTAssertEqual(frame.width, SidebarStyle.commandBarWidth)
+        XCTAssertEqual(frame.midX, card.midX, accuracy: 0.5)
     }
 }

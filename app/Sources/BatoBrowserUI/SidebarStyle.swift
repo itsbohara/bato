@@ -20,11 +20,14 @@ enum SidebarStyle {
     static let commandBarTopFraction: CGFloat = 0.38
 
     /// The palette hangs from a fixed point: centred on the content card, top edge a set fraction down it
-    /// (screen coordinates, y up). More rows only extend it downward.
-    static func commandBarFrame(card: NSRect, height: CGFloat) -> NSRect {
+    /// (screen coordinates, y up). More rows only extend it downward. Like Arc it never leaves the window:
+    /// a narrow window shrinks it and slides it over the sidebar.
+    static func commandBarFrame(card: NSRect, window: NSRect, height: CGFloat) -> NSRect {
         let top = card.maxY - card.height * commandBarTopFraction
-        return NSRect(x: (card.midX - commandBarWidth / 2).rounded(), y: (top - height).rounded(),
-                      width: commandBarWidth, height: height)
+        let bounds = window.insetBy(dx: commandBarInset, dy: 0)
+        let width = min(commandBarWidth, max(0, bounds.width))
+        let x = min(max(card.midX - width / 2, bounds.minX), bounds.maxX - width)
+        return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width, height: height)
     }
     static let downloadsPopoverWidth: CGFloat = 320
     static let downloadsPopoverMaxListHeight: CGFloat = 360
