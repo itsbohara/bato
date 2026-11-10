@@ -14,7 +14,9 @@ struct TopTabModel {
 }
 
 /// The horizontal tab strip of the top layout. It paints nothing itself: the workspace root behind it
-/// carries the Space theme, so the strip always wears the active Space's colours.
+/// carries the Space theme, so the strip always wears the active Space's colours. Its bounds are the engine's
+/// native slot: the window's top row minus Chrome's toolbar segment (`ChromeGeometry.topToolbarWidth`), so the
+/// tabs, new-tab and split buttons lay out only in the space left of the toolbar.
 @MainActor
 final class TopTabStripView: NSView {
     let switcherButton = NSButton(frame: .zero)

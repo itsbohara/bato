@@ -2,7 +2,7 @@
   "schema": 1,
   "cef_revision": "4fa4ab516dacf6c49fc7e6e70d2b7ebce29fa35f",
   "chromium_commit": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
-  "patch_sha256": "845319089d3369a864e85dcc9c993d471c46314f8281089ec459791750182d72",
+  "patch_sha256": "0b31b5700741edc115c4dc74f7d2cd57f9a7e3b7ca067b1b244fbfb20d1d9328",
   "files": [
     {
       "root": "cef",
@@ -512,7 +512,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoCore/TabLayoutGeometry.swift",
       "original_sha256": null,
-      "patched_sha256": "d1b9ab2b67920aba88000e0607e38b2bb2ba4fa5c41f57bea6a8aac25ef7f4ad"
+      "patched_sha256": "16ddedd7346fb7c8373b34af60903e77af409fa80f6ee1e92149a77ff9cf76cd"
     },
     {
       "root": "cef",
@@ -524,7 +524,7 @@
       "root": "cef",
       "path": "tests/cefsimple/bato/BatoBrowserUI/TopTabStripView.swift",
       "original_sha256": null,
-      "patched_sha256": "382c7c4459d69067c9ebe4fca2e251e8592b4cd7acd29353d56ccc6fc9463c55"
+      "patched_sha256": "f17283d350f0005a3bb9a4cb9db353bdeed5cc7b4be0491af7e2c7d7ea53679c"
     }
   ],
   "source_mirrors": {
