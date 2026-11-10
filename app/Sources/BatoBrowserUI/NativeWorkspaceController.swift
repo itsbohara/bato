@@ -2025,6 +2025,7 @@ public final class NativeWorkspaceController: NSObject {
         menu.autoenablesItems = false
         menu.addItem(ActionMenuItem(title: "Rename Space…") { [weak self] in self?.editWorkspace() })
         menu.addItem(ActionMenuItem(title: "Edit Theme…") { [weak self] in self?.editTheme() })
+        menu.addItem(profileMenuItem(forWorkspace: id))
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem(title: "New Folder…") { [weak self] in
             guard let self, self.runtime.state.activeWorkspaceID == id else { return }
@@ -2037,6 +2038,98 @@ public final class NativeWorkspaceController: NSObject {
         delete.isEnabled = runtime.state.canDeleteWorkspace(id)
         menu.addItem(delete)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.maxY + 2), in: anchor)
+    }
+
+    private func profileMenuItem(forWorkspace id: UUID) -> NSMenuItem {
+        let state = runtime.state
+        let canMove = state.canDeleteWorkspace(id)
+        let current = state.workspaces.first { $0.id == id }?.profileID
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for profile in state.profiles {
+            let item = ActionMenuItem(title: profile.name) { [weak self] in
+                self?.confirmMoveWorkspace(id, to: .existing(profile.id, profile.name))
+            }
+            item.state = profile.id == current ? .on : .off
+            item.isEnabled = canMove || profile.id == current
+            submenu.addItem(item)
+        }
+        submenu.addItem(.separator())
+        let create = ActionMenuItem(title: "New Profile…") { [weak self] in self?.draftProfile(movingWorkspace: id) }
+        create.isEnabled = canMove
+        submenu.addItem(create)
+        let item = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    private enum MoveTarget {
+        case existing(UUID, String)
+        case new(name: String, color: String)
+
+        var name: String {
+            switch self {
+            case .existing(_, let name), .new(let name, _): name
+            }
+        }
+    }
+
+    private func draftProfile(movingWorkspace id: UUID) {
+        guard hasStarted, profileEditor == nil, let window = root.window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        let state = runtime.state
+        let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
+        let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
+        var target: MoveTarget?
+        let editor = ProfileEditor(creating: true, name: "", color: color, asksFirstWorkspace: false) { [weak self] name, color, _ in
+            guard let self else { return "Bato is no longer available." }
+            guard self.runtime.state.isProfileNameAvailable(name) else { return "Another Profile already has that name." }
+            target = .new(name: name.trimmingCharacters(in: .whitespacesAndNewlines), color: color)
+            return nil
+        }
+        profileEditor = editor
+        guard let sheet = editor.window else { profileEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] response in
+            self?.profileEditor = nil
+            guard response == .OK, let target else { return }
+            DispatchQueue.main.async { [weak self] in self?.confirmMoveWorkspace(id, to: target) }
+        }
+        editor.focusName()
+    }
+
+    /// Cookies and logins stay with the old Profile, so the pages reload signed in as the new one.
+    private func confirmMoveWorkspace(_ id: UUID, to target: MoveTarget) {
+        guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil,
+              let workspace = runtime.state.workspaces.first(where: { $0.id == id }) else { return }
+        if case .existing(let profileID, _) = target {
+            guard runtime.state.canMoveWorkspace(id, toProfile: profileID) else { return }
+        } else {
+            guard runtime.state.canDeleteWorkspace(id) else { return }
+        }
+        requestNativeFocus?()
+        let pages = workspace.pins.count + workspace.tabs.count
+        let body = "Its \(pages) pinned and open tab\(pages == 1 ? "" : "s") will reload signed in as \(target.name). "
+            + "Logins and cookies don’t move with the Space; they stay with its current Profile."
+        RecoverySheet.present(on: window, symbol: "person.crop.circle.badge.arrow.right",
+                              title: "Move “\(workspace.name)” to the Profile “\(target.name)”?", body: body,
+                              buttons: [.init(title: "Cancel", isDefault: true), .init(title: "Move Space", isDefault: false)],
+                              cancelIndex: 0) { [weak self] index in
+            guard index == 1 else { return }
+            DispatchQueue.main.async { [weak self] in self?.moveWorkspace(id, to: target) }
+        }
+    }
+
+    private func moveWorkspace(_ id: UUID, to target: MoveTarget) {
+        let moved: Bool
+        switch target {
+        case .existing(let profileID, _): moved = runtime.moveWorkspace(id, toProfile: profileID)
+        case .new(let name, let color): moved = runtime.moveWorkspace(id, toNewProfile: name, color: color)
+        }
+        render()
+        guard !moved, let window = root.window, window.attachedSheet == nil else { return }
+        RecoverySheet.present(on: window, symbol: "exclamationmark.triangle", title: "The Space couldn’t be moved",
+                              body: "Nothing was changed. Try again.",
+                              buttons: [.init(title: "OK", isDefault: true)], cancelIndex: 0) { _ in }
     }
 
     private func makeTidyClearRow() -> TidyClearRow {
