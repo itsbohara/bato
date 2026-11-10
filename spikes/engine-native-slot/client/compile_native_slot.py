@@ -9,8 +9,8 @@ def main():
     source, output = (Path(value).resolve() for value in sys.argv[1:])
     tree = source.parents[3]
     expected_source = tree / 'cef/tests/cefsimple/NativeSlot.swift'
-    expected_output = tree / 'out/Debug_GN_arm64/gen/cef/libBatoNativeSlot.dylib'
-    if source != expected_source or output != expected_output:
+    outputs = {tree / f'out/{build}/gen/cef/libBatoNativeSlot.dylib': build for build in ('Debug_GN_arm64', 'Release_GN_arm64')}
+    if source != expected_source or output not in outputs:
         raise SystemExit('Refusing unexpected native-slot Swift source/output')
     output.parent.mkdir(parents=True, exist_ok=True)
     sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
@@ -19,6 +19,7 @@ def main():
     common = ['xcrun', 'swiftc', '-parse-as-library', '-target', 'arm64-apple-macos13.0',
               '-sdk', sdk, '-module-cache-path', str(output.parent / 'native-slot-module-cache'),
               '-I', str(modules)]
+    optimization = ['-O'] if outputs[output] == 'Release_GN_arm64' else []
     objects = []
     for name, filenames in [('BatoCore', ['BrowserState.swift', 'CommandBar.swift', 'Essentials.swift', 'SettingsModel.swift', 'DefaultBrowser.swift',
                                         'DownloadsModel.swift', 'DownloadsController.swift', 'Archive.swift',
@@ -43,7 +44,7 @@ def main():
                                               'TopTabStripView.swift'])]:
         module_sources = [str(source.parent / 'bato' / name / filename) for filename in filenames]
         obj = modules / (name + '.o')
-        subprocess.run(common + ['-swift-version', '6', '-whole-module-optimization',
+        subprocess.run(common + optimization + ['-swift-version', '6', '-whole-module-optimization',
                                  '-emit-object', '-emit-module', '-module-name', name,
                                  '-emit-module-path', str(modules / (name + '.swiftmodule')),
                                  *module_sources, '-o', str(obj)], check=True)
