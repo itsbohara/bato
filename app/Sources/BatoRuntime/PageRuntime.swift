@@ -381,6 +381,59 @@ public final class PageRuntime {
         return true
     }
 
+    /// Moves a workspace to another Profile. Cookies and logins stay behind, so its live pages are closed
+    /// without asking and reopen from their saved addresses in the new Profile when next shown.
+    @discardableResult
+    public func moveWorkspace(_ id: UUID, toProfile profileID: UUID) -> Bool {
+        relocateWorkspace(id) { _ in profileID }
+    }
+
+    /// Creates the Profile and moves the workspace into it as one step, so cancelling leaves no Profile behind.
+    @discardableResult
+    public func moveWorkspace(_ id: UUID, toNewProfile name: String, color: String) -> Bool {
+        relocateWorkspace(id) { candidate in
+            let profileID = try candidate.addProfile(name: name)
+            try candidate.updateProfile(profileID, name: name, color: color)
+            return profileID
+        }
+    }
+
+    private func relocateWorkspace(_ id: UUID, target: (inout BrowserState) throws -> UUID) -> Bool {
+        guard let moving = state.workspaces.first(where: { $0.id == id }), state.canDeleteWorkspace(id) else {
+            lastError = .invalidCommand
+            return false
+        }
+        var candidate = state
+        let profileID: UUID
+        do {
+            profileID = try target(&candidate)
+            guard profileID != moving.profileID else { throw PageRuntimeError.invalidCommand }
+            try candidate.moveWorkspace(id, toProfile: profileID)
+            try candidate.validate()
+        } catch {
+            lastError = .invalidCommand
+            return false
+        }
+        guard engine.supportsProfile(profileID) else {
+            lastError = .unsupportedProfile
+            return false
+        }
+        let wasActive = state.activeWorkspaceID == id
+        guard save(candidate) else { return false }
+        tearDownPeek()
+        if wasActive { _ = engine.separateSplit() }
+        for entry in (moving.pins + moving.tabs).map(\.id) {
+            guard let page = livePages.removeValue(forKey: entry) else { continue }
+            pendingClose.remove(page)
+            pagesWithUncommittedNavigation.removeValue(forKey: page)
+            pendingArchive.removeValue(forKey: entry)
+            pairUnloads.removeValue(forKey: entry)
+            engine.requestClose(page)
+        }
+        closedTabs[moving.profileID]?.removeTabs(inWorkspace: id)
+        return wasActive ? showSelection() : true
+    }
+
     /// Metadata only: the visible page and the Profile's engine context are untouched.
     @discardableResult
     public func updateProfile(_ id: UUID, name: String, color: String) -> Bool {
