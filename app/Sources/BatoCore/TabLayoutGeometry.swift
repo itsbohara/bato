@@ -40,6 +40,17 @@ public enum ChromeGeometry {
     public static let cardMargin: CGFloat = 8
     /// Height of the tab strip above the card in the top layout; must equal `kNativeTopStripHeight` in the engine overlay.
     public static let topStripHeight: CGFloat = 54
+    /// Bounds of Chrome's toolbar segment at the trailing end of the strip's row; must equal `NativeTopToolbarWidthFor` in the engine overlay.
+    public static let topToolbarMinWidth = 360
+    public static let topToolbarMaxWidth = 640
+
+    /// Width of Chrome's toolbar in the top layout: 40% of the window within the bounds, and never more than 60% so the tabs keep room.
+    /// Integer arithmetic so the engine, which truncates the same way, agrees to the point.
+    public static func topToolbarWidth(forWindowWidth windowWidth: CGFloat) -> CGFloat {
+        let width = Int(max(0, windowWidth))
+        let share = min(max(width * 2 / 5, topToolbarMinWidth), topToolbarMaxWidth)
+        return CGFloat(min(share, width * 3 / 5))
+    }
 
     /// `reservation` is the docked sidebar's width, 0 when it is hidden or floating.
     public static func cardRect(in size: CGSize, layout: TabLayout, reservation: CGFloat) -> CGRect {
@@ -63,11 +74,12 @@ public enum ChromeGeometry {
     }
 
     /// The part of the window the native sidebar or strip paints for itself, which the tint must not cover.
+    /// The top strip stops where Chrome's toolbar segment begins; the tint shows behind that toolbar.
     public static func coverRect(in size: CGSize, layout: TabLayout, coverWidth: CGFloat) -> CGRect {
         switch layout {
         case .sidebar: CGRect(x: 0, y: 0, width: coverWidth, height: size.height)
         case .sidebarRight: CGRect(x: max(0, size.width - coverWidth), y: 0, width: coverWidth, height: size.height)
-        case .top: CGRect(x: 0, y: 0, width: size.width, height: min(topStripHeight, size.height))
+        case .top: CGRect(x: 0, y: 0, width: size.width - topToolbarWidth(forWindowWidth: size.width), height: min(topStripHeight, size.height))
         }
     }
 }

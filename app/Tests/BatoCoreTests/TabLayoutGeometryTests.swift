@@ -45,6 +45,24 @@ final class TabLayoutGeometryTests: XCTestCase {
     func testCoverFollowsTheSidebarEdgeOrTheStrip() {
         XCTAssertEqual(ChromeGeometry.coverRect(in: window, layout: .sidebar, coverWidth: 260), CGRect(x: 0, y: 0, width: 260, height: 700))
         XCTAssertEqual(ChromeGeometry.coverRect(in: window, layout: .sidebarRight, coverWidth: 260), CGRect(x: 740, y: 0, width: 260, height: 700))
-        XCTAssertEqual(ChromeGeometry.coverRect(in: window, layout: .top, coverWidth: 0), CGRect(x: 0, y: 0, width: 1000, height: 54))
+        XCTAssertEqual(ChromeGeometry.coverRect(in: window, layout: .top, coverWidth: 0), CGRect(x: 0, y: 0, width: 600, height: 54))
+    }
+
+    func testToolbarSegmentIsFortyPercentWithinBounds() {
+        XCTAssertEqual(ChromeGeometry.topToolbarWidth(forWindowWidth: 1000), 400)
+        XCTAssertEqual(ChromeGeometry.topToolbarWidth(forWindowWidth: 700), 360)
+        XCTAssertEqual(ChromeGeometry.topToolbarWidth(forWindowWidth: 2000), 640)
+    }
+
+    func testToolbarSegmentNeverTakesMoreThanSixtyPercent() {
+        XCTAssertEqual(ChromeGeometry.topToolbarWidth(forWindowWidth: 500), 300)
+        XCTAssertEqual(ChromeGeometry.topToolbarWidth(forWindowWidth: 0), 0)
+    }
+
+    func testStripAndToolbarSegmentSplitTheRowWithoutOverlap() {
+        for width in [320, 640, 1000, 1441, 3000] as [CGFloat] {
+            let strip = ChromeGeometry.coverRect(in: CGSize(width: width, height: 700), layout: .top, coverWidth: 0)
+            XCTAssertEqual(strip.maxX + ChromeGeometry.topToolbarWidth(forWindowWidth: width), width)
+        }
     }
 }
