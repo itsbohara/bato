@@ -282,8 +282,7 @@ final class CommandBarController: NSWindowController, NSTextFieldDelegate, NSTab
         case .peek(let url): symbol = "rectangle.center.inset.filled"; detail = url.absoluteString; trailing = "Peek"; selectedTrailing = "Peek"
         case .activate(let page):
             symbol = "rectangle.on.rectangle"
-            detail = page.entry.lastURL.absoluteString
-            trailing = page.workspaceName.uppercased()
+            trailing = page.workspaceName
             selectedTrailing = "Switch to Tab"
             image = pageIcon(page.entryID) ?? SidebarStyle.letterIcon(for: page.entry.title, url: page.entry.lastURL, size: 16)
         case .command: symbol = "command"; trailing = "Command"; selectedTrailing = "Run"
