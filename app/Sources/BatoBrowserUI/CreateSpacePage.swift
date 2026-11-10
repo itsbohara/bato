@@ -6,12 +6,20 @@ import BatoCore
 @MainActor
 final class CreateSpacePageView: NSView, NSTextFieldDelegate {
     var onThemeChange: ((SpaceTheme) -> Void)?
-    var onCreate: ((String, String?, SpaceTheme) -> Void)?
+    enum ProfileChoice: Equatable {
+        case existing(UUID)
+        case new(name: String, color: String)
+    }
+
+    var onCreate: ((String, String?, SpaceTheme, ProfileChoice) -> Void)?
+    var onNewProfile: (() -> Void)?
     var onCancel: (() -> Void)?
 
     private(set) var theme: SpaceTheme
     private var icon: String?
-    private let profileName: String
+    private let profiles: [(id: UUID, name: String)]
+    private var choice: ProfileChoice
+    private let profilePill = NSButton()
     private let nameField = NSTextField()
     private let iconButton = NSButton()
     private let themeRow = PageRow()
@@ -19,9 +27,10 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
     private var themePopover: SpaceThemePopover?
     private var iconPopover: NSPopover?
 
-    init(theme: SpaceTheme, profileName: String) {
+    init(theme: SpaceTheme, profiles: [(id: UUID, name: String)], selected: UUID) {
         self.theme = theme
-        self.profileName = profileName
+        self.profiles = profiles
+        choice = .existing(selected)
         super.init(frame: .zero)
         setAccessibilityIdentifier("bato-create-space")
         build()
@@ -66,7 +75,8 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
         let profileIcon = NSImageView(image: Self.symbol("person.crop.circle", 13))
         profileIcon.contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
         let profileLabel = Self.label("Profile", size: 13, weight: .semibold, color: .labelColor)
-        let profilePill = NSButton(title: "\(profileName) ⌄", target: self, action: #selector(showProfileMenu(_:)))
+        profilePill.target = self
+        profilePill.action = #selector(showProfileMenu(_:))
         profilePill.isBordered = false
         profilePill.font = .systemFont(ofSize: 11, weight: .semibold)
         profilePill.wantsLayer = true
@@ -76,7 +86,7 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
         let info = NSButton(image: Self.symbol("info.circle", 13), target: nil, action: nil)
         info.isBordered = false
         info.contentTintColor = NSColor.labelColor.withAlphaComponent(0.6)
-        info.toolTip = "A Profile keeps its own logins, cookies and history. The new Space joins the current Profile."
+        info.toolTip = "Profiles keep logins and cookies separate. Spaces in the same Profile share them."
         info.setAccessibilityLabel("About Profiles")
         for view in [profileIcon, profileLabel, profilePill, info] { profileRow.addSubview(view) }
 
@@ -201,6 +211,7 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
         createButton.attributedTitle = NSAttributedString(string: "Create Space", attributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(enabled ? 1 : 0.6)])
+        profilePill.title = "\(profileName) ⌄"
         themeRow.highlighted = themePopover?.isShown ?? false
         if let icon {
             iconButton.image = Self.iconImage(icon, size: 16)
@@ -245,7 +256,7 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
     @objc private func create() {
         guard !trimmedName.isEmpty else { return }
         themePopover?.close()
-        onCreate?(trimmedName, icon, theme)
+        onCreate?(trimmedName, icon, theme, choice)
     }
 
     @objc private func cancelTapped() {
@@ -255,10 +266,43 @@ final class CreateSpacePageView: NSView, NSTextFieldDelegate {
 
     @objc private func showProfileMenu(_ sender: NSButton) {
         let menu = NSMenu()
-        let item = NSMenuItem(title: profileName, action: nil, keyEquivalent: "")
-        item.state = .on
-        menu.addItem(item)
-        menu.popUp(positioning: item, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        for profile in profiles {
+            let item = NSMenuItem(title: profile.name, action: #selector(pickProfile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = profile.id
+            item.state = choice == .existing(profile.id) ? .on : .off
+            menu.addItem(item)
+        }
+        if case .new(let name, _) = choice {
+            let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+            item.state = .on
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let create = NSMenuItem(title: "New Profile…", action: #selector(newProfile), keyEquivalent: "")
+        create.target = self
+        menu.addItem(create)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc private func pickProfile(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        choice = .existing(id)
+        refresh()
+    }
+
+    @objc private func newProfile() { onNewProfile?() }
+
+    func chooseNewProfile(name: String, color: String) {
+        choice = .new(name: name, color: color)
+        refresh()
+    }
+
+    private var profileName: String {
+        switch choice {
+        case .existing(let id): return profiles.first { $0.id == id }?.name ?? "Default"
+        case .new(let name, _): return name
+        }
     }
 
     @objc private func chooseIcon() {

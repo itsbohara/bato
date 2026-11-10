@@ -2162,15 +2162,20 @@ public final class NativeWorkspaceController: NSObject {
         let color = state.nextWorkspaceColor(in: sidebarColorPalette.map(\.hex), profileID: profileID)
         var draft = SpaceTheme(color: color)
         draft.intensity = Self.newSpaceIntensity
-        let profileName = state.profiles.first { $0.id == profileID }?.name ?? "Default"
-        let page = CreateSpacePageView(theme: draft, profileName: profileName)
+        let page = CreateSpacePageView(theme: draft, profiles: state.profiles.map { ($0.id, $0.name) }, selected: profileID)
+        page.onNewProfile = { [weak self, weak page] in self?.draftProfile(for: page) }
         page.onThemeChange = { [weak self] in self?.previewTheme($0) }
         page.onCancel = { [weak self] in self?.dismissCreateSpacePage() }
-        page.onCreate = { [weak self] name, icon, theme in
+        page.onCreate = { [weak self] name, icon, theme, choice in
             guard let self else { return }
-            guard self.runtime.state.currentWorkspace.profileID == profileID else { return self.dismissCreateSpacePage() }
             let before = self.runtime.state.workspaces.count
-            _ = self.runtime.addWorkspace(name: name, theme: theme, icon: icon)
+            switch choice {
+            case .existing(let id):
+                guard self.runtime.state.profiles.contains(where: { $0.id == id }) else { return self.dismissCreateSpacePage() }
+                _ = self.runtime.addWorkspace(name: name, profileID: id, theme: theme, icon: icon)
+            case .new(let profileName, let color):
+                _ = self.runtime.createProfile(name: profileName, color: color, workspaceName: name, theme: theme, icon: icon)
+            }
             guard self.runtime.state.workspaces.count > before else { return NSSound.beep() }
             self.dismissCreateSpacePage()
         }
@@ -2192,6 +2197,27 @@ public final class NativeWorkspaceController: NSObject {
     }
 
     private static let newSpaceIntensity = 0.6
+
+    /// Asks for a Profile name and colour for the Space being created; the Profile is only created with the Space.
+    private func draftProfile(for page: CreateSpacePageView?) {
+        guard let window = root.window, window.attachedSheet == nil, profileEditor == nil else { return }
+        let state = runtime.state
+        let used = Set(state.profiles.map { state.displayColor(of: $0).uppercased() })
+        let color = sidebarColorPalette.map(\.hex).first { !used.contains($0) } ?? sidebarColorPalette[0].hex
+        let editor = ProfileEditor(creating: true, name: "", color: color, asksFirstWorkspace: false) { [weak self, weak page] name, color, _ in
+            guard let self else { return "Bato is no longer available." }
+            guard self.runtime.state.isProfileNameAvailable(name) else { return "Another Profile already has that name." }
+            page?.chooseNewProfile(name: name, color: color)
+            return nil
+        }
+        profileEditor = editor
+        guard let sheet = editor.window else { profileEditor = nil; return }
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.profileEditor = nil
+            page?.focusName()
+        }
+        editor.focusName()
+    }
 
     private func slideIn(_ page: NSView) {
         page.wantsLayer = true
@@ -2435,8 +2461,7 @@ public final class NativeWorkspaceController: NSObject {
         (root as? WorkspaceRoot)?.theme = theme
     }
 
-    /// Another Profile's workspace is shown in that Profile's own window, so its section says so.
-    @objc private func showWorkspaceSwitcher() {
+        @objc private func showWorkspaceSwitcher() {
         guard hasStarted, let window = root.window, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         requestNativeFocus?()
         let state = runtime.state
@@ -2446,7 +2471,7 @@ public final class NativeWorkspaceController: NSObject {
         for group in state.profileGroups {
             if state.hasMultipleProfiles {
                 let own = group.profile.id == currentProfileID
-                entries.append(.header(title: own ? group.profile.name : "\(group.profile.name) · opens in its own window",
+                entries.append(.header(title: group.profile.name,
                                        dot: workspaceColor(state.displayColor(of: group.profile))))
             }
             for workspace in group.workspaces {
@@ -3535,7 +3560,8 @@ private final class ProfileEditor: NSWindowController {
     private let save: (String, String, String) -> String?
     private var colors: [String] = []
 
-    init(creating: Bool, name: String, color: String, save: @escaping (String, String, String) -> String?) {
+    init(creating: Bool, name: String, color: String, asksFirstWorkspace: Bool = true,
+         save: @escaping (String, String, String) -> String?) {
         self.save = save
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -3565,7 +3591,7 @@ private final class ProfileEditor: NSWindowController {
             colorPicker.selectItem(at: colors.count - 1)
         }
         let note = NSTextField(wrappingLabelWithString: creating
-            ? "A Profile keeps its own logins, cookies and site data, and opens in its own window."
+            ? "A Profile keeps its own logins, cookies and site data. Spaces of different Profiles share this window."
             : "Renaming keeps this Profile’s logins and site data.")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
@@ -3586,7 +3612,7 @@ private final class ProfileEditor: NSWindowController {
         buttons.spacing = 8
         var rows: [NSView] = [NSTextField(labelWithString: "Name"), nameField,
                               NSTextField(labelWithString: "Color"), colorPicker]
-        if creating { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
+        if creating && asksFirstWorkspace { rows += [NSTextField(labelWithString: "First workspace"), workspaceField] }
         rows += [note, errorLabel, buttons]
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
@@ -3606,7 +3632,7 @@ private final class ProfileEditor: NSWindowController {
                 errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 buttons.widthAnchor.constraint(equalTo: stack.widthAnchor)
             ]
-            if creating { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
+            if creating && asksFirstWorkspace { constraints.append(workspaceField.widthAnchor.constraint(equalTo: stack.widthAnchor)) }
             NSLayoutConstraint.activate(constraints)
             SidebarStyle.fitSheet(window, to: stack)
         }
