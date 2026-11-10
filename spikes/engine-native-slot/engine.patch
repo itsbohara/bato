@@ -1986,7 +1986,22 @@
    const int active_index = browser_->GetTabStripModel()->active_index();
 
    std::optional<split_tabs::SplitTabId> split_tab_id =
-@@ -4933,7 +4983,27 @@
+@@ -4775,6 +4825,14 @@
+   gfx::Point point_in_browser_view_coords(point);
+   views::View::ConvertPointToTarget(parent(), this,
+                                     &point_in_browser_view_coords);
++#if BUILDFLAG(ENABLE_CEF)
++  // The native top strip holds Bato's tabs; as a caption it would turn every
++  // press into a window drag before AppKit reached the strip's NSView.
++  if (point_in_browser_view_coords.y() >= 0 &&
++      point_in_browser_view_coords.y() < cef::NativeTopStripHeight(this)) {
++    return HTCLIENT;
++  }
++#endif
+
+   // Check if the point is in the web_app_frame_toolbar_. Because this toolbar
+   // can entirely be within the window controls overlay area, this check needs
+@@ -4933,7 +4991,27 @@
 
  gfx::Size BrowserView::GetMinimumSize() const {
    auto* const layout = GetBrowserViewLayout();
@@ -2015,7 +2030,7 @@
  }
 
  ///////////////////////////////////////////////////////////////////////////////
-@@ -4992,6 +5062,24 @@
+@@ -4992,6 +5070,24 @@
    }
 
    LayoutSuperclass<views::View>(this);
@@ -2040,7 +2055,7 @@
 
    // TODO(jamescook): Why was this in the middle of layout code?
    toolbar_->location_bar()->UpdateFocusBehavior(
-@@ -5609,6 +5697,13 @@
+@@ -5609,6 +5705,13 @@
  }
 
  void BrowserView::PrepareFullscreen(bool fullscreen) {
