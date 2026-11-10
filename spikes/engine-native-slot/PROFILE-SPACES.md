@@ -31,4 +31,5 @@ A Chrome `Browser` is bound to exactly one Profile, and the native slot embeds t
 - Window menu and Mission Control list one window per Profile in use.
 - A freshly created Profile window can appear at its default frame for a moment before the first selection syncs it.
 - Move to Profile: the Space menu's "Profile" submenu (check on the current one, "New Profile…") asks for confirmation, then `PageRuntime.moveWorkspace` saves the new Profile, closes the Space's live pages without asking and reopens the active selection in the new Profile's window; other pages reopen from their saved addresses when shown. A Profile's last Space cannot be moved out, a selected Favorite is deselected, and the Space's closed-tab history is dropped.
+  Confirmed by the user on build 291 (2026-11-10).
 - No engine ABI change; export count stays at the current value.
