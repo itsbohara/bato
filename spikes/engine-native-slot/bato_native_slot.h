@@ -77,6 +77,10 @@ CEF_EXPORT int bato_native_slot_focus_native_v1(uint64_t token);
 // Width is clamped to 220..400 points; host bounds may shrink in narrow windows.
 // Returns 1 after guarded layout acceptance, 0 for blocked/invalid tokens/modes.
 CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
+
+// Main/CEF UI thread only. Where the window's tab UI sits: 0 sidebar on the left,
+// 1 sidebar on the right, 2 a strip above the page. Returns 1 once applied.
+CEF_EXPORT int bato_native_slot_set_layout_v1(uint64_t token, int layout);
 CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 // Peek: an engine-owned, tab-owned link preview. The preview must already be a

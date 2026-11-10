@@ -55,7 +55,7 @@
        content::WebContents* source_contents,
 --- a/cef/libcef/browser/chrome/browser_util.h
 +++ b/cef/libcef/browser/chrome/browser_util.h
-@@ -10,12 +10,38 @@
+@@ -10,12 +10,42 @@
  #include "build/build_config.h"
  #include "chrome/browser/ui/browser.h"
 
@@ -79,6 +79,10 @@
 +bool NativeSidebarOwnsTabs(const BrowserView* view);
 +// True once the window was refused a sidebar, so layout drops its reservation.
 +bool NativeSlotRefused(const BrowserView* view);
++// Where the client's tab UI sits: 0 sidebar on the left, 1 sidebar on the right, 2 strip above the page.
++int NativeTabLayout(const BrowserView* view);
++// Height the top strip takes above Chrome's toolbar; 0 unless that layout is shown.
++int NativeTopStripHeight(const BrowserView* view);
 +void NativeSlotBounds(BrowserView* view, const gfx::Rect& bounds);
 +// Reports displayed split pane frames (BrowserView coordinates, toolbar band included) to the
 +// client. `in_split` false clears them. Only windows that own a native sidebar report.
@@ -163,7 +167,7 @@
 +}
 --- a/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
 +++ b/cef/libcef/browser/chrome/chrome_content_browser_client_cef_mac.mm
-@@ -49,3 +49,1366 @@
+@@ -49,3 +49,1394 @@
  }
 
  }  // namespace cef
@@ -362,6 +366,7 @@
 +  gfx::Rect bounds;
 +  int sidebar_width = 260;
 +  int sidebar_mode = 1;  // 0: edge, 1: docked, 2: overlay.
++  int tab_layout = 0;  // 0: sidebar left, 1: sidebar right, 2: top strip.
 +  uint64_t token = 0;
 +  bool attempted = false;
 +  bool refused = false;  // Attempted and denied: the window keeps stock Chrome layout.
@@ -1322,6 +1327,19 @@
 +  return current != Slots().end() && current->second.token == token ? 1 : 0;
 +}
 +
++extern "C" CEF_EXPORT int bato_native_slot_set_layout_v1(uint64_t token, int layout) {
++  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || layout < 0 || layout > 2) return 0;
++  BrowserView* view = FindSlot(token, /*allow_fullscreen=*/true);
++  if (!view) return 0;
++  if (Slots().at(view).tab_layout == layout) return 1;
++  Slots().at(view).tab_layout = layout;
++  fprintf(stderr, "{\"event\":\"native-tab-layout\",\"layout\":%d}\n", layout);
++  view->InvalidateLayout();
++  view->DeprecatedLayoutImmediately();
++  auto current = Slots().find(view);
++  return current != Slots().end() && current->second.token == token ? 1 : 0;
++}
++
 +extern "C" CEF_EXPORT int bato_native_slot_delete_profile_v1(const char* profile_key) {
 +  if (!NSThread.isMainThread || !CEF_CURRENTLY_ON_UIT() || !profile_key || !g_browser_process) return 0;
 +  // Only a UUID directory name is ever deleted: never "Default", a path, or another profile directory.
@@ -1363,6 +1381,8 @@
 +  return found != Slots().end() && found->second.token != 0 &&
 +      found->second.adapter && found->second.host;
 +}
++// Must equal ChromeGeometry.topStripHeight in the client.
++constexpr int kNativeTopStripHeight = 54;
 +int NativeSidebarWidth(BrowserView* view, bool reservation) {
 +  CEF_REQUIRE_UIT();
 +  auto found = Slots().find(view);
@@ -1371,8 +1391,20 @@
 +  if (view->IsFullscreen()) {
 +    return reservation ? 0 : (found != Slots().end() && found->second.fullscreen_reveal ? width : 6);
 +  }
++  // The top strip is always shown and takes height, never width.
++  if (found != Slots().end() && found->second.tab_layout == 2) return reservation ? 0 : width;
 +  if (reservation) return mode == 1 ? width : 0;
 +  return mode == 0 ? 6 : width;
++}
++int NativeTabLayout(const BrowserView* view) {
++  CEF_REQUIRE_UIT_RETURN(0);
++  auto found = Slots().find(const_cast<BrowserView*>(view));
++  return found == Slots().end() ? 0 : found->second.tab_layout;
++}
++int NativeTopStripHeight(const BrowserView* view) {
++  CEF_REQUIRE_UIT_RETURN(0);
++  return !view->IsFullscreen() && NativeSidebarOwnsTabs(view) && NativeTabLayout(view) == 2
++      ? kNativeTopStripHeight : 0;
 +}
 +void NativeSplitLayout(BrowserView* view, bool in_split, bool stacked,
 +                       const gfx::Rect& first, const gfx::Rect& second) {
@@ -1675,7 +1707,7 @@
  #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
  #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
  #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-@@ -39,7 +40,22 @@
+@@ -39,7 +40,24 @@
 
  #if BUILDFLAG(ENABLE_CEF)
  #include "cef/libcef/browser/chrome/browser_delegate.h"
@@ -1695,11 +1727,13 @@
 +// Room at the toolbar's trailing end for the client's split button; must equal
 +// ContentCardFrameView's split button side plus its edge gap.
 +constexpr int kNativeSplitButtonSlot = 40;
++// Strip above Chrome's toolbar in the top layout; must equal ChromeGeometry.topStripHeight in the client.
++constexpr int kNativeTopStripHeight = 54;
 +}  // namespace
 
  BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
      BrowserView& browser_view)
-@@ -123,18 +139,97 @@
+@@ -123,18 +141,124 @@
      auto local_params = params.InLocalCoordinates(
          use_browser_bounds ? browser_bounds : params.visual_client_area);
  #if BUILDFLAG(IS_MAC)
@@ -1741,14 +1775,31 @@
 +      // the exclusion and starts after the traffic lights. Windows without an
 +      // attached sidebar keep the empty top margin and stock tab strip.
 +      bool sidebar_owns_tabs = false;
++      int tab_layout = 0;  // 0: sidebar left, 1: sidebar right, 2: top strip.
 +#if BUILDFLAG(ENABLE_CEF)
 +      sidebar_owns_tabs = cef::NativeSidebarOwnsTabs(&browser_view_.get());
++      tab_layout = cef::NativeTabLayout(&browser_view_.get());
 +#endif
++      const bool sidebar_right = sidebar_owns_tabs && tab_layout == 1;
++      const bool top_strip = sidebar_owns_tabs && tab_layout == 2;
 +      const int top_row = sidebar_owns_tabs ? kNativeSidebarTopRowHeight : 44;
-+      if (sidebar_owns_tabs) {
++      if (top_strip) {
++        // The strip owns the lights' row, so Chrome's toolbar sits right under it
++        // and needs no room for the lights or the split button.
 +        local_params.Inset(gfx::Insets::TLBR(
-+            kNativeCardMargin, reserved_width + kNativeCardMargin,
-+            kNativeCardMargin, kNativeCardMargin));
++            kNativeTopStripHeight, kNativeCardMargin, kNativeCardMargin,
++            kNativeCardMargin));
++        local_params.leading_exclusion.content = gfx::SizeF();
++        local_params.leading_exclusion.vertical_padding = 0;
++        local_params.trailing_exclusion.content = gfx::SizeF();
++      } else if (sidebar_owns_tabs) {
++        // A sidebar on the right leaves the lights over the card's leading corner,
++        // so only its trailing side gives up room.
++        local_params.Inset(gfx::Insets::TLBR(
++            kNativeCardMargin,
++            (sidebar_right ? 0 : reserved_width) + kNativeCardMargin,
++            kNativeCardMargin,
++            (sidebar_right ? reserved_width : 0) + kNativeCardMargin));
 +        // The taller titlebar (see kNativeSidebarTitlebarHeight) must not
 +        // stretch the toolbar row: only the traffic lights use that height.
 +        local_params.leading_exclusion.content.set_height(std::min(
@@ -1756,13 +1807,16 @@
 +            static_cast<float>(top_row)));
 +        // The show-sidebar button sits after the traffic lights, so the toolbar
 +        // starts after it; a docked sidebar has already consumed the exclusion.
-+        if (reserved_width == 0) {
++        if (reserved_width == 0 && !sidebar_right) {
 +          local_params.leading_exclusion.content.set_width(
 +              local_params.leading_exclusion.content.width() +
 +              kNativeSidebarToggleSlot);
 +        }
++        // With the sidebar hidden on the right, its show button sits beside the split button.
 +        local_params.trailing_exclusion.content = gfx::SizeF(
-+            kNativeSplitButtonSlot, static_cast<float>(top_row));
++            kNativeSplitButtonSlot +
++                (sidebar_right && reserved_width == 0 ? kNativeSidebarToggleSlot : 0),
++            static_cast<float>(top_row));
 +        // The exclusion's height sets the toolbar row. Padding it to the
 +        // toolbar's minimum keeps that row and the sidebar's top edge equal.
 +        local_params.leading_exclusion.vertical_padding = std::max(
@@ -1775,8 +1829,13 @@
 +      // spans the full height; otherwise it starts below Chrome's empty margin.
 +      const int sidebar_top = sidebar_owns_tabs ? 0 : top_row;
 +      native_slot_bounds = gfx::Rect(
-+          original_area.x(), original_area.y() + sidebar_top, sidebar_width,
++          sidebar_right ? original_area.right() - sidebar_width : original_area.x(),
++          original_area.y() + sidebar_top, sidebar_width,
 +          std::max(0, original_area.height() - sidebar_top));
++      if (top_strip) {
++        native_slot_bounds = gfx::Rect(original_area.x(), original_area.y(),
++                                       original_area.width(), kNativeTopStripHeight);
++      }
 +    }
 +#if BUILDFLAG(ENABLE_CEF)
 +    // Fullscreen: the sidebar floats over the page without reserving width, as a thin hover edge
@@ -1790,7 +1849,9 @@
 +      const gfx::Rect area = local_params.visual_client_area;
 +      const int width = std::min(cef::NativeSidebarWidth(&browser_view_.get(), false),
 +                                 std::max(0, area.width() - 320));
-+      native_slot_bounds = gfx::Rect(area.x(), area.y(), width, area.height());
++      native_slot_bounds = gfx::Rect(
++          cef::NativeTabLayout(&browser_view_.get()) == 1 ? area.right() - width : area.x(),
++          area.y(), width, area.height());
 +    }
 +    if (auto* delegate = cef::BrowserForBWI(browser_view_->browser())->cef_delegate()) {
 +      delegate->NativeSlotBounds(&browser_view_.get(), native_slot_bounds);
@@ -1799,7 +1860,7 @@
  #endif
      return local_params;
    }
-@@ -175,6 +270,15 @@
+@@ -175,6 +299,15 @@
  }
 
  bool BrowserViewLayoutDelegateImpl::IsToolbarVisible() const {
@@ -1944,7 +2005,7 @@
 +    // The toolbar already occupies the top row once the sidebar owns tabs.
 +    minimum.Enlarge(
 +        cef::NativeSidebarWidth(const_cast<BrowserView*>(this), true),
-+        cef::NativeSidebarOwnsTabs(this) ? 0 : 44);
++        cef::NativeSidebarOwnsTabs(this) ? cef::NativeTopStripHeight(this) : 44);
 +#else
 +    minimum.Enlarge(260, 44);
 +#endif
@@ -2472,7 +2533,7 @@
 
 --- /dev/null
 +++ b/cef/include/internal/bato_native_slot.h
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,215 @@
 +// Bato bounded source experiment ABI v1. Not an upstream CEF API.
 +#ifndef BATO_NATIVE_SLOT_V1_H_
 +#define BATO_NATIVE_SLOT_V1_H_
@@ -2552,6 +2613,10 @@
 +// Width is clamped to 220..400 points; host bounds may shrink in narrow windows.
 +// Returns 1 after guarded layout acceptance, 0 for blocked/invalid tokens/modes.
 +CEF_EXPORT int bato_native_slot_set_sidebar_v1(uint64_t token, int width, int mode);
++
++// Main/CEF UI thread only. Where the window's tab UI sits: 0 sidebar on the left,
++// 1 sidebar on the right, 2 a strip above the page. Returns 1 once applied.
++CEF_EXPORT int bato_native_slot_set_layout_v1(uint64_t token, int layout);
 +CEF_EXPORT int bato_native_slot_focus_browser_v1(uint64_t token);
 +CEF_EXPORT int bato_native_slot_advance_focus_v1(uint64_t token, int reverse);
 +// Peek: an engine-owned, tab-owned link preview. The preview must already be a
