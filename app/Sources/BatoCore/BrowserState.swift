@@ -729,6 +729,35 @@ public struct BrowserState: Codable, Equatable, Sendable {
         }
     }
 
+    /// A Profile always keeps one workspace, so moving the last one out of its Profile is refused as well.
+    public func canMoveWorkspace(_ id: UUID, toProfile profileID: UUID) -> Bool {
+        guard let workspace = workspaces.first(where: { $0.id == id }), workspace.profileID != profileID,
+              profiles.contains(where: { $0.id == profileID }) else { return false }
+        return canDeleteWorkspace(id)
+    }
+
+    /// Pins, tabs, folders, splits and archived tabs travel with the workspace; it keeps its place and
+    /// stays active if it was. A selected Favorite belongs to the old Profile, so that selection is cleared.
+    public mutating func moveWorkspace(_ id: UUID, toProfile profileID: UUID) throws {
+        try transact { draft in
+            guard let index = draft.workspaces.firstIndex(where: { $0.id == id }) else {
+                throw BrowserStateError.missingWorkspace
+            }
+            guard draft.profiles.contains(where: { $0.id == profileID }) else { throw BrowserStateError.missingProfile }
+            guard draft.workspaces[index].profileID != profileID else { return }
+            guard draft.canDeleteWorkspace(id) else { throw BrowserStateError.lastWorkspaceInProfile }
+            draft.workspaces[index].profileID = profileID
+            let ownIDs = Set((draft.workspaces[index].pins + draft.workspaces[index].tabs).map(\.id))
+            if let active = draft.workspaces[index].activeEntryID, !ownIDs.contains(active) {
+                draft.workspaces[index].activeEntryID = nil
+                draft.workspaces[index].activeSplitID = nil
+            }
+            for record in draft.archive.records.indices where draft.archive.records[record].workspaceID == id {
+                draft.archive.records[record].profileID = profileID
+            }
+        }
+    }
+
     /// Names are compared after trimming, ignoring case, so two Profiles cannot look identical in the switcher.
     public func isProfileNameAvailable(_ name: String, excluding id: UUID? = nil) -> Bool {
         let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines)
